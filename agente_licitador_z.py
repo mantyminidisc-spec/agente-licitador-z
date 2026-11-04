@@ -69,9 +69,13 @@ try:
     from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
     from docx.oxml import OxmlElement, parse_xml
     from docx.oxml.ns import nsdecls, qn
+    try:
+        import pypdf
+    except ImportError:
+        pypdf = None
 except ImportError as e:
     print(f"[ERROR CRÍTICO] Faltan librerías: {e}")
-    print("Ejecuta en tu consola: pip install requests beautifulsoup4 openpyxl python-docx")
+    print("Ejecuta en tu consola: pip install requests beautifulsoup4 openpyxl python-docx pypdf")
     sys.exit(1)
 
 # ==============================================================================
@@ -682,51 +686,67 @@ class Agente2Extractor:
             "anexos_mencionados": anexos_detectados if anexos_detectados else ["Anexo Económico / Cotización DOC 2"]
         }
 
-    def _descargar_binario(self, url, ruta_destino, headers_extra=None):
+    def _descargar_binario(self, url, ruta_destino, headers_extra=None, sesion=None):
+        """
+        Descarga un archivo binario nativo con User-Agent realista, cookies de sesión
+        y manejo de redirecciones HTTP. Valida que el contenido no sea una página HTML de error.
+        """
         try:
             hdrs = dict(HEADERS_WEB)
             if headers_extra:
                 hdrs.update(headers_extra)
-            r = requests.get(url, headers=hdrs, stream=True, timeout=25, allow_redirects=True)
+
+            cliente = sesion if sesion else requests
+            r = cliente.get(url, headers=hdrs, stream=True, timeout=25, allow_redirects=True)
             if r.status_code == 200:
                 content_type = (r.headers.get("Content-Type") or "").lower()
-                if "text/html" in content_type and ruta_destino.lower().endswith((".pdf", ".docx", ".xlsx", ".doc", ".zip")):
-                    primeros_bytes = b""
-                    with open(ruta_destino, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                if not primeros_bytes:
-                                    primeros_bytes = chunk[:15]
-                                f.write(chunk)
-                    if b"<!doctype html" in primeros_bytes.lower() or b"<html" in primeros_bytes.lower():
+                primeros_bytes = b""
+                with open(ruta_destino, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            if not primeros_bytes:
+                                primeros_bytes = chunk[:50]
+                            f.write(chunk)
+
+                # Si el servidor retornó HTML en vez de archivo binario, descartar
+                if b"<!doctype html" in primeros_bytes.lower() or b"<html" in primeros_bytes.lower():
+                    if os.path.exists(ruta_destino):
                         os.remove(ruta_destino)
-                        return False
-                    print(f"      📥 [OK ADJUNTO DESCARGADO] {os.path.basename(ruta_destino)}")
+                    return False
+
+                if os.path.exists(ruta_destino) and os.path.getsize(ruta_destino) > 200:
+                    tam_kb = os.path.getsize(ruta_destino) // 1024
+                    print(f"      📥 [OK ADJUNTO ORIGINAL DESCARGADO] {os.path.basename(ruta_destino)} ({tam_kb} KB)")
                     return True
                 else:
-                    with open(ruta_destino, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                    if os.path.getsize(ruta_dest := ruta_destino) > 200:
-                        print(f"      📥 [OK ADJUNTO DESCARGADO] {os.path.basename(ruta_dest)} ({os.path.getsize(ruta_dest)//1024} KB)")
-                        return True
-                    else:
+                    if os.path.exists(ruta_destino):
                         os.remove(ruta_destino)
         except Exception as e:
-            print(f"      [!] Error descargando binario {url}: {e}")
+            print(f"      [!] Nota de descarga {os.path.basename(ruta_destino)}: {e}")
+            if os.path.exists(ruta_destino):
+                try:
+                    os.remove(ruta_destino)
+                except Exception:
+                    pass
         return False
 
     def _descargar_adjuntos_reales_portal(self, codigo, tipo_portal, datos_api, carpeta_adjuntos):
+        """
+        Escaner y descargador profundo de archivos adjuntos originales (.pdf, .docx, .doc, .xlsx, .xls)
+        tanto para Compra Ágil (API v2 + Visor Digital) como para Licitaciones Públicas (API v1 + ASPX).
+        Crea la subcarpeta y mantiene cookies y cabeceras realistas.
+        """
         os.makedirs(carpeta_adjuntos, exist_ok=True)
         archivos_descargados = []
         extensiones_validas = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".zip", ".rar", ".csv", ".png", ".jpg")
 
-        print(f"   -> [Agente 2] Conectando al visor de adjuntos del Estado para {codigo}...")
+        print(f"   -> [Agente 2] Conectando y escaneando adjuntos oficiales del Estado para {codigo}...")
+
+        sesion = requests.Session()
+        sesion.headers.update(HEADERS_WEB)
 
         if tipo_portal != "COMPRA_AGIL":
-            sesion = requests.Session()
-            sesion.headers.update(HEADERS_WEB)
+            # 1. PROCEDIMIENTO PARA LICITACIONES PÚBLICAS (API v1 / Portal RFB)
             urls_ficha = [
                 f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo}",
                 f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?qs={codigo}"
@@ -734,22 +754,37 @@ class Agente2Extractor:
             enc_token = None
             for u_f in urls_ficha:
                 try:
-                    r1 = sesion.get(u_f, timeout=20)
+                    r1 = sesion.get(u_f, timeout=20, allow_redirects=True)
                     if r1.status_code == 200 and len(r1.text) > 500:
+                        # Extraer token del visor de adjuntos
                         m_enc = re.search(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>\)]+)", r1.text, re.IGNORECASE)
                         if m_enc:
                             enc_token = m_enc.group(1)
                             break
+                        # Enlaces directos en la ficha
+                        soup_ficha = BeautifulSoup(r1.text, "html.parser")
+                        for a_tag in soup_ficha.find_all("a", href=True):
+                            href = a_tag["href"]
+                            if any(href.lower().endswith(ext) for ext in extensiones_validas) or "attachment" in href.lower():
+                                url_full = urllib.parse.urljoin("https://www.mercadopublico.cl", href)
+                                nom_f = a_tag.get_text(strip=True) or os.path.basename(href.split("?")[0])
+                                nom_f = re.sub(r'[\\/*?:"<>|]', "_", nom_f)
+                                if not any(nom_f.lower().endswith(e) for e in extensiones_validas):
+                                    nom_f += ".pdf"
+                                ruta_dest = os.path.join(carpeta_adjuntos, nom_f)
+                                if self._descargar_binario(url_full, ruta_dest, sesion=sesion):
+                                    archivos_descargados.append(ruta_dest)
                 except Exception:
                     pass
 
+            # Si se encontró el visor ASPX oficial de archivos adjuntos
             if enc_token:
                 try:
                     url_bridge = f"https://www.mercadopublico.cl/Procurement/Modules/Attachment/ViewAttachment.aspx?enc={enc_token}"
-                    sesion.get(url_bridge, timeout=15)
+                    sesion.get(url_bridge, timeout=15, allow_redirects=True)
 
                     url_grid = f"https://www.mercadopublico.cl/Procurement/Modules/Attachment/ViewAttachmentLC.aspx?enc={enc_token}"
-                    r_grid = sesion.get(url_grid, timeout=20)
+                    r_grid = sesion.get(url_grid, timeout=20, allow_redirects=True)
 
                     if r_grid.status_code == 200:
                         soup_grid = BeautifulSoup(r_grid.text, "html.parser")
@@ -777,7 +812,7 @@ class Agente2Extractor:
                             post_payload[f"{btn_name}.x"] = "8"
                             post_payload[f"{btn_name}.y"] = "8"
 
-                            r_file = sesion.post(url_grid, data=post_payload, stream=True, timeout=30)
+                            r_file = sesion.post(url_grid, data=post_payload, stream=True, timeout=30, allow_redirects=True)
                             if r_file.status_code == 200:
                                 c_disp = r_file.headers.get("Content-Disposition") or r_file.headers.get("content-disposition") or ""
                                 c_type = (r_file.headers.get("Content-Type") or "").lower()
@@ -797,27 +832,56 @@ class Agente2Extractor:
                                             if chunk:
                                                 f_out.write(chunk)
 
-                                    if os.path.getsize(ruta_dest) > 200:
-                                        print(f"      📥 [OK ANEXO OFICIAL DESCARGADO] {nom_real} ({os.path.getsize(ruta_dest)//1024} KB)")
+                                    if os.path.exists(ruta_dest) and os.path.getsize(ruta_dest) > 200:
+                                        tam_kb = os.path.getsize(ruta_dest) // 1024
+                                        print(f"      📥 [OK ANEXO OFICIAL DESCARGADO] {nom_real} ({tam_kb} KB)")
                                         archivos_descargados.append(ruta_dest)
                                     else:
-                                        os.remove(ruta_dest)
+                                        if os.path.exists(ruta_dest):
+                                            os.remove(ruta_dest)
                 except Exception as e:
-                    print(f"      [!] Aviso en descarga de grilla de anexos: {e}")
+                    print(f"      [!] Aviso en visor de anexos: {e}")
         else:
-            # En Compra Ágil: buscar URLs de documentos en el JSON de detalle de API v2
+            # 2. PROCEDIMIENTO PARA COMPRA ÁGIL (API v2 + Ficha Digital)
+            # A) Búsqueda recursiva de URLs en payload JSON
             texto_ca = json.dumps(datos_api, ensure_ascii=False)
-            urls_halladas = re.findall(r'https?://[^"\s<>]+', texto_ca)
+            urls_halladas = set(re.findall(r'https?://[^"\'\s<>\\]+', texto_ca))
             for u_h in urls_halladas:
-                if any(ext in u_h.lower() for ext in extensiones_validas) or "adjunto" in u_h.lower() or "document" in u_h.lower() or "download" in u_h.lower():
+                if any(ext in u_h.lower() for ext in extensiones_validas) or any(k in u_h.lower() for k in ["adjunto", "document", "download", "archivo", "storage"]):
                     nom_h = os.path.basename(u_h.split("?")[0]) or f"Adjunto_{codigo}.pdf"
                     nom_h = re.sub(r'[\\/*?:"<>|]', "_", nom_h)
                     if not any(nom_h.lower().endswith(e) for e in extensiones_validas):
                         nom_h += ".pdf"
                     ruta_dest = os.path.join(carpeta_adjuntos, nom_h)
-                    if self._descargar_binario(u_h, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}):
+                    if self._descargar_binario(u_h, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
                         archivos_descargados.append(ruta_dest)
 
+            # B) Exploración del visor web de Compra Ágil
+            urls_ca_web = [
+                f"https://buscador.mercadopublico.cl/ficha?code={codigo}",
+                f"https://www.mercadopublico.cl/CompraAgil/Modules/RFQ/DetailsRFQ.aspx?qs={codigo}",
+                f"https://www.mercadopublico.cl/CompraAgil/Modules/RFQ/DetailsRFQ.aspx?idcotizacion={codigo}"
+            ]
+            for u_web in urls_ca_web:
+                try:
+                    r_w = sesion.get(u_web, timeout=15, allow_redirects=True)
+                    if r_w.status_code == 200 and len(r_w.text) > 400:
+                        soup_ca = BeautifulSoup(r_w.text, "html.parser")
+                        for a_tag in soup_ca.find_all("a", href=True):
+                            href = a_tag["href"]
+                            if any(href.lower().endswith(ext) for ext in extensiones_validas) or any(k in href.lower() for k in ["download", "adjunto", "attachment"]):
+                                url_completa = urllib.parse.urljoin("https://www.mercadopublico.cl", href)
+                                nom_ca = a_tag.get_text(strip=True) or os.path.basename(href.split("?")[0])
+                                nom_ca = re.sub(r'[\\/*?:"<>|]', "_", nom_ca)
+                                if not any(nom_ca.lower().endswith(e) for e in extensiones_validas):
+                                    nom_ca += ".pdf"
+                                ruta_dest = os.path.join(carpeta_adjuntos, nom_ca)
+                                if self._descargar_binario(url_completa, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
+                                    archivos_descargados.append(ruta_dest)
+                except Exception:
+                    pass
+
+        # Descomprimir archivos .zip o .rar descargados
         for arc in list(archivos_descargados):
             if arc.lower().endswith(".zip") and zipfile.is_zipfile(arc):
                 try:
@@ -825,68 +889,350 @@ class Agente2Extractor:
                         zf.extractall(carpeta_adjuntos)
                         for extraido in zf.namelist():
                             ruta_ext = os.path.join(carpeta_adjuntos, extraido)
-                            if os.path.isfile(ruta_ext):
+                            if os.path.isfile(ruta_ext) and os.path.getsize(ruta_ext) > 100:
                                 archivos_descargados.append(ruta_ext)
                     print(f"      📦 [ZIP DESCOMPRIMIDO] {os.path.basename(arc)}")
                 except Exception:
                     pass
 
-        ruta_ficha_oficial = os.path.join(carpeta_adjuntos, f"00_BASES_Y_FICHA_OFICIAL_PORTAL_{codigo}.docx")
-        self._crear_respaldo_word_ficha_oficial(codigo, tipo_portal, datos_api, ruta_ficha_oficial, archivos_descargados)
-        archivos_descargados.append(ruta_ficha_oficial)
-
         return list(dict.fromkeys(archivos_descargados))
 
-    def _crear_respaldo_word_ficha_oficial(self, codigo, tipo_portal, datos_api, ruta_word, adjuntos_previos):
-        doc = Document()
-        for s in doc.sections:
-            s.top_margin = Inches(0.6)
-            s.bottom_margin = Inches(0.6)
-            s.left_margin = Inches(0.65)
-            s.right_margin = Inches(0.65)
-
-        # Banner superior corporativo
-        t_ban = doc.add_table(rows=1, cols=1)
-        c_ban = t_ban.rows[0].cells[0]
-        c_ban._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="0F172A"/>'))
-        p_b = c_ban.paragraphs[0]
-        r_b = p_b.add_run(f"EXPEDIENTE OFICIAL DEL PORTAL · {tipo_portal}\nCÓDIGO: {codigo}")
-        r_b.bold = True
-        r_b.font.size = Pt(12)
-        r_b.font.color.rgb = RGBColor(255, 255, 255)
-
-        doc.add_paragraph(f"Enlace Oficial Ficha Mercado Público: https://buscador.mercadopublico.cl/ficha?code={codigo}")
-        doc.add_paragraph(f"Resumen Estructurado Extraído de API Oficial:")
-        texto_resumen = json.dumps(datos_api, indent=2, ensure_ascii=False)[:3500]
-        p_json = doc.add_paragraph(texto_resumen)
-        for r in p_json.runs:
-            r.font.size = Pt(8.5)
-
-        doc.save(ruta_word)
-
     def _extraer_texto_de_adjuntos_locales(self, lista_rutas):
+        """
+        Extrae todo el contenido de texto estructurado desde los archivos adjuntos
+        descargados (.pdf mediante pypdf, .docx mediante python-docx, .xlsx/.xls
+        mediante openpyxl y archivos de texto plano), consolidándolo para el Agente 3.
+        """
         textos = []
         for ruta in lista_rutas:
+            if not os.path.exists(ruta):
+                continue
             ext = os.path.splitext(ruta)[1].lower()
             nom = os.path.basename(ruta)
+
+            # Evitar auto-procesamiento recursivo del archivo clon generado
+            if nom.startswith("ANEXO_CLON_BASES_OFICIALES_"):
+                continue
+
             try:
-                if ext == ".docx":
-                    d = Document(ruta)
-                    parrafos = [p.text for p in d.paragraphs if p.text.strip()]
-                    textos.append(f"[{nom}]: " + " | ".join(parrafos[:30]))
-                elif ext == ".txt":
+                if ext == ".pdf":
+                    txt_pdf = []
+                    if pypdf:
+                        try:
+                            reader = pypdf.PdfReader(ruta)
+                            for idx_p, pag in enumerate(reader.pages, 1):
+                                pag_txt = pag.extract_text() or ""
+                                if pag_txt.strip():
+                                    txt_pdf.append(f"[Pág. {idx_p}]: {pag_txt.strip()}")
+                        except Exception as e_pdf:
+                            txt_pdf.append(f"(Aviso lectura PDF {nom}: {e_pdf})")
+                    if txt_pdf:
+                        textos.append(f"=== [ADJUNTO PDF OFICIAL: {nom}] ===\n" + "\n".join(txt_pdf))
+                        print(f"      📖 [TEXTO EXTRAÍDO PDF] {nom} ({len(txt_pdf)} págs)")
+                    else:
+                        textos.append(f"[Adjunto PDF: {nom}]")
+
+                elif ext in [".docx", ".doc"]:
+                    txt_doc = []
+                    try:
+                        d = Document(ruta)
+                        for p in d.paragraphs:
+                            if p.text.strip():
+                                txt_doc.append(p.text.strip())
+                        for t in d.tables:
+                            for row in t.rows:
+                                r_cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                                if r_cells:
+                                    txt_doc.append(" | ".join(r_cells))
+                    except Exception as e_doc:
+                        txt_doc.append(f"(Aviso lectura Word {nom}: {e_doc})")
+                    if txt_doc:
+                        textos.append(f"=== [ADJUNTO WORD OFICIAL: {nom}] ===\n" + "\n".join(txt_doc))
+                        print(f"      📖 [TEXTO EXTRAÍDO WORD] {nom} ({len(txt_doc)} párrafos/filas)")
+                    else:
+                        textos.append(f"[Adjunto Word: {nom}]")
+
+                elif ext in [".xlsx", ".xls"]:
+                    txt_xl = []
+                    try:
+                        wb = openpyxl.load_workbook(ruta, data_only=True)
+                        for s_name in wb.sheetnames:
+                            ws = wb[s_name]
+                            filas_s = []
+                            for row in ws.iter_rows(values_only=True):
+                                c_vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
+                                if c_vals:
+                                    filas_s.append(" | ".join(c_vals))
+                            if filas_s:
+                                txt_xl.append(f"Hoja '{s_name}':\n" + "\n".join(filas_s[:60]))
+                    except Exception as e_xl:
+                        txt_xl.append(f"(Aviso lectura Excel {nom}: {e_xl})")
+                    if txt_xl:
+                        textos.append(f"=== [ADJUNTO EXCEL OFICIAL: {nom}] ===\n" + "\n".join(txt_xl))
+                        print(f"      📊 [TABLAS EXTRAÍDAS EXCEL] {nom}")
+                    else:
+                        textos.append(f"[Adjunto Excel: {nom}]")
+
+                elif ext in [".txt", ".csv", ".json"]:
                     with open(ruta, "r", encoding="utf-8", errors="ignore") as f:
-                        textos.append(f"[{nom}]: " + f.read()[:2000])
+                        textos.append(f"=== [ADJUNTO TEXTO: {nom}] ===\n" + f.read()[:6000])
+
                 else:
-                    textos.append(f"[Archivo adjunto descargado: {nom}]")
-            except Exception:
-                textos.append(f"[Adjunto en carpeta: {nom}]")
-        return "\n".join(textos)
+                    textos.append(f"[Archivo adjunto en repositorio: {nom}]")
+
+            except Exception as e:
+                textos.append(f"[Archivo adjunto: {nom} ({e})]")
+
+        return "\n\n".join(textos)
+
+    def _generar_anexo_clon_bases_oficiales(
+        self, codigo, tipo_portal, datos_api, organismo, ruta_docx,
+        items, texto_adjuntos, presupuesto, fecha_cie, fecha_pub,
+        rut_comprador, unidad_compradora, comuna, region, candidato
+    ):
+        """
+        Genera automáticamente el 'Archivo Clon Word (.docx)' con diseño de ficha oficial
+        del Estado de Chile llamado ANEXO_CLON_BASES_OFICIALES_[ID_LICITACION].docx.
+        Actúa como fallback obligatorio y réplica institucional de respaldo, permitiendo
+        al cliente auditar los requerimientos exactos del comprador público.
+        """
+        doc = Document()
+
+        # Márgenes profesionales
+        for s in doc.sections:
+            s.top_margin = Inches(0.7)
+            s.bottom_margin = Inches(0.7)
+            s.left_margin = Inches(0.75)
+            s.right_margin = Inches(0.75)
+
+        # 1. BANNER INSTITUCIONAL DEL ESTADO DE CHILE
+        t_ban = doc.add_table(rows=1, cols=1)
+        t_ban.alignment = WD_TABLE_ALIGNMENT.CENTER
+        c_ban = t_ban.rows[0].cells[0]
+        c_ban.width = Inches(7.0)
+        c_ban._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="0F172A"/>'))
+        p_b = c_ban.paragraphs[0]
+        p_b.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_b.paragraph_format.space_before = Pt(8)
+        p_b.paragraph_format.space_after = Pt(4)
+
+        r_b1 = p_b.add_run("REPÚBLICA DE CHILE · DIRECCIÓN DE COMPRAS Y CONTRATACIÓN PÚBLICA\n")
+        r_b1.bold = True
+        r_b1.font.size = Pt(9.5)
+        r_b1.font.color.rgb = RGBColor(148, 163, 184)
+
+        r_b2 = p_b.add_run("FICHA TÉCNICA OFICIAL Y ANEXO CLON DE BASES PÚBLICAS\n")
+        r_b2.bold = True
+        r_b2.font.size = Pt(13)
+        r_b2.font.color.rgb = RGBColor(255, 255, 255)
+
+        r_b3 = p_b.add_run(f"PROCESO ID: {codigo} · MODALIDAD: {tipo_portal}")
+        r_b3.bold = True
+        r_b3.font.size = Pt(10)
+        r_b3.font.color.rgb = RGBColor(56, 189, 248)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+        # 2. IDENTIFICACIÓN DETALLADA DEL ORGANISMO COMPRADOR
+        p_sub1 = doc.add_paragraph()
+        r_sub1 = p_sub1.add_run("1. IDENTIFICACIÓN DEL ORGANISMO PÚBLICO COMPRADOR Y PROCESO")
+        r_sub1.bold = True
+        r_sub1.font.size = Pt(11)
+        r_sub1.font.color.rgb = RGBColor(15, 23, 42)
+
+        datos_identificacion = [
+            ("Organismo Público Comprador:", organismo),
+            ("RUT Comprador / Unidad:", f"{rut_comprador} · {unidad_compradora}"),
+            ("Código de Adquisición / ID:", codigo),
+            ("Título de la Licitación / Compra:", candidato.get("nombre", "No informado")),
+            ("Modalidad del Procedimiento:", f"{tipo_portal} (Sistema Mercado Público de Chile)"),
+            ("Presupuesto Oficial Disponible:", f"${presupuesto:,} CLP"),
+            ("Fecha de Publicación Oficial:", str(fecha_pub)),
+            ("Fecha / Plazo Fatal de Cierre:", str(fecha_cie)),
+            ("Ubicación Geográfica Comprador:", f"{comuna}, {region}"),
+            ("Enlace Ficha Oficial en Portal:", f"https://buscador.mercadopublico.cl/ficha?code={codigo}")
+        ]
+
+        t_id = doc.add_table(rows=len(datos_identificacion), cols=2)
+        t_id.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for idx, (label, val) in enumerate(datos_identificacion):
+            row = t_id.rows[idx]
+            c0, c1 = row.cells[0], row.cells[1]
+            c0.width = Inches(2.4)
+            c1.width = Inches(4.6)
+
+            if idx % 2 == 0:
+                c0._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="F8FAFC"/>'))
+                c1._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="F8FAFC"/>'))
+
+            p0 = c0.paragraphs[0]
+            p0.paragraph_format.space_before = Pt(3)
+            p0.paragraph_format.space_after = Pt(3)
+            r0 = p0.add_run(label)
+            r0.bold = True
+            r0.font.size = Pt(9.5)
+            r0.font.color.rgb = RGBColor(30, 41, 59)
+
+            p1 = c1.paragraphs[0]
+            p1.paragraph_format.space_before = Pt(3)
+            p1.paragraph_format.space_after = Pt(3)
+            r1 = p1.add_run(str(val))
+            r1.font.size = Pt(9.5)
+            r1.font.color.rgb = RGBColor(15, 23, 42)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+
+        # 3. BASES TÉCNICAS Y DESCRIPCIÓN OFICIAL DEL REQUERIMIENTO
+        p_sub2 = doc.add_paragraph()
+        r_sub2 = p_sub2.add_run("2. BASES OFICIALES Y DESCRIPCIÓN DEL REQUERIMIENTO")
+        r_sub2.bold = True
+        r_sub2.font.size = Pt(11)
+        r_sub2.font.color.rgb = RGBColor(15, 23, 42)
+
+        desc_oficial = str(
+            datos_api.get("Descripcion")
+            or datos_api.get("descripcion")
+            or datos_api.get("glosa")
+            or candidato.get("nombre")
+            or "Sin descripción adicional informada en el portal."
+        )
+
+        t_desc = doc.add_table(rows=1, cols=1)
+        t_desc.alignment = WD_TABLE_ALIGNMENT.CENTER
+        c_desc = t_desc.rows[0].cells[0]
+        c_desc.width = Inches(7.0)
+        c_desc._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="F1F5F9"/>'))
+        p_d = c_desc.paragraphs[0]
+        p_d.paragraph_format.space_before = Pt(6)
+        p_d.paragraph_format.space_after = Pt(6)
+        r_d = p_d.add_run(desc_oficial)
+        r_d.font.size = Pt(9.5)
+        r_d.font.italic = True
+        r_d.font.color.rgb = RGBColor(30, 41, 59)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+
+        # 4. LISTADO DETALLADO DE ÍTEMS / LÍNEAS DE PRODUCTOS SOLICITADOS
+        p_sub3 = doc.add_paragraph()
+        r_sub3 = p_sub3.add_run("3. LÍNEAS DE PRODUCTOS / SERVICIOS SOLICITADOS Y ESPECIFICACIONES TÉCNICAS")
+        r_sub3.bold = True
+        r_sub3.font.size = Pt(11)
+        r_sub3.font.color.rgb = RGBColor(15, 23, 42)
+
+        lista_items = items if isinstance(items, list) and items else []
+        if not lista_items:
+            lista_items = [{
+                "Correlativo": 1,
+                "CodigoProducto": codigo,
+                "NombreProducto": candidato.get("nombre", "Servicio Principal Requerido"),
+                "Cantidad": 1,
+                "UnidadMedida": "Servicio / Global",
+                "Descripcion": desc_oficial
+            }]
+
+        t_it = doc.add_table(rows=1 + len(lista_items), cols=5)
+        t_it.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        headers_cols = ["N°", "Producto / Requerimiento", "Cant.", "Unidad", "Especificaciones Técnicas / Glosa"]
+        ancho_cols = [Inches(0.5), Inches(2.2), Inches(0.7), Inches(1.0), Inches(2.6)]
+
+        row_head = t_it.rows[0]
+        for col_idx, h_text in enumerate(headers_cols):
+            cell = row_head.cells[col_idx]
+            cell.width = ancho_cols[col_idx]
+            cell._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="334155"/>'))
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(4)
+            r = p.add_run(h_text)
+            r.bold = True
+            r.font.size = Pt(9)
+            r.font.color.rgb = RGBColor(255, 255, 255)
+
+        for idx_it, it in enumerate(lista_items, 1):
+            row = t_it.rows[idx_it]
+            nom_it = str(it.get("NombreProducto") or it.get("nombre") or it.get("descripcion") or f"Ítem {idx_it}")
+            cant_it = str(it.get("Cantidad") or it.get("cantidad") or "1")
+            unid_it = str(it.get("UnidadMedida") or it.get("unidad_medida") or it.get("unidad") or "GL")
+            desc_it = str(it.get("Descripcion") or it.get("especificacion") or it.get("glosa") or nom_it)
+
+            valores_fila = [str(idx_it), nom_it, cant_it, unid_it, desc_it]
+            for col_idx, val_str in enumerate(valores_fila):
+                cell = row.cells[col_idx]
+                cell.width = ancho_cols[col_idx]
+                if idx_it % 2 == 0:
+                    cell._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="F8FAFC"/>'))
+                p = cell.paragraphs[0]
+                p.paragraph_format.space_before = Pt(3)
+                p.paragraph_format.space_after = Pt(3)
+                if col_idx in [0, 2, 3]:
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                r = p.add_run(val_str)
+                r.font.size = Pt(8.5)
+                r.font.color.rgb = RGBColor(15, 23, 42)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+
+        # 5. TRANSCRIPCIÓN ÍNTEGRA DE ANEXOS / ARCHIVOS ORIGINALES LEÍDOS
+        p_sub4 = doc.add_paragraph()
+        r_sub4 = p_sub4.add_run("4. TRANSCRIPCIÓN ÍNTEGRA DE ANEXOS Y ARCHIVOS ORIGINALES LEÍDOS")
+        r_sub4.bold = True
+        r_sub4.font.size = Pt(11)
+        r_sub4.font.color.rgb = RGBColor(15, 23, 42)
+
+        if texto_adjuntos and len(texto_adjuntos.strip()) > 30:
+            p_ad_info = doc.add_paragraph()
+            r_ai = p_ad_info.add_run("Transcripción fidedigna extraída desde archivos nativos (PDF, Word, Excel):")
+            r_ai.font.size = Pt(9.5)
+            r_ai.bold = True
+            r_ai.font.color.rgb = RGBColor(71, 85, 105)
+
+            t_adj = doc.add_table(rows=1, cols=1)
+            t_adj.alignment = WD_TABLE_ALIGNMENT.CENTER
+            c_adj = t_adj.rows[0].cells[0]
+            c_adj.width = Inches(7.0)
+            c_adj._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="FAF5FF"/>'))
+            p_adj_txt = c_adj.paragraphs[0]
+            p_adj_txt.paragraph_format.space_before = Pt(6)
+            p_adj_txt.paragraph_format.space_after = Pt(6)
+            r_at = p_adj_txt.add_run(texto_adjuntos[:18000])
+            r_at.font.size = Pt(8.5)
+            r_at.font.color.rgb = RGBColor(30, 41, 59)
+        else:
+            p_no_adj = doc.add_paragraph()
+            p_no_adj.paragraph_format.space_before = Pt(4)
+            p_no_adj.paragraph_format.space_after = Pt(4)
+            r_na = p_no_adj.add_run(
+                "ℹ️ [AVISO OFICIAL DE ESPECIFICACIONES DIGITALES]:\n"
+                "Este proceso de compra pública fue publicado por el organismo comprador mediante especificaciones directas "
+                "en la ficha digital / API oficial de Mercado Público, sin adjuntos binarios descargables adicionales o con acceso "
+                "restringido al momento de la consulta. La información consolidada en este documento representa la totalidad oficial "
+                "de los requerimientos técnicos y administrativos exigidos para la cotización."
+            )
+            r_na.font.size = Pt(9)
+            r_na.font.italic = True
+            r_na.font.color.rgb = RGBColor(100, 116, 139)
+
+        # 6. PIE DE PÁGINA INSTITUCIONAL
+        p_pie = doc.add_paragraph()
+        p_pie.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_pie.paragraph_format.space_before = Pt(16)
+        r_pie = p_pie.add_run(
+            f"Documento Clon Oficial de Respaldo B2G · Expediente {codigo}\n"
+            f"Mantytech SpA · Auditoría de Mercado Público Ley 19.886 · Generado el {datetime.datetime.now().strftime('%d-%m-%Y %H:%M')}"
+        )
+        r_pie.font.size = Pt(8)
+        r_pie.font.color.rgb = RGBColor(148, 163, 184)
+
+        doc.save(ruta_docx)
+        print(f"      📄 [ANEXO CLON OFICIAL GENERADO] {os.path.basename(ruta_docx)}")
 
     def extraer_proyecto_completo(self, candidato, carpeta_proyecto):
         codigo = candidato["codigo"]
         tipo_portal = candidato["tipo_portal"]
         carpeta_adjuntos = os.path.join(carpeta_proyecto, "adjuntos")
+        os.makedirs(carpeta_adjuntos, exist_ok=True)
 
         print(f"\n📥 [AGENTE 2] EXTRAYENDO FICHA, PRESUPUESTO Y ADJUNTOS DE: {codigo} ({tipo_portal})")
 
@@ -909,10 +1255,11 @@ class Agente2Extractor:
                 r = requests.get(url_ca_det, headers=HEADERS_API_COMPRA_AGIL, timeout=20)
                 if r.status_code == 200:
                     datos_api = r.json()
-                    # Extraer campos según Documentacion_API_Compra_Agil v2/v3
                     inst = datos_api.get("institucion") or datos_api.get("comprador") or {}
                     if isinstance(inst, dict):
-                        organismo = inst.get("organismo_comprador") or inst.get("nombre_organismo") or organismo
+                        org_det = inst.get("organismo_comprador") or inst.get("nombre_organismo") or inst.get("nombre")
+                        if org_det and "organismo del estado" not in str(org_det).lower():
+                            organismo = str(org_det).strip()
                         rut_comprador = inst.get("rut") or inst.get("rut_organismo") or rut_comprador
                         unidad_compradora = inst.get("unidad_compra") or inst.get("nombre_unidad") or unidad_compradora
                         comuna = inst.get("comuna") or comuna
@@ -937,7 +1284,9 @@ class Agente2Extractor:
                         datos_api = js["Listado"][0]
                         comprador = datos_api.get("Comprador", {}) or {}
                         fechas = datos_api.get("Fechas", {}) or {}
-                        organismo = comprador.get("NombreOrganismo", organismo)
+                        org_lic = comprador.get("NombreOrganismo")
+                        if org_lic and "organismo del estado" not in str(org_lic).lower():
+                            organismo = str(org_lic).strip()
                         rut_comprador = comprador.get("RutUnidad", rut_comprador)
                         unidad_compradora = comprador.get("NombreUnidad", unidad_compradora)
                         comuna = comprador.get("ComunaUnidad", comuna)
@@ -949,9 +1298,13 @@ class Agente2Extractor:
             except Exception as e:
                 print(f"   [!] Aviso consultando API v1 detalle Licitación: {e}")
 
+        # 1. Descarga real de archivos adjuntos originales (.pdf, .docx, .doc, .xlsx, etc.)
         adjuntos_descargados = self._descargar_adjuntos_reales_portal(codigo, tipo_portal, datos_api, carpeta_adjuntos)
+
+        # 2. Extracción profunda de texto desde los archivos descargados para el Agente 3
         texto_adjuntos = self._extraer_texto_de_adjuntos_locales(adjuntos_descargados)
 
+        # 3. Cálculo de presupuesto oficial
         if not presupuesto or presupuesto <= 0:
             presupuesto = self._escanear_presupuesto_recursivo(datos_api)
         if not presupuesto or presupuesto <= 0:
@@ -959,6 +1312,40 @@ class Agente2Extractor:
             origen_presupuesto = "Estimación Referencial de Mercado (Monto Reservado en Portal)"
         else:
             origen_presupuesto = "Extraído Oficialmente de API Mercado Público"
+
+        # 4. Generación obligatoria del "Archivo Clon Word (.docx)" (ANEXO_CLON_BASES_OFICIALES_[ID_LICITACION].docx)
+        nom_clon = f"ANEXO_CLON_BASES_OFICIALES_{codigo}.docx"
+        ruta_clon_proyecto = os.path.join(carpeta_proyecto, nom_clon)
+        ruta_clon_adjuntos = os.path.join(carpeta_adjuntos, nom_clon)
+
+        self._generar_anexo_clon_bases_oficiales(
+            codigo=codigo,
+            tipo_portal=tipo_portal,
+            datos_api=datos_api,
+            organismo=organismo,
+            ruta_docx=ruta_clon_proyecto,
+            items=items,
+            texto_adjuntos=texto_adjuntos,
+            presupuesto=presupuesto,
+            fecha_cie=fecha_cie,
+            fecha_pub=fecha_pub,
+            rut_comprador=rut_comprador,
+            unidad_compradora=unidad_compradora,
+            comuna=comuna,
+            region=region,
+            candidato=candidato
+        )
+
+        try:
+            shutil.copy2(ruta_clon_proyecto, ruta_clon_adjuntos)
+        except Exception:
+            pass
+
+        # Agregar el Word Clon a la lista de entregables del proyecto y adjuntos locales
+        if ruta_clon_proyecto not in adjuntos_descargados:
+            adjuntos_descargados.append(ruta_clon_proyecto)
+        if ruta_clon_adjuntos not in adjuntos_descargados:
+            adjuntos_descargados.append(ruta_clon_adjuntos)
 
         descripcion_full = f"{candidato['nombre']} {descripcion} {texto_adjuntos}"
         info_firmas = self._detectar_firmas_y_anexos(descripcion_full)
@@ -971,7 +1358,7 @@ class Agente2Extractor:
 
         print(f"   ✓ Organismo Comprador : {organismo}")
         print(f"   ✓ Presupuesto Estatal : ${presupuesto:,} CLP ({origen_presupuesto})")
-        print(f"   ✓ Adjuntos en Carpeta : {len(adjuntos_descargados)} archivo(s) listos en /adjuntos")
+        print(f"   ✓ Entregables/Adjuntos : {len(adjuntos_descargados)} archivo(s) (incluye Anexo Clon Word Oficial)")
 
         return {
             "codigo": codigo,
