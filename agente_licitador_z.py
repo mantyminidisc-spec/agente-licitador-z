@@ -44,6 +44,18 @@ import webbrowser
 import urllib.parse
 from pathlib import Path
 
+# Soporte UTF-8 para consola en Windows (evita errores con emojis como 🤖 o 🔍)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 try:
     import requests
     from bs4 import BeautifulSoup
@@ -148,12 +160,30 @@ MATRIZ_37_NORMAS = [
 # ==============================================================================
 # AGENTE 0: ONBOARDING, CONTEXTO EMPRESARIAL Y CONTROL DE PLANES
 # ==============================================================================
+def _normalizar_para_regex(texto):
+    """
+    Normaliza el texto eliminando acentos para una comparación con expresiones
+    regulares robusta, uniforme e insensible a mayúsculas/minúsculas y tildes.
+    """
+    if not texto:
+        return ""
+    reemplazos = {
+        'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+        'Á': 'a', 'É': 'e', 'Í': 'i', 'Ó': 'o', 'Ú': 'u',
+        'ü': 'u', 'Ü': 'u', 'ñ': 'n', 'Ñ': 'n'
+    }
+    t = str(texto).lower()
+    for o, d in reemplazos.items():
+        t = t.replace(o, d)
+    return t
+
+
 class Agente0Contexto:
     def __init__(self):
         self.perfil = {
             "razon_social": "Mantytech SpA",
             "nombre_fantasia": "Mantytech SpA · Ingeniería de Software, IA & Estrategia Digital B2G",
-            "rut": "77.892.410-K",
+            "rut": "78.479.059-2",
             "representante_legal": "Daniel Andrés Salazar Gavilán",
             "cargo_representante": "Director de Ingeniería & Representante Legal",
             "email_corporativo": "mantyminidisc@gmail.com",
@@ -161,29 +191,69 @@ class Agente0Contexto:
             "telefono_contacto": WHATSAPP_DESTINO,
             "ciudad_base": "Cauquenes, Región del Maule (Cobertura Nacional 16 Regiones)",
             "banco_datos": "Cuenta Empresa / Pago 30 Días vía Transferencia Electrónica SII",
-            "plan_activo": "PLAN_FULL_EMPRESARIAL",  # PLAN_COMPRA_AGIL | PLAN_FULL_EMPRESARIAL  # PLAN_1 (25 proy CA), PLAN_2 (60 proy CA+Lic), PLAN_3 (Ilimitado Full)
+            "plan_activo": "PLAN_FULL_EMPRESARIAL",  # PLAN_COMPRA_AGIL | PLAN_FULL_EMPRESARIAL
             "limite_lote_ciclo": 3,
             "costo_hora_ingenieria_clp": 25000,
             "margen_minimo_exigido_pct": 30.0,
+            # Palabras clave compuestas específicas del giro TI/Digital (sin palabras sueltas ambiguas)
             "palabras_clave_positivas": [
-                "software", "web", "sitio web", "pagina web", "portal", "sistema",
-                "aplicacion", "plataforma", "inteligencia artificial", "agente ia",
-                "chatbot", "automatizacion", "hosting", "servidor", "vps", "cloud",
-                "alojamiento", "dominio", "mantenimiento web", "mantencion web",
-                "seo", "posicionamiento", "marketing digital", "publicidad",
-                "google ads", "meta ads", "redes sociales", "comunicacion digital",
-                "campaña digital", "audiovisual digital", "diseño digital", "intranet",
-                "soporte informatico", "desarrollo", "base de datos", "capacitacion ia"
+                "desarrollo de software", "software", "pagina web", "página web", "sitio web",
+                "portal web", "sistema informatico", "sistema informático", "plataforma web",
+                "aplicacion movil", "aplicación móvil", "aplicacion web", "aplicación web",
+                "inteligencia artificial", "agente ia", "chatbot", "automatizacion", "automatización",
+                "servidor cloud", "servidores cloud", "cloud computing", "vps", "hosting",
+                "mantenimiento web", "mantencion web", "mantención web",
+                "posicionamiento seo", "seo", "marketing digital",
+                "google ads", "meta ads", "campaña digital", "campana digital",
+                "comunicacion digital", "comunicación digital", "diseno web", "diseño web",
+                "intranet", "ciberseguridad", "soporte informatico", "soporte informático",
+                "licencia de software", "licenciamiento de software", "base de datos",
+                "desarrollo web", "desarrollo informatico", "desarrollo informático",
+                "capacitacion ia", "capacitación ia"
             ],
+            # Lista negra quirúrgica drásticamente ampliada: medicina, obras, hardware físico, etc.
             "lista_negra_exclusiones": [
-                "computador", "notebook", "impresora", "toner", "tintas", "proyector",
-                "monitor", "teclado", "mouse", "hardware", "licencia microsoft", "licencia adobe",
-                "licencia autocad", "licencia kaspersky", "reloj control", "biometrico",
-                "control de asistencia", "camara de seguridad", "cctv", "pendon", "pendones",
-                "letrero", "cartel", "carteles", "panfleto", "panfletos", "folleto", "imprenta",
-                "tazon", "polera", "catering", "coffee break", "amplificacion", "iluminacion",
-                "guardias", "aseo", "vehiculo", "mobiliario", "aire acondicionado", "construccion",
-                "ferreteria", "medicamento", "insumos medicos", "combustible", "neumaticos"
+                # Médicos, clínicos, quirúrgicos, farmacéuticos y hospitalarios
+                "osteosintesis", "osteosíntesis", "artrodesis", "quirurgico", "quirúrgico",
+                "quirurgica", "quirúrgica", "medico", "médico", "medica", "médica",
+                "medicos", "médicos", "clinico", "clínico", "clinica", "clínica",
+                "dental", "odontologico", "odontológico", "implante", "implantes",
+                "protesis", "prótesis", "traumatologia", "traumatología", "farmaco", "fármaco",
+                "farmacos", "fármacos", "medicamento", "medicamentos", "insumos medicos", "insumos médicos",
+                "insumo hospitalario", "insumos hospitalarios", "material quirurgico", "material quirúrgico",
+                "hospitalario", "hospitalaria", "laboratorio", "reactivo", "reactivos",
+                "jeringa", "jeringas", "cateter", "catéter", "gasa", "gasas", "aposito", "apósito",
+                "biopsia", "canula", "cánula", "sutura", "suturas", "endoscopia", "endoscopía",
+                "ecografia", "ecografía", "radiologia", "radiología", "anestesia", "cirugia", "cirugía",
+                "pabellon", "pabellón", "ambulancia", "paciente", "pacientes", "salud", "enfermeria", "enfermería",
+                # Obras civiles, construcción y ferretería
+                "ferreteria", "ferretería", "construccion", "construcción", "obra", "obras",
+                "pintura", "cemento", "albanileria", "albañilería", "gasfiter", "gásfiter",
+                "gasfiteria", "gasfitería", "electrico", "eléctrico", "tuberia", "tubería",
+                "techumbre", "carpinteria", "carpintería", "remodelacion", "remodelación",
+                "pavimento", "asfalto", "demolicion", "demolición", "herramientas",
+                # Vehículos, combustible, neumáticos
+                "vehiculo", "vehículo", "vehiculos", "vehículos", "camioneta", "camionetas",
+                "furgon", "furgón", "automovil", "automóvil", "camion", "camión",
+                "repuesto", "repuestos", "neumatico", "neumático", "neumaticos", "neumáticos",
+                "bateria vehicular", "lubricante", "combustible", "bencina", "diesel", "petroleo", "petróleo",
+                # Alimentos, catering, aseo, guardias
+                "alimentacion", "alimentación", "raciones", "alimentos", "catering", "coffee break",
+                "colaciones", "almuerzo", "desayuno", "abarrotes", "carne", "pan",
+                "aseo", "limpieza", "desinfeccion", "desinfección", "cloro", "basurero",
+                "papel higienico", "papel higiénico", "detergente", "guardias", "seguridad fisica", "vigilancia",
+                # Hardware y suministros físicos descartados
+                "computador", "computadores", "notebook", "notebooks", "laptop", "laptops",
+                "impresora", "impresoras", "toner", "tóner", "tinta", "tintas", "proyector", "proyectores",
+                "monitor", "monitores", "teclado", "mouse", "hardware", "perifericos", "periféricos",
+                "licencia microsoft", "licencia adobe", "licencia autocad", "licencia kaspersky",
+                "reloj control", "biometrico", "biométrico", "control de asistencia",
+                "camara de seguridad", "cámara de seguridad", "cctv",
+                # Merchandising / Publicidad física
+                "pendon", "pendón", "pendones", "letrero", "letreros", "cartel", "carteles",
+                "panfleto", "panfletos", "folleto", "folletos", "imprenta", "flyer", "flyers",
+                "tazon", "tazón", "tazones", "polera", "poleras", "amplificacion", "amplificación",
+                "iluminacion", "iluminación", "mobiliario", "aire acondicionado"
             ]
         }
 
@@ -197,8 +267,8 @@ class Agente0Contexto:
         print(f"   ✓ Empresa Activa     : {self.perfil['razon_social']} (RUT: {self.perfil['rut']})")
         print(f"   ✓ Representante      : {self.perfil['representante_legal']}")
         print(f"   ✓ Plan Configurado   : {self.perfil['plan_activo']} (Micro-lotes de {self.perfil['limite_lote_ciclo']} proyectos)")
-        print(f"   ✓ Keywords Positivas : {len(self.perfil['palabras_clave_positivas'])} términos de TI/IA/SEO/Ads")
-        print(f"   ✓ Lista Negra Activa : {len(self.perfil['lista_negra_exclusiones'])} términos bloqueados")
+        print(f"   ✓ Keywords Positivas : {len(self.perfil['palabras_clave_positivas'])} términos específicos de TI/IA/SEO/Ads")
+        print(f"   ✓ Lista Negra Activa : {len(self.perfil['lista_negra_exclusiones'])} términos bloqueados (Regex \\b...\\b)")
         print(f"   ✓ Puente Drive/Mail  : CONECTADO ({URL_APPS_SCRIPT[:60]}...)")
         return self.perfil
 
@@ -229,14 +299,184 @@ class Agente1Buscador:
             print(f"   [!] Error guardando historial: {e}")
 
     def cumple_filtro_quirurgico(self, texto_evaluar):
-        texto = (texto_evaluar or "").lower()
+        """
+        Filtro Quirúrgico con Expresiones Regulares con límites exactos (\b...\b).
+        Evita falsos positivos como 'ia' dentro de 'cirugía' o 'terapia', y descarta
+        términos médicos o de obras antes de buscar coincidencias positivas de TI.
+        """
+        texto_original = (texto_evaluar or "").strip()
+        if not texto_original:
+            return False, "Texto vacío"
+
+        texto_norm = _normalizar_para_regex(texto_original)
+
+        # 1. Validación de Lista Negra mediante Expresiones Regulares con límites de palabra exactos (\b...\b)
         for palabra_negra in self.perfil["lista_negra_exclusiones"]:
-            if palabra_negra.lower() in texto:
+            p_norm = _normalizar_para_regex(palabra_negra)
+            patron = rf"\b{re.escape(p_norm)}\b"
+            if re.search(patron, texto_norm):
                 return False, f"Excluido por lista negra ({palabra_negra})"
+
+        # 2. Validación de Palabras Clave Positivas mediante Regex (\b...\b)
         for palabra_pos in self.perfil["palabras_clave_positivas"]:
-            if palabra_pos.lower() in texto:
+            p_norm = _normalizar_para_regex(palabra_pos)
+            patron = rf"\b{re.escape(p_norm)}\b"
+            if re.search(patron, texto_norm):
                 return True, palabra_pos
+
         return False, "No coincide con giro TI/IA/SEO/Ads"
+
+    def _prefiltro_semantico_gemini(self, codigo, titulo, descripcion, tipo_portal=""):
+        """
+        Pre-Filtro Semántico con IA (Gemini):
+        Para las licitaciones que superen el filtro de regex/palabras clave,
+        realiza una verificación semántica estricta consultando a Gemini si el requerimiento
+        corresponde 100% al giro de Tecnología, Software, IA, Sitios Web o Marketing Digital.
+        Descarta de inmediato compras médicas, clínicas, obras, insumos, etc.
+        """
+        if not API_KEY_GEMINI:
+            print(f"      ℹ️ [PRE-FILTRO IA] GEMINI_API_KEY no configurada. Continuando con filtro de reglas.")
+            return True, "Filtro sintáctico (sin API key)"
+
+        url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY_GEMINI}"
+
+        prompt = f"""
+Actúa como un Auditor Senior de Licitaciones para la empresa de tecnología Mantytech SpA.
+Giro comercial exclusivo: Desarrollo de Software, Sitios Web, Plataformas Web, Aplicaciones Móviles, Inteligencia Artificial, Marketing Digital, Campañas Digitales, SEO, Servidores Cloud, Ciberseguridad y Soporte Informático.
+
+Analiza el siguiente requerimiento de compra pública:
+- CÓDIGO: {codigo}
+- TIPO: {tipo_portal}
+- TÍTULO: {titulo}
+- DESCRIPCIÓN: {descripcion}
+
+PREGUNTA DE DECISIÓN CRÍTICA:
+¿Este requerimiento pertenece 100% al giro de Tecnología, Software, IA, Sitios Web o Marketing Digital?
+
+REGLAS DE RECHAZO OBLIGATORIAS:
+- Si el requerimiento es del área médica, salud, insumos clínicos, osteosíntesis, odontología, fármacos, prótesis, laboratorio, etc. (incluso si contiene palabras como "sistema", "equipo", "red" o "soporte"), DEBES RECHAZARLO.
+- Si es de obras civiles, construcción, ferretería, vehículos, repuestos, combustible, alimentos, catering, aseo o guardias, DEBES RECHAZARLO.
+- Solo debes APROBAR si el objeto principal es un producto, desarrollo o servicio de TI, Software, Web, IA o Marketing Digital.
+
+Responde ÚNICAMENTE en formato JSON:
+{{
+  "pertenece_giro_ti": true,
+  "rubro_detectado": "nombre del rubro real (ej: Software / Medicina / Obras / etc.)",
+  "motivo": "explicación clara de 1 frase"
+}}
+"""
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"response_mime_type": "application/json"}
+        }
+
+        try:
+            r = requests.post(url_gemini, json=payload, timeout=20)
+            if r.status_code == 200:
+                resp_json = r.json()
+                texto_resp = resp_json["candidates"][0]["content"]["parts"][0]["text"]
+                data_veredicto = json.loads(texto_resp)
+
+                es_ti = bool(data_veredicto.get("pertenece_giro_ti"))
+                rubro = data_veredicto.get("rubro_detectado", "No clasificado")
+                motivo = data_veredicto.get("motivo", "")
+
+                if es_ti:
+                    print(f"      🤖 [PRE-FILTRO IA GEMINI: APROBADO] {codigo} -> Rubro: {rubro} | {motivo}")
+                    return True, f"IA Aprobado ({rubro})"
+                else:
+                    print(f"      🚫 [PRE-FILTRO IA GEMINI: DESCARTADO] {codigo} -> Rubro: {rubro} | {motivo}")
+                    return False, f"Descartado por IA ({rubro}: {motivo})"
+            else:
+                print(f"      ⚠️ [PRE-FILTRO IA] API Gemini status {r.status_code}. Pasando con filtro base.")
+                return True, "Filtro sintáctico (API status != 200)"
+        except Exception as e:
+            print(f"      ⚠️ [PRE-FILTRO IA] Aviso consulta Gemini ({e}). Continuando con filtro de reglas.")
+            return True, "Filtro sintáctico (fallback local)"
+
+    def _extraer_organismo_comprador(self, item, codigo="", tipo_portal="COMPRA_AGIL"):
+        """
+        Extrae y valida el nombre real y específico del Organismo Comprador desde los
+        datos de la API o mediante consulta de detalle. Nunca retorna el texto genérico
+        'Organismo del Estado'.
+        """
+        organismo = ""
+
+        # 1. Extracción desde estructura directa del ítem
+        if isinstance(item, dict):
+            posibles_campos = [
+                item.get("organismo_comprador"),
+                item.get("nombre_organismo"),
+                item.get("organismo"),
+                item.get("NombreOrganismo"),
+                item.get("razon_social")
+            ]
+            for c in posibles_campos:
+                if c and isinstance(c, str) and c.strip() and "organismo del estado" not in c.lower():
+                    organismo = c.strip()
+                    break
+
+            # Si viene en objeto anidado (institucion o comprador)
+            if not organismo:
+                for sub_key in ["institucion", "comprador", "Comprador", "unidad_compra"]:
+                    sub_obj = item.get(sub_key)
+                    if isinstance(sub_obj, dict):
+                        for c in [
+                            sub_obj.get("organismo_comprador"),
+                            sub_obj.get("nombre_organismo"),
+                            sub_obj.get("NombreOrganismo"),
+                            sub_obj.get("nombre"),
+                            sub_obj.get("razon_social")
+                        ]:
+                            if c and isinstance(c, str) and c.strip() and "organismo del estado" not in c.lower():
+                                organismo = c.strip()
+                                break
+                    if organismo:
+                        break
+
+        # 2. Si no se encontró en el listado, consultar el detalle específico por código
+        if not organismo and codigo:
+            try:
+                if tipo_portal == "COMPRA_AGIL":
+                    url_det = f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}"
+                    r_det = requests.get(url_det, headers=HEADERS_API_COMPRA_AGIL, timeout=8)
+                    if r_det.status_code == 200:
+                        det = r_det.json()
+                        inst = det.get("institucion") or det.get("comprador") or {}
+                        if isinstance(inst, dict):
+                            org_det = inst.get("organismo_comprador") or inst.get("nombre_organismo") or inst.get("nombre")
+                            if org_det and "organismo del estado" not in str(org_det).lower():
+                                organismo = str(org_det).strip()
+                else:
+                    url_det = f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo={codigo}&ticket={TICKET_MERCADO_PUBLICO}"
+                    r_det = requests.get(url_det, timeout=8)
+                    if r_det.status_code == 200:
+                        det = r_det.json()
+                        listado_det = det.get("Listado", [])
+                        if listado_det and isinstance(listado_det[0], dict):
+                            comp = listado_det[0].get("Comprador", {}) or {}
+                            org_det = comp.get("NombreOrganismo")
+                            if org_det and "organismo del estado" not in str(org_det).lower():
+                                organismo = str(org_det).strip()
+            except Exception:
+                pass
+
+        # 3. Respaldo heurístico: detectar nombres de organismos en el título o descripción
+        if not organismo and isinstance(item, dict):
+            texto_completo = f"{item.get('nombre', '')} {item.get('Nombre', '')} {item.get('descripcion', '')} {item.get('Descripcion', '')}"
+            m_org = re.search(
+                r'\b(Hospital\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,4}|Ilustre\s+Municipalidad\s+de\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Municipalidad\s+de\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Ministerio\s+de\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,2}|Universidad\s+de\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Servicio\s+de\s+Salud\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Subsecretar[ií]a\s+de\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Direcci[oó]n\s+de\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Instituto\s+Nacional\s+de\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|SLEP\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Colegio\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3}|Liceo\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+){0,3})',
+                texto_completo,
+                re.IGNORECASE
+            )
+            if m_org:
+                organismo = m_org.group(1).strip()
+
+        # 4. Fallback final específico (NUNCA el texto genérico "Organismo del Estado")
+        if not organismo or "organismo del estado" in organismo.lower():
+            organismo = f"Entidad Pública Compradora ({codigo})" if codigo else "Entidad Compradora Mercado Público"
+
+        return organismo
 
     def _buscar_en_api_v2_compra_agil(self, max_ca=3):
         """
@@ -248,21 +488,24 @@ class Agente1Buscador:
         codigos_procesados_lote = set()
         print("   -> [1A] Escaneando Portal COMPRA ÁGIL V2 (Barrido de 72h con Keywords de Giro)...")
 
-        # Seleccionamos las 6 keywords más fuertes y comerciales de tu giro para la API directa
-        keywords_consulta = ["software", "web", "pagina web", "sistema", "inteligencia artificial", "vps", "seo", "marketing digital"]
-        
+        # Keywords de consulta compuestas y específicas del giro TI (sin palabras ambiguas como 'sistema')
+        keywords_consulta = [
+            "desarrollo software", "software", "sitio web", "pagina web",
+            "inteligencia artificial", "plataforma web", "marketing digital",
+            "soporte informatico", "ciberseguridad", "vps", "hosting"
+        ]
+
         for kw in keywords_consulta:
             if len(hallazgos_ca) >= max_ca:
                 break
             kw_url = urllib.parse.quote(kw)
-            # Consultamos la grilla v2 oficial de ChileCompra con estado=publicada filtrada por la keyword
             url_api = f"https://api2.mercadopublico.cl/v2/compra-agil?q={kw_url}&estado=publicada&numero_pagina=1"
-            
+
             try:
                 r = requests.get(url_api, headers=HEADERS_API_COMPRA_AGIL, timeout=20)
                 if r.status_code == 200:
                     js = r.json()
-                    
+
                     # Estructura oficial v2 de ChileCompra: data.payload.items (grilla paginada)
                     items_payload = []
                     if isinstance(js, dict):
@@ -275,7 +518,7 @@ class Agente1Buscador:
                     for item in items_payload:
                         if not isinstance(item, dict) or len(hallazgos_ca) >= max_ca:
                             break
-                            
+
                         codigo = str(item.get("codigo") or item.get("id_cotizacion") or item.get("codigo_cotizacion") or "").strip()
                         nombre = str(item.get("nombre") or item.get("titulo") or item.get("descripcion") or "").strip()
                         descripcion_extra = str(item.get("descripcion") or item.get("glosa") or "")
@@ -283,20 +526,37 @@ class Agente1Buscador:
                         if not codigo or codigo in self.historial or codigo in codigos_procesados_lote:
                             continue
 
-                        # Validación de giro técnico y exclusión de listas negras
+                        # 1. Filtro Quirúrgico sintáctico con Regex (\b...\b)
                         aprobado, motivo = self.cumple_filtro_quirurgico(f"{nombre} {descripcion_extra}")
-                        if aprobado:
-                            print(f"      🎯 [MATCH COMPRA ÁGIL] {codigo} -> Keyword: '{kw}' ({motivo}) | {nombre[:55]}")
-                            codigos_procesados_lote.add(codigo)
-                            hallazgos_ca.append({
-                                "codigo": codigo,
-                                "nombre": nombre or f"Compra Ágil {codigo}",
-                                "tipo_portal": "COMPRA_AGIL",
-                                "keyword_match": motivo,
-                                "fecha_cierre": str(item.get("fecha_cierre") or item.get("FechaCierre") or "Abierta Hoy"),
-                                "estado": "Publicada",
-                                "resumen_item": item
-                            })
+                        if not aprobado:
+                            continue
+
+                        # 2. Pre-Filtro Semántico con IA (Gemini): valida pertenencia 100% al giro TI/Digital
+                        aprobado_ia, motivo_ia = self._prefiltro_semantico_gemini(
+                            codigo=codigo,
+                            titulo=nombre,
+                            descripcion=descripcion_extra,
+                            tipo_portal="COMPRA_AGIL"
+                        )
+                        if not aprobado_ia:
+                            continue
+
+                        # 3. Extracción específica y real del Organismo Comprador
+                        organismo_real = self._extraer_organismo_comprador(item, codigo=codigo, tipo_portal="COMPRA_AGIL")
+
+                        print(f"      🎯 [MATCH COMPRA ÁGIL] {codigo} -> Keyword: '{kw}' ({motivo}) | Org: {organismo_real} | {nombre[:45]}")
+                        codigos_procesados_lote.add(codigo)
+                        hallazgos_ca.append({
+                            "codigo": codigo,
+                            "nombre": nombre or f"Compra Ágil {codigo}",
+                            "organismo_comprador": organismo_real,
+                            "organismo": organismo_real,
+                            "tipo_portal": "COMPRA_AGIL",
+                            "keyword_match": motivo,
+                            "fecha_cierre": str(item.get("fecha_cierre") or item.get("FechaCierre") or "Abierta Hoy"),
+                            "estado": "Publicada",
+                            "resumen_item": item
+                        })
             except Exception as e:
                 print(f"      [!] Nota de consulta en keyword '{kw}': {e}")
 
@@ -339,20 +599,39 @@ class Agente1Buscador:
                         es_ca = ("COT" in codigo.upper())
                         tipo_portal = "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA"
 
+                        # 1. Filtro Quirúrgico sintáctico con Regex (\b...\b)
                         aprobado, motivo = self.cumple_filtro_quirurgico(nombre)
-                        if aprobado:
-                            print(f"      🎯 [MATCH LICITACIÓN] {codigo} ({tipo_portal}) -> Keyword: '{motivo}'")
-                            candidatos.append({
-                                "codigo": codigo,
-                                "nombre": nombre,
-                                "tipo_portal": tipo_portal,
-                                "keyword_match": motivo,
-                                "fecha_cierre": item.get("FechaCierre", "No informada"),
-                                "estado": item.get("CodigoEstado", ""),
-                                "resumen_item": item
-                            })
-                            if len(candidatos) >= limite_total:
-                                break
+                        if not aprobado:
+                            continue
+
+                        # 2. Pre-Filtro Semántico con IA (Gemini): valida pertenencia 100% al giro TI/Digital
+                        desc_item = str(item.get("Descripcion") or item.get("nombre") or "")
+                        aprobado_ia, motivo_ia = self._prefiltro_semantico_gemini(
+                            codigo=codigo,
+                            titulo=nombre,
+                            descripcion=desc_item,
+                            tipo_portal=tipo_portal
+                        )
+                        if not aprobado_ia:
+                            continue
+
+                        # 3. Extracción específica y real del Organismo Comprador
+                        organismo_real = self._extraer_organismo_comprador(item, codigo=codigo, tipo_portal=tipo_portal)
+
+                        print(f"      🎯 [MATCH LICITACIÓN] {codigo} ({tipo_portal}) -> Keyword: '{motivo}' | Org: {organismo_real}")
+                        candidatos.append({
+                            "codigo": codigo,
+                            "nombre": nombre,
+                            "organismo_comprador": organismo_real,
+                            "organismo": organismo_real,
+                            "tipo_portal": tipo_portal,
+                            "keyword_match": motivo,
+                            "fecha_cierre": item.get("FechaCierre", "No informada"),
+                            "estado": item.get("CodigoEstado", ""),
+                            "resumen_item": item
+                        })
+                        if len(candidatos) >= limite_total:
+                            break
             except Exception as e:
                 print(f"   [!] Error consultando Licitaciones Públicas: {e}")
 
@@ -612,7 +891,7 @@ class Agente2Extractor:
         print(f"\n📥 [AGENTE 2] EXTRAYENDO FICHA, PRESUPUESTO Y ADJUNTOS DE: {codigo} ({tipo_portal})")
 
         datos_api = {}
-        organismo = "Organismo del Estado de Chile"
+        organismo = candidato.get("organismo_comprador") or candidato.get("organismo") or f"Entidad Pública Compradora ({codigo})"
         rut_comprador = "S/I"
         unidad_compradora = "Unidad de Adquisiciones"
         comuna = "Chile"
@@ -700,6 +979,7 @@ class Agente2Extractor:
             "tipo_portal": tipo_portal,
             "keyword_match": candidato["keyword_match"],
             "organismo": organismo,
+            "organismo_comprador": organismo,
             "rut_comprador": rut_comprador,
             "unidad_compradora": unidad_compradora,
             "comuna": comuna,

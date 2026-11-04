@@ -11,3 +11,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY agente_licitador_z.py .
 
 CMD ["sleep", "infinity"]
+
