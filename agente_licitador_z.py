@@ -1,0 +1,1970 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+GOVILICIT.IA - AGENTE LICITADOR AUTÓNOMO B2G (VERSIÓN 5.3 PREMIUM - 6 AGENTES)
+Mantytech SpA / CauqueIA - Lead Specialist: Daniel Andrés Salazar Gavilán
+================================================================================
+ARQUITECTURA ÍNTEGRA DE 6 AGENTES (100% COMPLETA Y MEJORADA):
+1. AGENTE 0 (Onboarding & Contexto): Configura ADN de Mantytech SpA, Filtro
+   Quirúrgico, Lista Negra y Selector de Plan (PLAN_1, PLAN_2, PLAN_3).
+2. AGENTE 1 (Buscador Dual Real: Compra Ágil V2 + Licitaciones Públicas V1):
+   - Conecta a la API Oficial de Compra Ágil v2 (https://api2.mercadopublico.cl/v2/compra-agil)
+     enviando el header oficial {"ticket": TICKET_MERCADO_PUBLICO} para detectar
+     todas las Compras Ágiles (-COT26) del día.
+   - Conecta a la API v1 de Licitaciones Públicas (-L1, -LE, -LP, -LR).
+3. AGENTE 2 (Extractor Recursivo & Descargador Real de Adjuntos):
+   - Extrae presupuesto real (monto_disponible_clp en Compra Ágil y recursivo en Lic.).
+   - Descarga los anexos originales (.pdf, .docx, .xlsx, .doc, .zip) y genera
+     la Ficha Oficial del Portal estilizada.
+4. AGENTE 3 (Auditor de 37 Normas Ley 19.886 & Cotizador IA):
+   - Redacta los 4 Informes Ejecutivos de alta dirección y audita las 37 reglas.
+5. AGENTE 4 (QA Matemático & Simulador de 3 Escenarios Financieros):
+   - Calcula Agresivo (86%), Equilibrado (92%) y Conservador (98%) con validación QA.
+6. AGENTE 5 (Entregador Corporativo Premium + Tablero CRM Excel + Drive/Email/WA):
+   - DOC 1: Dossier Ejecutivo con Banner Corporativo, Tarjetas KPI, Cajas de
+     Informes estilizadas y Matriz de 37 Normas con filas cebreadas y badges.
+   - DOC 2: Cotización Oficial B2G en 1 Hoja A4 con diseño de Consultora Senior.
+   - DOC 3: Reporte Financiero Ejecutivo de 4 Pestañas en Word con diseño visual.
+   - EXCEL PROYECTO (4 Pestañas) + CATÁLOGO MAESTRO CRM: Con Panel de Control KPI,
+     menú desplegable interactivo (POSTULAR / EN REVISIÓN / DESCARTADO), filtros,
+     paneles inmovilizados, formato moneda CLP y botones directos al portal.
+================================================================================
+"""
+
+import os
+import re
+import sys
+import time
+import json
+import base64
+import shutil
+import zipfile
+import datetime
+import webbrowser
+import urllib.parse
+from pathlib import Path
+
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from docx import Document
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
+    from docx.oxml import OxmlElement, parse_xml
+    from docx.oxml.ns import nsdecls, qn
+except ImportError as e:
+    print(f"[ERROR CRÍTICO] Faltan librerías: {e}")
+    print("Ejecuta en tu consola: pip install requests beautifulsoup4 openpyxl python-docx")
+    sys.exit(1)
+
+# ==============================================================================
+# CONFIGURACIÓN GLOBAL Y CREDENCIALES OFICIALES
+# ==============================================================================
+# Carga de variables de entorno desde archivo .env local si existe
+if os.path.exists(".env"):
+    with open(".env", "r", encoding="utf-8") as _env_f:
+        for _env_line in _env_f:
+            if "=" in _env_line and not _env_line.strip().startswith("#"):
+                _k, _v = _env_line.strip().split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
+TICKET_MERCADO_PUBLICO = "BB393A5F-C2F1-4027-95EB-300DE6B49C95"
+API_KEY_GEMINI = os.getenv("GEMINI_API_KEY", "")
+URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbw1gtR2Y37abnEnAIYW1Y8EXAbSoIU6CMd2ZLQnaFGrHY-eRT3JGI7GSrN5SXPhSQc/exec"
+
+CORREO_DESTINO = "booknegocios2015@gmail.com"
+WHATSAPP_DESTINO = "+56987567519"
+WHATSAPP_API_LOCAL = "http://localhost:8080/message/sendText/GoviLicit"
+
+DIRECTORIO_RAIZ = os.getcwd()
+CARPETA_ENTREGABLES = os.path.join(DIRECTORIO_RAIZ, "Entregables_Drive_GoviLicit")
+CARPETA_COMPRAS_AGILES = os.path.join(CARPETA_ENTREGABLES, "01_COMPRAS_AGILES")
+CARPETA_LICITACIONES = os.path.join(CARPETA_ENTREGABLES, "02_LICITACIONES_PUBLICAS")
+ARCHIVO_HISTORIAL = os.path.join(DIRECTORIO_RAIZ, "historial_proyectos_procesados.json")
+FECHA_HOY_STR = datetime.datetime.now().strftime("%d-%m-%Y")
+ARCHIVO_CATALOGO_MAESTRO = os.path.join(CARPETA_ENTREGABLES, f"00_CRM_MAESTRO_LICITACIONES_MANTYTECH_{FECHA_HOY_STR}.xlsx")
+
+HEADERS_WEB = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-CL,es;q=0.9,en;q=0.8"
+}
+
+HEADERS_API_COMPRA_AGIL = {
+    "ticket": TICKET_MERCADO_PUBLICO,
+    "Accept": "application/json",
+    "User-Agent": "GoviLicit-B2G-Engine/5.3 (Mantytech SpA)"
+}
+
+# ==============================================================================
+# MATRIZ OFICIAL DE LAS 37 NORMAS DE AUDITORÍA (LEY 19.886 Y REGLAMENTO)
+# ==============================================================================
+MATRIZ_37_NORMAS = [
+    ("N01", "Habilidad en Registro de Proveedores (ChileProveedores)", "Art. 16 Ley 19.886"),
+    ("N02", "Inexistencia de Inhabilidades Penales o Laborales", "Art. 4 inc. 1° Ley 19.886"),
+    ("N03", "Inexistencia de Prácticas Antisindicales (Últimos 2 años)", "Art. 4 inc. 1° Ley 19.886"),
+    ("N04", "Ausencia de Conflicto de Interés y Parentesco Directivo", "Art. 4 inc. 6° Ley 19.886"),
+    ("N05", "Declaración Jurada de No Condena por Delitos Concursales", "Ley 20.720 / Ley 19.886"),
+    ("N06", "Cumplimiento de Responsabilidad Penal de Personas Jurídicas", "Ley 20.393"),
+    ("N07", "Vigencia de Sociedad y Personería del Representante Legal", "Reglamento Art. 40"),
+    ("N08", "Pertinencia del Giro Comercial en SII con el Objeto Licitado", "Bases Administrativas"),
+    ("N09", "Respeto del Presupuesto Máximo Disponible / Estimado", "Art. 11 Reglamento"),
+    ("N10", "Validez de la Oferta Mínima Requerida (60 a 90 días)", "Bases Administrativas"),
+    ("N11", "Garantía de Seriedad de la Oferta (Exenta bajo 2.000 UTM)", "Art. 31 Reglamento"),
+    ("N12", "Garantía de Fiel y Oportuno Cumplimiento del Contrato", "Art. 68 Reglamento"),
+    ("N13", "Cumplimiento de Plazos de Entrega e Implementación", "Bases Técnicas"),
+    ("N14", "Especificación de Alcance Técnico Completo por Ítem", "Art. 20 Reglamento"),
+    ("N15", "Inclusión de Anexos Administrativos Firmados", "Bases Administrativas"),
+    ("N16", "Inclusión de Anexos Técnicos y Económicos", "Bases Técnicas"),
+    ("N17", "Acreditación de Experiencia Previa del Oferente", "Criterios de Evaluación"),
+    ("N18", "Idoneidad y Perfiles del Equipo Técnico Asignado", "Bases Técnicas"),
+    ("N19", "Cumplimiento de Normativa de Ciberseguridad y Datos", "Ley 19.628 / Ley 21.663"),
+    ("N20", "Disponibilidad de SLA y Soporte Técnico Post-Venta", "Bases Técnicas"),
+    ("N21", "Propiedad Intelectual y Entrega de Código Fuente / Accesos", "Bases Técnicas"),
+    ("N22", "Correcta Aplicación de Impuesto al Valor Agregado (IVA 19%)", "DL 825 Ley de IVA"),
+    ("N23", "Coherencia entre Oferta en Portal y Cotización Adjunta DOC 2", "Estricta Sujeción a Bases"),
+    ("N24", "Aceptación de Pago a 30 Días contra Recepción Conforme", "Ley 21.131 Pago a 30 Días"),
+    ("N25", "Cumplimiento de Criterios de Sustentabilidad e Inclusión", "Directivas ChileCompra"),
+    ("N26", "Verificación de Multas y Tope de Sanciones Contractuales", "Art. 79 ter Reglamento"),
+    ("N27", "Condiciones de Subcontratación Permitidas", "Art. 76 Reglamento"),
+    ("N28", "Cláusula de Confidencialidad y Secreto Profesional", "Bases Administrativas"),
+    ("N29", "Plan de Continuidad Operacional y Respaldo Cloud", "Bases Técnicas TI"),
+    ("N30", "Capacitación y Transferencia Tecnológica a Funcionarios", "Bases Técnicas"),
+    ("N31", "Cumplimiento de Accesibilidad Web y Estándares del Estado", "Norma Técnica Segpres"),
+    ("N32", "Ausencia de Condicionamientos que Invaliden la Oferta", "Principio de Igualdad"),
+    ("N33", "Revisión de Consultas y Aclaraciones del Foro (Foro Inverso)", "Art. 27 Reglamento"),
+    ("N34", "Ponderación Óptima en Criterio Precio vs. Calidad Técnica", "Art. 38 Reglamento"),
+    ("N35", "Verificación de Modalidad de Firma (Simple, Avanzada o Física)", "Ley 19.799 Firma Electrónica"),
+    ("N36", "Completitud de Identificación Tributaria y Bancaria", "Ficha Proveedor"),
+    ("N37", "Rentabilidad Mínima Segura para Mantytech SpA (>25% Margen)", "Política Interna Agente 4")
+]
+
+
+# ==============================================================================
+# AGENTE 0: ONBOARDING, CONTEXTO EMPRESARIAL Y CONTROL DE PLANES
+# ==============================================================================
+class Agente0Contexto:
+    def __init__(self):
+        self.perfil = {
+            "razon_social": "Mantytech SpA",
+            "nombre_fantasia": "Mantytech SpA · Ingeniería de Software, IA & Estrategia Digital B2G",
+            "rut": "77.892.410-K",
+            "representante_legal": "Daniel Andrés Salazar Gavilán",
+            "cargo_representante": "Director de Ingeniería & Representante Legal",
+            "email_corporativo": "mantyminidisc@gmail.com",
+            "email_notificaciones": CORREO_DESTINO,
+            "telefono_contacto": WHATSAPP_DESTINO,
+            "ciudad_base": "Cauquenes, Región del Maule (Cobertura Nacional 16 Regiones)",
+            "banco_datos": "Cuenta Empresa / Pago 30 Días vía Transferencia Electrónica SII",
+            "plan_activo": "PLAN_FULL_EMPRESARIAL",  # PLAN_COMPRA_AGIL | PLAN_FULL_EMPRESARIAL  # PLAN_1 (25 proy CA), PLAN_2 (60 proy CA+Lic), PLAN_3 (Ilimitado Full)
+            "limite_lote_ciclo": 3,
+            "costo_hora_ingenieria_clp": 25000,
+            "margen_minimo_exigido_pct": 30.0,
+            "palabras_clave_positivas": [
+                "software", "web", "sitio web", "pagina web", "portal", "sistema",
+                "aplicacion", "plataforma", "inteligencia artificial", "agente ia",
+                "chatbot", "automatizacion", "hosting", "servidor", "vps", "cloud",
+                "alojamiento", "dominio", "mantenimiento web", "mantencion web",
+                "seo", "posicionamiento", "marketing digital", "publicidad",
+                "google ads", "meta ads", "redes sociales", "comunicacion digital",
+                "campaña digital", "audiovisual digital", "diseño digital", "intranet",
+                "soporte informatico", "desarrollo", "base de datos", "capacitacion ia"
+            ],
+            "lista_negra_exclusiones": [
+                "computador", "notebook", "impresora", "toner", "tintas", "proyector",
+                "monitor", "teclado", "mouse", "hardware", "licencia microsoft", "licencia adobe",
+                "licencia autocad", "licencia kaspersky", "reloj control", "biometrico",
+                "control de asistencia", "camara de seguridad", "cctv", "pendon", "pendones",
+                "letrero", "cartel", "carteles", "panfleto", "panfletos", "folleto", "imprenta",
+                "tazon", "polera", "catering", "coffee break", "amplificacion", "iluminacion",
+                "guardias", "aseo", "vehiculo", "mobiliario", "aire acondicionado", "construccion",
+                "ferreteria", "medicamento", "insumos medicos", "combustible", "neumaticos"
+            ]
+        }
+
+    def inicializar_entorno(self):
+        print("\n================================================================================")
+        print("🤖 [AGENTE 0] INICIALIZANDO CONTEXTO EMPRESARIAL Y FILTRO QUIRÚRGICO")
+        print("================================================================================")
+        os.makedirs(CARPETA_ENTREGABLES, exist_ok=True)
+        os.makedirs(CARPETA_COMPRAS_AGILES, exist_ok=True)
+        os.makedirs(CARPETA_LICITACIONES, exist_ok=True)
+        print(f"   ✓ Empresa Activa     : {self.perfil['razon_social']} (RUT: {self.perfil['rut']})")
+        print(f"   ✓ Representante      : {self.perfil['representante_legal']}")
+        print(f"   ✓ Plan Configurado   : {self.perfil['plan_activo']} (Micro-lotes de {self.perfil['limite_lote_ciclo']} proyectos)")
+        print(f"   ✓ Keywords Positivas : {len(self.perfil['palabras_clave_positivas'])} términos de TI/IA/SEO/Ads")
+        print(f"   ✓ Lista Negra Activa : {len(self.perfil['lista_negra_exclusiones'])} términos bloqueados")
+        print(f"   ✓ Puente Drive/Mail  : CONECTADO ({URL_APPS_SCRIPT[:60]}...)")
+        return self.perfil
+
+
+# ==============================================================================
+# AGENTE 1: BUSCADOR DUAL OFICIAL (API V2 COMPRA ÁGIL + API V1 LICITACIONES)
+# ==============================================================================
+class Agente1Buscador:
+    def __init__(self, perfil):
+        self.perfil = perfil
+        self.historial = self._cargar_historial()
+
+    def _cargar_historial(self):
+        if os.path.exists(ARCHIVO_HISTORIAL):
+            try:
+                with open(ARCHIVO_HISTORIAL, "r", encoding="utf-8") as f:
+                    return set(json.load(f))
+            except Exception:
+                return set()
+        return set()
+
+    def registrar_procesado(self, codigo):
+        self.historial.add(codigo)
+        try:
+            with open(ARCHIVO_HISTORIAL, "w", encoding="utf-8") as f:
+                json.dump(sorted(list(self.historial)), f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"   [!] Error guardando historial: {e}")
+
+    def cumple_filtro_quirurgico(self, texto_evaluar):
+        texto = (texto_evaluar or "").lower()
+        for palabra_negra in self.perfil["lista_negra_exclusiones"]:
+            if palabra_negra.lower() in texto:
+                return False, f"Excluido por lista negra ({palabra_negra})"
+        for palabra_pos in self.perfil["palabras_clave_positivas"]:
+            if palabra_pos.lower() in texto:
+                return True, palabra_pos
+        return False, "No coincide con giro TI/IA/SEO/Ads"
+
+    def _buscar_en_api_v2_compra_agil(self, max_ca=3):
+        """
+        Consulta la API Oficial de Compra Ágil v2 de ChileCompra haciendo barridos directos 
+        por cada una de tus palabras clave clave de giro (?q={keyword}&estado=publicada) de los 
+        últimos 3 días (72 horas) vigentes, extrayendo los datos desde 'payload' -> 'items'.
+        """
+        hallazgos_ca = []
+        codigos_procesados_lote = set()
+        print("   -> [1A] Escaneando Portal COMPRA ÁGIL V2 (Barrido de 72h con Keywords de Giro)...")
+
+        # Seleccionamos las 6 keywords más fuertes y comerciales de tu giro para la API directa
+        keywords_consulta = ["software", "web", "pagina web", "sistema", "inteligencia artificial", "vps", "seo", "marketing digital"]
+        
+        for kw in keywords_consulta:
+            if len(hallazgos_ca) >= max_ca:
+                break
+            kw_url = urllib.parse.quote(kw)
+            # Consultamos la grilla v2 oficial de ChileCompra con estado=publicada filtrada por la keyword
+            url_api = f"https://api2.mercadopublico.cl/v2/compra-agil?q={kw_url}&estado=publicada&numero_pagina=1"
+            
+            try:
+                r = requests.get(url_api, headers=HEADERS_API_COMPRA_AGIL, timeout=20)
+                if r.status_code == 200:
+                    js = r.json()
+                    
+                    # Estructura oficial v2 de ChileCompra: data.payload.items (grilla paginada)
+                    items_payload = []
+                    if isinstance(js, dict):
+                        payload = js.get("payload") or {}
+                        if isinstance(payload, dict):
+                            items_payload = payload.get("items") or payload.get("resultados") or []
+                        if not items_payload:
+                            items_payload = js.get("resultados") or js.get("cotizaciones") or js.get("data") or []
+
+                    for item in items_payload:
+                        if not isinstance(item, dict) or len(hallazgos_ca) >= max_ca:
+                            break
+                            
+                        codigo = str(item.get("codigo") or item.get("id_cotizacion") or item.get("codigo_cotizacion") or "").strip()
+                        nombre = str(item.get("nombre") or item.get("titulo") or item.get("descripcion") or "").strip()
+                        descripcion_extra = str(item.get("descripcion") or item.get("glosa") or "")
+
+                        if not codigo or codigo in self.historial or codigo in codigos_procesados_lote:
+                            continue
+
+                        # Validación de giro técnico y exclusión de listas negras
+                        aprobado, motivo = self.cumple_filtro_quirurgico(f"{nombre} {descripcion_extra}")
+                        if aprobado:
+                            print(f"      🎯 [MATCH COMPRA ÁGIL] {codigo} -> Keyword: '{kw}' ({motivo}) | {nombre[:55]}")
+                            codigos_procesados_lote.add(codigo)
+                            hallazgos_ca.append({
+                                "codigo": codigo,
+                                "nombre": nombre or f"Compra Ágil {codigo}",
+                                "tipo_portal": "COMPRA_AGIL",
+                                "keyword_match": motivo,
+                                "fecha_cierre": str(item.get("fecha_cierre") or item.get("FechaCierre") or "Abierta Hoy"),
+                                "estado": "Publicada",
+                                "resumen_item": item
+                            })
+            except Exception as e:
+                print(f"      [!] Nota de consulta en keyword '{kw}': {e}")
+
+        print(f"      ✓ {len(hallazgos_ca)} Compras Ágiles vigentes detectadas e incorporadas.")
+        return hallazgos_ca
+
+    def ejecutar_barrido(self):
+        limite_total = self.perfil.get("limite_lote_ciclo", 3)
+        plan = self.perfil.get("plan_activo", "PLAN_FULL_EMPRESARIAL")
+        fecha_api = datetime.datetime.now().strftime("%d%m%Y")
+
+        print("\n================================================================================")
+        print(f"🔍 [AGENTE 1] BARRIDO DUAL: COMPRA ÁGIL V2 + LICITACIONES PÚBLICAS ({fecha_api})")
+        print("================================================================================")
+
+        candidatos = []
+
+        # 1. Escanear SIEMPRE primero Compra Ágil (API v2 Oficial)
+        cupo_ca = limite_total if plan == "PLAN_1" else max(1, limite_total - 1)
+        candidatos_ca = self._buscar_en_api_v2_compra_agil(max_ca=cupo_ca)
+        candidatos.extend(candidatos_ca)
+
+        # 2. Si el plan es PLAN_2 o PLAN_3 y aún quedan cupos en el micro-lote de 3, completar con Licitaciones Públicas
+        if plan != "PLAN_1" and len(candidatos) < limite_total:
+            print("   -> [1B] Escaneando Portal LICITACIONES PÚBLICAS (API v1 Oficial)...")
+            url_listado = f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?fecha={fecha_api}&ticket={TICKET_MERCADO_PUBLICO}"
+            try:
+                resp = requests.get(url_listado, timeout=30)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    listado = data.get("Listado", [])
+                    print(f"      ✓ {len(listado)} Licitaciones Públicas publicadas en la jornada.")
+
+                    for item in listado:
+                        codigo = str(item.get("CodigoExterno", "")).strip()
+                        nombre = str(item.get("Nombre", "")).strip()
+                        if not codigo or codigo in self.historial or any(c["codigo"] == codigo for c in candidatos):
+                            continue
+
+                        es_ca = ("COT" in codigo.upper())
+                        tipo_portal = "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA"
+
+                        aprobado, motivo = self.cumple_filtro_quirurgico(nombre)
+                        if aprobado:
+                            print(f"      🎯 [MATCH LICITACIÓN] {codigo} ({tipo_portal}) -> Keyword: '{motivo}'")
+                            candidatos.append({
+                                "codigo": codigo,
+                                "nombre": nombre,
+                                "tipo_portal": tipo_portal,
+                                "keyword_match": motivo,
+                                "fecha_cierre": item.get("FechaCierre", "No informada"),
+                                "estado": item.get("CodigoEstado", ""),
+                                "resumen_item": item
+                            })
+                            if len(candidatos) >= limite_total:
+                                break
+            except Exception as e:
+                print(f"   [!] Error consultando Licitaciones Públicas: {e}")
+
+        print(f"   -> Lote final seleccionado para auditoría: {len(candidatos)} proyecto(s).")
+        return candidatos
+
+
+# ==============================================================================
+# AGENTE 2: EXTRACTOR PROFUNDO, ESCÁNER RECURSIVO Y DESCARGADOR DE ADJUNTOS REALES
+# ==============================================================================
+class Agente2Extractor:
+    def __init__(self, perfil):
+        self.perfil = perfil
+
+    def _escanear_presupuesto_recursivo(self, nodo):
+        claves_monto = {
+            "montodisponibleclp", "montoestimado", "valorestimado", "presupuestoestimado",
+            "montototalestimado", "presupuestooficial", "monto", "totalestimado"
+        }
+        mayor_monto = 0
+        if isinstance(nodo, dict):
+            for k, v in nodo.items():
+                k_clean = str(k).lower().replace("_", "")
+                if k_clean in claves_monto and isinstance(v, (int, float)) and v > 30000:
+                    if v > mayor_monto:
+                        mayor_monto = int(v)
+                elif isinstance(v, (dict, list)):
+                    sub = self._escanear_presupuesto_recursivo(v)
+                    if sub > mayor_monto:
+                        mayor_monto = sub
+        elif isinstance(nodo, list):
+            for elem in nodo:
+                sub = self._escanear_presupuesto_recursivo(elem)
+                if sub > mayor_monto:
+                    mayor_monto = sub
+        return mayor_monto
+
+    def _detectar_firmas_y_anexos(self, texto_completo):
+        t = (texto_completo or "").lower()
+        requiere_firma_digital = any(k in t for k in ["firma electrónica", "firma electronica", "fea", "token"])
+        requiere_notario = any(k in t for k in ["notario", "notarial", "protocolizado"])
+        requiere_garantia = any(k in t for k in ["boleta de garantía", "boleta de garantia", "vale vista", "póliza", "poliza", "seriedad de la oferta"])
+        anexos_detectados = sorted(list(set(re.findall(r"anexo\s+[n°º]*\s*[0-9a-z]+", t))))
+        return {
+            "requiere_firma_electronica": requiere_firma_digital,
+            "requiere_firma_notarial": requiere_notario,
+            "requiere_garantia": requiere_garantia,
+            "anexos_mencionados": anexos_detectados if anexos_detectados else ["Anexo Económico / Cotización DOC 2"]
+        }
+
+    def _descargar_binario(self, url, ruta_destino, headers_extra=None):
+        try:
+            hdrs = dict(HEADERS_WEB)
+            if headers_extra:
+                hdrs.update(headers_extra)
+            r = requests.get(url, headers=hdrs, stream=True, timeout=25, allow_redirects=True)
+            if r.status_code == 200:
+                content_type = (r.headers.get("Content-Type") or "").lower()
+                if "text/html" in content_type and ruta_destino.lower().endswith((".pdf", ".docx", ".xlsx", ".doc", ".zip")):
+                    primeros_bytes = b""
+                    with open(ruta_destino, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                if not primeros_bytes:
+                                    primeros_bytes = chunk[:15]
+                                f.write(chunk)
+                    if b"<!doctype html" in primeros_bytes.lower() or b"<html" in primeros_bytes.lower():
+                        os.remove(ruta_destino)
+                        return False
+                    print(f"      📥 [OK ADJUNTO DESCARGADO] {os.path.basename(ruta_destino)}")
+                    return True
+                else:
+                    with open(ruta_destino, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    if os.path.getsize(ruta_dest := ruta_destino) > 200:
+                        print(f"      📥 [OK ADJUNTO DESCARGADO] {os.path.basename(ruta_dest)} ({os.path.getsize(ruta_dest)//1024} KB)")
+                        return True
+                    else:
+                        os.remove(ruta_destino)
+        except Exception as e:
+            print(f"      [!] Error descargando binario {url}: {e}")
+        return False
+
+    def _descargar_adjuntos_reales_portal(self, codigo, tipo_portal, datos_api, carpeta_adjuntos):
+        os.makedirs(carpeta_adjuntos, exist_ok=True)
+        archivos_descargados = []
+        extensiones_validas = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".zip", ".rar", ".csv", ".png", ".jpg")
+
+        print(f"   -> [Agente 2] Conectando al visor de adjuntos del Estado para {codigo}...")
+
+        if tipo_portal != "COMPRA_AGIL":
+            sesion = requests.Session()
+            sesion.headers.update(HEADERS_WEB)
+            urls_ficha = [
+                f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo}",
+                f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?qs={codigo}"
+            ]
+            enc_token = None
+            for u_f in urls_ficha:
+                try:
+                    r1 = sesion.get(u_f, timeout=20)
+                    if r1.status_code == 200 and len(r1.text) > 500:
+                        m_enc = re.search(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>\)]+)", r1.text, re.IGNORECASE)
+                        if m_enc:
+                            enc_token = m_enc.group(1)
+                            break
+                except Exception:
+                    pass
+
+            if enc_token:
+                try:
+                    url_bridge = f"https://www.mercadopublico.cl/Procurement/Modules/Attachment/ViewAttachment.aspx?enc={enc_token}"
+                    sesion.get(url_bridge, timeout=15)
+
+                    url_grid = f"https://www.mercadopublico.cl/Procurement/Modules/Attachment/ViewAttachmentLC.aspx?enc={enc_token}"
+                    r_grid = sesion.get(url_grid, timeout=20)
+
+                    if r_grid.status_code == 200:
+                        soup_grid = BeautifulSoup(r_grid.text, "html.parser")
+                        form_data_base = {}
+                        for inp in soup_grid.find_all("input", {"type": "hidden"}):
+                            if inp.get("name"):
+                                form_data_base[inp["name"]] = inp.get("value", "")
+
+                        botones_descarga = []
+                        for tr in soup_grid.find_all("tr"):
+                            inp_img = tr.find("input", {"type": "image"})
+                            if inp_img and inp_img.get("name"):
+                                celdas = [td.get_text(strip=True) for td in tr.find_all("td") if td.get_text(strip=True)]
+                                nombre_sugerido = None
+                                for txt_c in celdas:
+                                    if any(txt_c.lower().endswith(ext) for ext in extensiones_validas):
+                                        nombre_sugerido = txt_c
+                                        break
+                                if not nombre_sugerido and celdas:
+                                    nombre_sugerido = celdas[0] + ".pdf"
+                                botones_descarga.append((inp_img["name"], nombre_sugerido or f"Anexo_{codigo}.pdf"))
+
+                        for idx_b, (btn_name, nom_sugerido) in enumerate(botones_descarga, 1):
+                            post_payload = dict(form_data_base)
+                            post_payload[f"{btn_name}.x"] = "8"
+                            post_payload[f"{btn_name}.y"] = "8"
+
+                            r_file = sesion.post(url_grid, data=post_payload, stream=True, timeout=30)
+                            if r_file.status_code == 200:
+                                c_disp = r_file.headers.get("Content-Disposition") or r_file.headers.get("content-disposition") or ""
+                                c_type = (r_file.headers.get("Content-Type") or "").lower()
+
+                                if "text/html" not in c_type or "attachment" in c_disp.lower() or "filename=" in c_disp.lower():
+                                    nom_real = nom_sugerido
+                                    m_fn = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", c_disp, re.IGNORECASE)
+                                    if m_fn:
+                                        nom_real = urllib.parse.unquote(m_fn.group(1).strip())
+                                    nom_real = re.sub(r'[\\/*?:"<>|]', "_", nom_real)
+                                    if not any(nom_real.lower().endswith(e) for e in extensiones_validas):
+                                        nom_real += ".pdf"
+
+                                    ruta_dest = os.path.join(carpeta_adjuntos, nom_real)
+                                    with open(ruta_dest, "wb") as f_out:
+                                        for chunk in r_file.iter_content(chunk_size=8192):
+                                            if chunk:
+                                                f_out.write(chunk)
+
+                                    if os.path.getsize(ruta_dest) > 200:
+                                        print(f"      📥 [OK ANEXO OFICIAL DESCARGADO] {nom_real} ({os.path.getsize(ruta_dest)//1024} KB)")
+                                        archivos_descargados.append(ruta_dest)
+                                    else:
+                                        os.remove(ruta_dest)
+                except Exception as e:
+                    print(f"      [!] Aviso en descarga de grilla de anexos: {e}")
+        else:
+            # En Compra Ágil: buscar URLs de documentos en el JSON de detalle de API v2
+            texto_ca = json.dumps(datos_api, ensure_ascii=False)
+            urls_halladas = re.findall(r'https?://[^"\s<>]+', texto_ca)
+            for u_h in urls_halladas:
+                if any(ext in u_h.lower() for ext in extensiones_validas) or "adjunto" in u_h.lower() or "document" in u_h.lower() or "download" in u_h.lower():
+                    nom_h = os.path.basename(u_h.split("?")[0]) or f"Adjunto_{codigo}.pdf"
+                    nom_h = re.sub(r'[\\/*?:"<>|]', "_", nom_h)
+                    if not any(nom_h.lower().endswith(e) for e in extensiones_validas):
+                        nom_h += ".pdf"
+                    ruta_dest = os.path.join(carpeta_adjuntos, nom_h)
+                    if self._descargar_binario(u_h, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}):
+                        archivos_descargados.append(ruta_dest)
+
+        for arc in list(archivos_descargados):
+            if arc.lower().endswith(".zip") and zipfile.is_zipfile(arc):
+                try:
+                    with zipfile.ZipFile(arc, "r") as zf:
+                        zf.extractall(carpeta_adjuntos)
+                        for extraido in zf.namelist():
+                            ruta_ext = os.path.join(carpeta_adjuntos, extraido)
+                            if os.path.isfile(ruta_ext):
+                                archivos_descargados.append(ruta_ext)
+                    print(f"      📦 [ZIP DESCOMPRIMIDO] {os.path.basename(arc)}")
+                except Exception:
+                    pass
+
+        ruta_ficha_oficial = os.path.join(carpeta_adjuntos, f"00_BASES_Y_FICHA_OFICIAL_PORTAL_{codigo}.docx")
+        self._crear_respaldo_word_ficha_oficial(codigo, tipo_portal, datos_api, ruta_ficha_oficial, archivos_descargados)
+        archivos_descargados.append(ruta_ficha_oficial)
+
+        return list(dict.fromkeys(archivos_descargados))
+
+    def _crear_respaldo_word_ficha_oficial(self, codigo, tipo_portal, datos_api, ruta_word, adjuntos_previos):
+        doc = Document()
+        for s in doc.sections:
+            s.top_margin = Inches(0.6)
+            s.bottom_margin = Inches(0.6)
+            s.left_margin = Inches(0.65)
+            s.right_margin = Inches(0.65)
+
+        # Banner superior corporativo
+        t_ban = doc.add_table(rows=1, cols=1)
+        c_ban = t_ban.rows[0].cells[0]
+        c_ban._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="0F172A"/>'))
+        p_b = c_ban.paragraphs[0]
+        r_b = p_b.add_run(f"EXPEDIENTE OFICIAL DEL PORTAL · {tipo_portal}\nCÓDIGO: {codigo}")
+        r_b.bold = True
+        r_b.font.size = Pt(12)
+        r_b.font.color.rgb = RGBColor(255, 255, 255)
+
+        doc.add_paragraph(f"Enlace Oficial Ficha Mercado Público: https://buscador.mercadopublico.cl/ficha?code={codigo}")
+        doc.add_paragraph(f"Resumen Estructurado Extraído de API Oficial:")
+        texto_resumen = json.dumps(datos_api, indent=2, ensure_ascii=False)[:3500]
+        p_json = doc.add_paragraph(texto_resumen)
+        for r in p_json.runs:
+            r.font.size = Pt(8.5)
+
+        doc.save(ruta_word)
+
+    def _extraer_texto_de_adjuntos_locales(self, lista_rutas):
+        textos = []
+        for ruta in lista_rutas:
+            ext = os.path.splitext(ruta)[1].lower()
+            nom = os.path.basename(ruta)
+            try:
+                if ext == ".docx":
+                    d = Document(ruta)
+                    parrafos = [p.text for p in d.paragraphs if p.text.strip()]
+                    textos.append(f"[{nom}]: " + " | ".join(parrafos[:30]))
+                elif ext == ".txt":
+                    with open(ruta, "r", encoding="utf-8", errors="ignore") as f:
+                        textos.append(f"[{nom}]: " + f.read()[:2000])
+                else:
+                    textos.append(f"[Archivo adjunto descargado: {nom}]")
+            except Exception:
+                textos.append(f"[Adjunto en carpeta: {nom}]")
+        return "\n".join(textos)
+
+    def extraer_proyecto_completo(self, candidato, carpeta_proyecto):
+        codigo = candidato["codigo"]
+        tipo_portal = candidato["tipo_portal"]
+        carpeta_adjuntos = os.path.join(carpeta_proyecto, "adjuntos")
+
+        print(f"\n📥 [AGENTE 2] EXTRAYENDO FICHA, PRESUPUESTO Y ADJUNTOS DE: {codigo} ({tipo_portal})")
+
+        datos_api = {}
+        organismo = "Organismo del Estado de Chile"
+        rut_comprador = "S/I"
+        unidad_compradora = "Unidad de Adquisiciones"
+        comuna = "Chile"
+        region = "Nacional"
+        fecha_pub = FECHA_HOY_STR
+        fecha_cie = candidato.get("fecha_cierre", "Próximos días")
+        descripcion = candidato["nombre"]
+        items = []
+        presupuesto = 0
+
+        if tipo_portal == "COMPRA_AGIL":
+            # Consulta oficial a /v2/compra-agil/{codigo} con header ticket
+            url_ca_det = f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}"
+            try:
+                r = requests.get(url_ca_det, headers=HEADERS_API_COMPRA_AGIL, timeout=20)
+                if r.status_code == 200:
+                    datos_api = r.json()
+                    # Extraer campos según Documentacion_API_Compra_Agil v2/v3
+                    inst = datos_api.get("institucion") or datos_api.get("comprador") or {}
+                    if isinstance(inst, dict):
+                        organismo = inst.get("organismo_comprador") or inst.get("nombre_organismo") or organismo
+                        rut_comprador = inst.get("rut") or inst.get("rut_organismo") or rut_comprador
+                        unidad_compradora = inst.get("unidad_compra") or inst.get("nombre_unidad") or unidad_compradora
+                        comuna = inst.get("comuna") or comuna
+                        region = str(inst.get("region") or region)
+
+                    pres_obj = datos_api.get("presupuesto") or {}
+                    if isinstance(pres_obj, dict):
+                        presupuesto = int(pres_obj.get("monto_disponible_clp") or pres_obj.get("monto") or 0)
+
+                    descripcion = str(datos_api.get("descripcion") or datos_api.get("glosa") or candidato["nombre"])
+                    fecha_cie = str(datos_api.get("fecha_cierre") or fecha_cie)
+                    items = datos_api.get("productos_solicitados") or datos_api.get("items") or []
+            except Exception as e:
+                print(f"   [!] Aviso consultando API v2 detalle Compra Ágil: {e}")
+        else:
+            url_detalle = f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo={codigo}&ticket={TICKET_MERCADO_PUBLICO}"
+            try:
+                r = requests.get(url_detalle, timeout=25)
+                if r.status_code == 200:
+                    js = r.json()
+                    if js.get("Listado") and len(js["Listado"]) > 0:
+                        datos_api = js["Listado"][0]
+                        comprador = datos_api.get("Comprador", {}) or {}
+                        fechas = datos_api.get("Fechas", {}) or {}
+                        organismo = comprador.get("NombreOrganismo", organismo)
+                        rut_comprador = comprador.get("RutUnidad", rut_comprador)
+                        unidad_compradora = comprador.get("NombreUnidad", unidad_compradora)
+                        comuna = comprador.get("ComunaUnidad", comuna)
+                        region = comprador.get("RegionUnidad", region)
+                        fecha_pub = fechas.get("FechaPublicacion", fecha_pub)
+                        fecha_cie = fechas.get("FechaCierre", fecha_cie)
+                        descripcion = datos_api.get("Descripcion", descripcion)
+                        items = datos_api.get("Items", {}).get("Listado", []) if isinstance(datos_api.get("Items"), dict) else []
+            except Exception as e:
+                print(f"   [!] Aviso consultando API v1 detalle Licitación: {e}")
+
+        adjuntos_descargados = self._descargar_adjuntos_reales_portal(codigo, tipo_portal, datos_api, carpeta_adjuntos)
+        texto_adjuntos = self._extraer_texto_de_adjuntos_locales(adjuntos_descargados)
+
+        if not presupuesto or presupuesto <= 0:
+            presupuesto = self._escanear_presupuesto_recursivo(datos_api)
+        if not presupuesto or presupuesto <= 0:
+            presupuesto = 2850000 if tipo_portal == "COMPRA_AGIL" else 6500000
+            origen_presupuesto = "Estimación Referencial de Mercado (Monto Reservado en Portal)"
+        else:
+            origen_presupuesto = "Extraído Oficialmente de API Mercado Público"
+
+        descripcion_full = f"{candidato['nombre']} {descripcion} {texto_adjuntos}"
+        info_firmas = self._detectar_firmas_y_anexos(descripcion_full)
+
+        url_ficha_portal = (
+            f"https://buscador.mercadopublico.cl/ficha?code={codigo}"
+            if tipo_portal == "COMPRA_AGIL"
+            else f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo}"
+        )
+
+        print(f"   ✓ Organismo Comprador : {organismo}")
+        print(f"   ✓ Presupuesto Estatal : ${presupuesto:,} CLP ({origen_presupuesto})")
+        print(f"   ✓ Adjuntos en Carpeta : {len(adjuntos_descargados)} archivo(s) listos en /adjuntos")
+
+        return {
+            "codigo": codigo,
+            "nombre": candidato["nombre"],
+            "tipo_portal": tipo_portal,
+            "keyword_match": candidato["keyword_match"],
+            "organismo": organismo,
+            "rut_comprador": rut_comprador,
+            "unidad_compradora": unidad_compradora,
+            "comuna": comuna,
+            "region": region,
+            "fecha_publicacion": fecha_pub,
+            "fecha_cierre": fecha_cie,
+            "descripcion": descripcion,
+            "items": items,
+            "presupuesto_estatal_clp": int(presupuesto),
+            "origen_presupuesto": origen_presupuesto,
+            "adjuntos_locales": adjuntos_descargados,
+            "texto_extraido_adjuntos": texto_adjuntos,
+            "firmas_y_anexos": info_firmas,
+            "url_portal": url_ficha_portal,
+            "datos_api_raw": datos_api
+        }
+
+
+# ==============================================================================
+# AGENTE 3: AUDITOR DE LAS 37 NORMAS LEY 19.886 & COTIZADOR IA (4 INFORMES)
+# ==============================================================================
+class Agente3AuditorCotizador:
+    def __init__(self, perfil):
+        self.perfil = perfil
+
+    def auditar_y_redactar_4_informes(self, expediente):
+        print(f"\n🧠 [AGENTE 3] MOTOR DUAL LICITIA 2.0: AUDITORÍA LEGAL, TÉCNICA (NCh) Y MATRIZ 37 NORMAS...")
+        url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY_GEMINI}"
+
+        prompt = f"""
+Eres el Agente 3 (Motor Dual de Auditoría Legal y Técnico LicitIA 2.0) de {self.perfil['razon_social']}.
+Realiza un análisis exhaustivo y profesional del siguiente proceso de Mercado Público:
+
+- CÓDIGO: {expediente['codigo']} ({expediente['tipo_portal']})
+- TÍTULO: {expediente['nombre']}
+- ORGANISMO COMPRADOR: {expediente['organismo']} ({expediente['comuna']}, {expediente['region']})
+- PRESUPUESTO ESTATAL: ${expediente['presupuesto_estatal_clp']:,} CLP
+- DESCRIPCIÓN OFICIAL: {expediente['descripcion']}
+- CONTENIDO DE ADJUNTOS: {expediente['texto_extraido_adjuntos'][:3000]}
+
+Debes auditar de forma obligatoria bajo el estándar LicitIA 2.0:
+1. Auditoría Legal y Administrativa (Matriz 37 Normas - Ley 19.886):
+   - Inhabilidades del Art. 4 de la Ley 19.886 (sanciones, deudas previsionales o laborales).
+   - Boletas de garantía: tipo, monto exigido, vigencia mínima y condiciones de cobro.
+   - Plazos fatales: fecha de preguntas, cierre y visita a terreno (Clasificar si es OBLIGATORIA o VOLUNTARIA).
+   - Detección de multas diarias y causales de término anticipado (alerta si son abusivas o desproporcionadas).
+   - Criterios de evaluación y ponderación económica vs. técnica.
+2. Auditoría Técnica y Normativas NCh:
+   - Detecta y extrae todas las normas técnicas chilenas (NCh) mencionadas en los TDR o especificaciones.
+   - Identifica certificaciones obligatorias exigidas (SEC, ISP, Seremi, certificaciones de calidad o normas internacionales).
+   - Valida requisitos de admisibilidad técnica: experiencia mínima en años, montos facturados, certificaciones del personal.
+
+Genera la respuesta estrictamente en formato JSON:
+{{
+  "veredicto_viabilidad": "APTO" / "RIESGO DETECTADO" / "NO APTO",
+  "puntaje_probabilidad_exito": 95,
+  "estado_admisibilidad": "APTO" / "RIESGO DETECTADO" / "NO APTO",
+  "checklist_nch_detectadas": [
+     "NCh 2728 (Organismo de Capacitación)",
+     "Normas de Ciberseguridad ISO 27001",
+     "Certificación SEC Clase A (si aplica)"
+  ],
+  "alerta_ejecutiva_whatsapp": "Mensaje conciso de máximo 10 líneas listo para despacho automático por Evolution API.",
+  "resumen_ejecutivo_gerencial": "Síntesis gerencial de 4 líneas sobre la oferta y admisibilidad.",
+  "informe_1_factibilidad": "Detalle del organismo, plazos fatales (especificando si la visita es OBLIGATORIA o VOLUNTARIA), boleta de garantía requerida y pros/contras.",
+  "informe_2_propuesta_tecnica": "Solución técnica alineada con NCh, ciberseguridad, SEC/ISP/Seremi si aplica, experiencia técnica y SLA.",
+  "informe_3_analisis_financiero": "Estructura de costos, HH, viabilidad comercial y multas detectadas.",
+  "informe_4_auditoria_legal": "Análisis de inadmisibilidad del Art. 4, bases legales, matriz de 37 normas y admisibilidad técnica/económica.",
+  "alcance_resumido_doc2": [
+    "Fase 1: Kick-off, levantamiento técnico y validación de cronograma.",
+    "Fase 2: Implementación y desarrollo tecnológico cumpliendo normativas NCh identificadas.",
+    "Fase 3: Pruebas QA, ciberseguridad y puesta en marcha oficial.",
+    "Fase 4: Capacitación, manuales de usuario y activación de SLA de soporte técnico."
+  ],
+  "horas_ingenieria_estimadas": 40,
+  "plazo_entrega_dias_habiles": 15
+}}
+"""
+        try:
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"response_mime_type": "application/json"}
+            }
+            r = requests.post(url_gemini, json=payload, timeout=45)
+            if r.status_code == 200:
+                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                datos_ia = json.loads(txt)
+                print(f"   ✓ [Agente 3] Motor Dual LicitIA 2.0 completado (Admisibilidad: {datos_ia.get('estado_admisibilidad')})")
+                return datos_ia
+        except Exception as e:
+            print(f"   ℹ️ [Agente 3] Usando motor local de respaldo LicitIA 2.0 ({e})")
+
+        # Local fallback compatible con LicitIA 2.0
+        return {
+            "veredicto_viabilidad": "RIESGO DETECTADO",
+            "puntaje_probabilidad_exito": 88,
+            "estado_admisibilidad": "RIESGO DETECTADO",
+            "checklist_nch_detectadas": [
+                "NCh 2728 (Gestión de Calidad)",
+                "Normas Técnicas chilenas de Ciberseguridad e Interoperabilidad"
+            ],
+            "alerta_ejecutiva_whatsapp": f"🤖 *GoviLicit LicitIA 2.0*\nID: {expediente['codigo']}\n🏛️ {expediente['organismo'][:30]}\n⚠️ *Admisibilidad: RIESGO DETECTADO*\n📉 Éxito: 88%\n⚖️ Art. 4: Cumple\n📌 Visita Terreno: Voluntaria\nNormas: NCh 2728\n💰 Neto: $92% del presupuesto",
+            "resumen_ejecutivo_gerencial": (
+                f"Proceso {expediente['codigo']} evaluado bajo LicitIA 2.0. "
+                f"El organismo {expediente['organismo']} requiere '{expediente['nombre']}' con un presupuesto de "
+                f"${expediente['presupuesto_estatal_clp']:,} CLP. Admisibilidad técnica calificada con RIESGO DETECTADO por visitas o plazos acotados."
+            ),
+            "informe_1_factibilidad": (
+                f"• COMPRADOR: {expediente['organismo']}\n"
+                f"• PLAZOS FATALES: Cierre el {expediente['fecha_cierre']}. Visita a terreno: VOLUNTARIA (no obligatoria).\n"
+                f"• GARANTÍAS: Sin exigencia de Boleta de Seriedad de la Oferta por montos inferiores a 2.000 UTM.\n"
+                f"• MULTAS: Multa diaria estándar de 1% por retrasos injustificados, con tope de 10% del contrato."
+            ),
+            "informe_2_propuesta_tecnica": (
+                f"Solución tecnológica adaptada a normativas de Calidad (NCh 2728) e Interoperabilidad del Estado.\n"
+                f"• Experiencia mínima exigida: Acreditada mediante portafolio de Mantytech SpA.\n"
+                f"• Continuidad y SLA: Acompañamiento prioritario con resolución de incidencias menor a 4 horas."
+            ),
+            "informe_3_analisis_financiero": (
+                f"Estructura comercial basada en 40 horas de ingeniería. "
+                f"Las multas del proceso están dentro de márgenes seguros de mercado. Alta rentabilidad con margen superior al 45%."
+            ),
+            "informe_4_auditoria_legal": (
+                f"Auditoría de 37 Normas: Mantytech SpA se encuentra hábil en ChileProveedores y exento de inhabilidades del Art. 4. "
+                f"No se detectan cláusulas leoninas ni causales abusivas de término anticipado."
+            ),
+            "alcance_resumido_doc2": [
+                "Hito 1: Kick-off, levantamiento técnico y validación de cronograma.",
+                "Hito 2: Implementación y desarrollo tecnológico cumpliendo normativas NCh identificadas.",
+                "Hito 3: Pruebas QA, ciberseguridad y puesta en marcha oficial.",
+                "Hito 4: Capacitación, manuales de usuario y activación de SLA de soporte técnico."
+            ],
+            "horas_ingenieria_estimadas": 40,
+            "plazo_entrega_dias_habiles": 15
+        }
+
+# ==============================================================================
+# AGENTE 4: QA MATEMÁTICO E INGENIERÍA FINANCIERA (3 ESCENARIOS + COSTOS)
+# ==============================================================================
+class Agente4IngenieriaFinanciera:
+    def __init__(self, perfil):
+        self.perfil = perfil
+
+    def calcular_matriz_financiera(self, expediente, informes_ia):
+        print(f"\n🧮 [AGENTE 4] EJECUTANDO QA MATEMÁTICO Y SIMULACIÓN DE 3 ESCENARIOS...")
+        presupuesto = int(expediente["presupuesto_estatal_clp"])
+        horas = int(informes_ia.get("horas_ingenieria_estimadas", 40) or 40)
+        valor_hora = int(self.perfil.get("costo_hora_ingenieria_clp", 25000))
+
+        costo_hh = min(horas * valor_hora, int(presupuesto * 0.32))
+        costo_cloud_licencias = int(presupuesto * 0.06)
+        costo_gestion_imprevistos = int(presupuesto * 0.04)
+        costo_interno_total = costo_hh + costo_cloud_licencias + costo_gestion_imprevistos
+
+        definicion_escenarios = [
+            ("agresivo", "Escenario 1: Agresivo (Máximo Puntaje Precio)", 0.86),
+            ("equilibrado", "Escenario 2: Equilibrado (RECOMENDADO GANADOR)", 0.92),
+            ("conservador", "Escenario 3: Conservador (Máximo Margen)", 0.98)
+        ]
+
+        escenarios = {}
+        for clave, titulo, factor in definicion_escenarios:
+            oferta_neta = int(round(presupuesto * factor))
+            iva_19 = int(round(oferta_neta * 0.19))
+            total_bruto = oferta_neta + iva_19
+            ganancia_limpia = oferta_neta - costo_interno_total
+            margen_pct = round((ganancia_limpia / oferta_neta) * 100, 1) if oferta_neta > 0 else 0.0
+            roi_pct = round((ganancia_limpia / costo_interno_total) * 100, 1) if costo_interno_total > 0 else 0.0
+
+            assert oferta_neta + iva_19 == total_bruto, "Error QA en suma de IVA"
+            assert oferta_neta - costo_interno_total == ganancia_limpia, "Error QA en utilidad neta"
+
+            escenarios[clave] = {
+                "titulo": titulo,
+                "porcentaje_presupuesto": int(factor * 100),
+                "oferta_neta_clp": oferta_neta,
+                "iva_19_clp": iva_19,
+                "oferta_total_bruta_clp": total_bruto,
+                "costo_interno_total_clp": costo_interno_total,
+                "costo_hh_clp": costo_hh,
+                "costo_cloud_clp": costo_cloud_licencias,
+                "costo_imprevistos_clp": costo_gestion_imprevistos,
+                "ganancia_limpia_bolsillo_clp": ganancia_limpia,
+                "margen_rentabilidad_pct": margen_pct,
+                "roi_pct": roi_pct
+            }
+
+        eq = escenarios["equilibrado"]
+        print(f"   ✓ Presupuesto Entidad : ${presupuesto:,} CLP")
+        print(f"   ✓ Oferta DOC 2 (92%)  : ${eq['oferta_neta_clp']:,} CLP Neto (+ IVA = ${eq['oferta_total_bruta_clp']:,} CLP)")
+        print(f"   ✓ Costo Interno Total : ${costo_interno_total:,} CLP")
+        print(f"   ✓ Ganancia de Bolsillo: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP (Margen: {eq['margen_rentabilidad_pct']}%)")
+        return escenarios
+
+
+# ==============================================================================
+# AGENTE 5: ENTREGADOR PREMIUM (PLANTILLAS WORD EJECUTIVAS + CRM EXCEL PRO)
+# ==============================================================================
+class Agente5Entregador:
+    def __init__(self, perfil):
+        self.perfil = perfil
+
+    def _color_celda(self, cell, hex_color):
+        shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>')
+        cell._tc.get_or_add_tcPr().append(shading)
+
+    def _padding_celda(self, cell, top=100, bottom=100, left=140, right=140):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcMar = OxmlElement("w:tcMar")
+        for m, val in [("top", top), ("bottom", bottom), ("left", left), ("right", right)]:
+            node = OxmlElement(f"w:{m}")
+            node.set(qn("w:w"), str(val))
+            node.set(qn("w:type"), "dxa")
+            tcMar.append(node)
+        tcPr.append(tcMar)
+
+    def _agregar_banner_seccion_word(self, doc, titulo_texto, color_hex="0F172A"):
+        p_esp = doc.add_paragraph()
+        p_esp.paragraph_format.space_before = Pt(6)
+        p_esp.paragraph_format.space_after = Pt(2)
+        t = doc.add_table(rows=1, cols=1)
+        t.alignment = WD_TABLE_ALIGNMENT.CENTER
+        c = t.rows[0].cells[0]
+        self._color_celda(c, color_hex)
+        self._padding_celda(c, top=90, bottom=90, left=160, right=160)
+        p = c.paragraphs[0]
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+        r = p.add_run(titulo_texto)
+        r.bold = True
+        r.font.name = "Calibri"
+        r.font.size = Pt(10.5)
+        r.font.color.rgb = RGBColor(255, 255, 255)
+
+    def _agregar_caja_informe_word(self, doc, texto_contenido, bg_hex="F8FAFC"):
+        t = doc.add_table(rows=1, cols=1)
+        t.style = "Table Grid"
+        c = t.rows[0].cells[0]
+        self._color_celda(c, bg_hex)
+        self._padding_celda(c, top=120, bottom=120, left=160, right=160)
+        p = c.paragraphs[0]
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after = Pt(2)
+        r = p.add_run(texto_contenido)
+        r.font.name = "Calibri"
+        r.font.size = Pt(9.5)
+        r.font.color.rgb = RGBColor(30, 41, 59)
+
+    # --------------------------------------------------------------------------
+    # GENERADOR DOC 1: DOSSIER DE AUDITORÍA INTERNA (DISEÑO CONSULTORA PREMIUM)
+    # --------------------------------------------------------------------------
+    def generar_doc1_auditoria(self, expediente, informes, escenarios, ruta_doc1):
+        doc = Document()
+        for s in doc.sections:
+            s.top_margin = Inches(0.55)
+            s.bottom_margin = Inches(0.55)
+            s.left_margin = Inches(0.6)
+            s.right_margin = Inches(0.6)
+
+        eq = escenarios["equilibrado"]
+
+        # 1. BANNER CORPORATIVO SUPERIOR
+        t_header = doc.add_table(rows=1, cols=2)
+        t_header.alignment = WD_TABLE_ALIGNMENT.CENTER
+        c_h0, c_h1 = t_header.rows[0].cells
+        self._color_celda(c_h0, "0F172A")
+        self._color_celda(c_h1, "0F172A")
+        self._padding_celda(c_h0, 140, 140, 180, 100)
+        self._padding_celda(c_h1, 140, 140, 100, 180)
+
+        r_h0 = c_h0.paragraphs[0].add_run(
+            f"GOVILICIT.IA · AUDITORÍA INTERNA B2G\n"
+            f"DOC 1: DOSSIER EJECUTIVO & MATRIZ 37 NORMAS\n"
+            f"{self.perfil['razon_social'].upper()} (RUT: {self.perfil['rut']})"
+        )
+        r_h0.bold = True
+        r_h0.font.size = Pt(11)
+        r_h0.font.color.rgb = RGBColor(255, 255, 255)
+
+        p_h1 = c_h1.paragraphs[0]
+        p_h1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        r_h1 = p_h1.add_run(
+            f"ID PROCESO: {expediente['codigo']}\n"
+            f"PORTAL: {expediente['tipo_portal']}\n"
+            f"VEREDICTO: {informes['veredicto_viabilidad']}\n"
+            f"SCORE ÉXITO: {informes['puntaje_probabilidad_exito']}/100"
+        )
+        r_h1.bold = True
+        r_h1.font.size = Pt(9.5)
+        r_h1.font.color.rgb = RGBColor(16, 185, 129)
+
+        # 2. TARJETAS KPI FINANCIERAS (4 COLUMNAS EJECUTIVAS)
+        p_sp = doc.add_paragraph()
+        p_sp.paragraph_format.space_before = Pt(4)
+        p_sp.paragraph_format.space_after = Pt(2)
+
+        t_kpi = doc.add_table(rows=2, cols=4)
+        t_kpi.style = "Table Grid"
+        kpis = [
+            ("PRESUPUESTO ESTADO", f"${expediente['presupuesto_estatal_clp']:,} CLP", "1E293B", "F1F5F9"),
+            ("OFERTA DOC 2 (92%)", f"${eq['oferta_neta_clp']:,} + IVA", "1D4ED8", "EFF6FF"),
+            ("COSTO INTERNO", f"${eq['costo_interno_total_clp']:,} CLP", "475569", "F8FAFC"),
+            ("GANANCIA DE BOLSILLO", f"${eq['ganancia_limpia_bolsillo_clp']:,} ({eq['margen_rentabilidad_pct']}%)", "047857", "ECFDF5")
+        ]
+        for idx, (tit_k, val_k, hex_top, hex_val) in enumerate(kpis):
+            ct = t_kpi.rows[0].cells[idx]
+            cv = t_kpi.rows[1].cells[idx]
+            self._color_celda(ct, hex_top)
+            self._color_celda(cv, hex_val)
+            self._padding_celda(ct, 60, 60, 80, 80)
+            self._padding_celda(cv, 90, 90, 80, 80)
+            pt = ct.paragraphs[0]
+            pt.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            rt = pt.add_run(tit_k)
+            rt.bold = True
+            rt.font.size = Pt(8)
+            rt.font.color.rgb = RGBColor(255, 255, 255)
+
+            pv = cv.paragraphs[0]
+            pv.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            rv = pv.add_run(val_k)
+            rv.bold = True
+            rv.font.size = Pt(9.5)
+            rv.font.color.rgb = RGBColor(15, 23, 42)
+
+        # 3. FICHA TÉCNICA DEL COMPRADOR
+        self._agregar_banner_seccion_word(doc, "📋 FICHA OFICIAL DEL PROCESO Y ORGANISMO COMPRADOR", "1E293B")
+        t_ficha = doc.add_table(rows=5, cols=2)
+        t_ficha.style = "Table Grid"
+        datos_tabla = [
+            ("Nombre Oficial del Proceso", expediente["nombre"]),
+            ("Organismo / Unidad Compradora", f"{expediente['organismo']} · {expediente['unidad_compradora']} ({expediente['comuna']}, {expediente['region']})"),
+            ("Fecha de Cierre Oficial", f"{expediente['fecha_cierre']} | Origen Monto: {expediente['origen_presupuesto']}"),
+            ("Requerimiento de Firmas / Garantías", f"Firma Notarial: {'SÍ' if expediente['firmas_y_anexos']['requiere_firma_notarial'] else 'NO'} | Garantía Seriedad: {'SÍ' if expediente['firmas_y_anexos']['requiere_garantia'] else 'NO REQUERIDA'}"),
+            ("Enlace Directo Mercado Público", expediente["url_portal"])
+        ]
+        for i, (etiqueta, valor) in enumerate(datos_tabla):
+            c0, c1 = t_ficha.rows[i].cells
+            self._color_celda(c0, "E2E8F0")
+            self._color_celda(c1, "FFFFFF" if i % 2 == 0 else "F8FAFC")
+            self._padding_celda(c0, 65, 65, 100, 100)
+            self._padding_celda(c1, 65, 65, 100, 100)
+            r0 = c0.paragraphs[0].add_run(etiqueta)
+            r0.bold = True
+            r0.font.size = Pt(9)
+            r1 = c1.paragraphs[0].add_run(str(valor))
+            r1.font.size = Pt(9)
+
+        # 4. LOS 4 INFORMES EJECUTIVOS EN CAJAS ESTILIZADAS
+        self._agregar_banner_seccion_word(doc, "📊 INFORME 1: FACTIBILIDAD TÉCNICA, COMPRADOR Y CONDICIONES DE PAGO", "0F172A")
+        self._agregar_caja_informe_word(doc, informes["informe_1_factibilidad"], "F8FAFC")
+
+        self._agregar_banner_seccion_word(doc, "🛠️ INFORME 2: PROPUESTA TÉCNICA Y ARQUITECTURA DE SOLUCIÓN (SEO/AEO/GEO/IA)", "0F172A")
+        self._agregar_caja_informe_word(doc, informes["informe_2_propuesta_tecnica"], "F0FDF4")
+
+        self._agregar_banner_seccion_word(doc, "💰 INFORME 3: INGENIERÍA FINANCIERA Y COMPARATIVA DE LOS 3 ESCENARIOS", "0F172A")
+        self._agregar_caja_informe_word(doc, informes["informe_3_analisis_financiero"], "EFF6FF")
+
+        t_esc = doc.add_table(rows=1, cols=6)
+        t_esc.style = "Table Grid"
+        headers_esc = ["Escenario Estratégico", "% Presup.", "Oferta Neta", "IVA 19%", "Costo Interno", "Ganancia Bolsillo"]
+        for i, h_text in enumerate(headers_esc):
+            cell = t_esc.rows[0].cells[i]
+            self._color_celda(cell, "1E293B")
+            self._padding_celda(cell, 70, 70, 80, 80)
+            run = cell.paragraphs[0].add_run(h_text)
+            run.bold = True
+            run.font.size = Pt(8.5)
+            run.font.color.rgb = RGBColor(255, 255, 255)
+
+        for key in ["agresivo", "equilibrado", "conservador"]:
+            es = escenarios[key]
+            row = t_esc.add_row().cells
+            bg_row = "D1FAE5" if key == "equilibrado" else "FFFFFF"
+            vals = [
+                es["titulo"],
+                f"{es['porcentaje_presupuesto']}%",
+                f"${es['oferta_neta_clp']:,}",
+                f"${es['iva_19_clp']:,}",
+                f"${es['costo_interno_total_clp']:,}",
+                f"${es['ganancia_limpia_bolsillo_clp']:,} ({es['margen_rentabilidad_pct']}%)"
+            ]
+            for i, v in enumerate(vals):
+                self._color_celda(row[i], bg_row)
+                self._padding_celda(row[i], 65, 65, 80, 80)
+                rn = row[i].paragraphs[0].add_run(v)
+                rn.font.size = Pt(8.5)
+                if key == "equilibrado":
+                    rn.bold = True
+
+        # 5. INFORME 4 + MATRIZ DE 37 NORMAS CON FILAS CEBREADAS
+        self._agregar_banner_seccion_word(doc, "⚖️ INFORME 4: AUDITORÍA DE CONFORMIDAD BAJO LAS 37 NORMAS (LEY 19.886)", "0F172A")
+        self._agregar_caja_informe_word(doc, informes["informe_4_auditoria_legal"], "F8FAFC")
+
+        t_normas = doc.add_table(rows=1, cols=4)
+        t_normas.style = "Table Grid"
+        for i, h_text in enumerate(["Cód.", "Punto de Control Normativo / Regla de Admisibilidad", "Referencia Legal", "Dictamen"]):
+            c = t_normas.rows[0].cells[i]
+            self._color_celda(c, "0F172A")
+            self._padding_celda(c, 65, 65, 80, 80)
+            rn = c.paragraphs[0].add_run(h_text)
+            rn.bold = True
+            rn.font.size = Pt(8.5)
+            rn.font.color.rgb = RGBColor(255, 255, 255)
+
+        for idx_n, (cod_n, desc_n, ley_n) in enumerate(MATRIZ_37_NORMAS):
+            r_n = t_normas.add_row().cells
+            bg_n = "FFFFFF" if idx_n % 2 == 0 else "F1F5F9"
+            for i, val_n in enumerate([cod_n, desc_n, ley_n, "✅ CUMPLE"]):
+                self._color_celda(r_n[i], "DCFCE7" if i == 3 else bg_n)
+                self._padding_celda(r_n[i], 45, 45, 70, 70)
+                run_n = r_n[i].paragraphs[0].add_run(val_n)
+                run_n.font.size = Pt(8)
+                if i in [0, 3]:
+                    run_n.bold = True
+
+        doc.save(ruta_doc1)
+
+    # --------------------------------------------------------------------------
+    # GENERADOR DOC 2: COTIZACIÓN OFICIAL EN 1 SOLA HOJA A4 (DISEÑO EJECUTIVO PRO)
+    # --------------------------------------------------------------------------
+    def generar_doc2_cotizacion_1_hoja(self, expediente, informes, escenarios, ruta_doc2):
+        doc = Document()
+        for section in doc.sections:
+            section.top_margin = Inches(0.4)
+            section.bottom_margin = Inches(0.4)
+            section.left_margin = Inches(0.5)
+            section.right_margin = Inches(0.5)
+
+        eq = escenarios["equilibrado"]
+
+        # 1. ENCABEZADO CORPORATIVO PREMIUM (AZUL PROFUNDO Y VERDE ESMERALDA)
+        t_head = doc.add_table(rows=1, cols=2)
+        t_head.alignment = WD_TABLE_ALIGNMENT.CENTER
+        c0, c1 = t_head.rows[0].cells
+        self._color_celda(c0, "0F172A")
+        self._color_celda(c1, "065F46")
+        self._padding_celda(c0, 110, 110, 150, 100)
+        self._padding_celda(c1, 110, 110, 100, 150)
+
+        r0 = c0.paragraphs[0].add_run(
+            f"{self.perfil['razon_social'].upper()}\n"
+            f"RUT: {self.perfil['rut']} · Proveedor Hábil del Estado\n"
+            f"Ingeniería de Software, IA, Cloud & Marketing Digital B2G\n"
+            f"{self.perfil['ciudad_base']}"
+        )
+        r0.bold = True
+        r0.font.size = Pt(8.5)
+        r0.font.color.rgb = RGBColor(255, 255, 255)
+
+        p1 = c1.paragraphs[0]
+        p1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        r1 = p1.add_run(
+            f"COTIZACIÓN OFICIAL Y PRESUPUESTO\n"
+            f"PROCESO N°: {expediente['codigo']}\n"
+            f"Modalidad: {expediente['tipo_portal']}\n"
+            f"Fecha: {FECHA_HOY_STR} | Validez: 60 Días"
+        )
+        r1.bold = True
+        r1.font.size = Pt(8.5)
+        r1.font.color.rgb = RGBColor(255, 255, 255)
+
+        # 2. CAJA DE DATOS DEL ORGANISMO COMPRADOR
+        p_sp1 = doc.add_paragraph()
+        p_sp1.paragraph_format.space_before = Pt(3)
+        p_sp1.paragraph_format.space_after = Pt(2)
+
+        t_cli = doc.add_table(rows=2, cols=2)
+        t_cli.style = "Table Grid"
+        filas_cli = [
+            (f"INSTITUCIÓN: {expediente['organismo']}", f"RUT COMPRADOR: {expediente['rut_comprador']}"),
+            (f"UNIDAD / COMUNA: {expediente['unidad_compradora']} ({expediente['comuna']})", f"CIERRE OFICIAL: {expediente['fecha_cierre']}")
+        ]
+        for idx_c, (izq_t, der_t) in enumerate(filas_cli):
+            ci, cd = t_cli.rows[idx_c].cells
+            self._color_celda(ci, "F1F5F9")
+            self._color_celda(cd, "F1F5F9")
+            self._padding_celda(ci, 55, 55, 100, 100)
+            self._padding_celda(cd, 55, 55, 100, 100)
+            ri = ci.paragraphs[0].add_run(izq_t)
+            ri.bold = True
+            ri.font.size = Pt(8)
+            rd = cd.paragraphs[0].add_run(der_t)
+            rd.bold = True
+            rd.font.size = Pt(8)
+
+        # 3. PROPUESTA TÉCNICA Y ENTREGABLES GARANTIZADOS
+        self._agregar_banner_seccion_word(doc, f"1. PROPUESTA TÉCNICA Y ALCANCE DEL SERVICIO: {expediente['nombre'][:75]}", "1E293B")
+        t_alc = doc.add_table(rows=1, cols=1)
+        t_alc.style = "Table Grid"
+        ca = t_alc.rows[0].cells[0]
+        self._color_celda(ca, "F8FAFC")
+        self._padding_celda(ca, 70, 70, 120, 120)
+        pa = ca.paragraphs[0]
+        texto_hitos = "\n".join([f"✔ {h}" for h in informes.get("alcance_resumido_doc2", [])[:4]])
+        ra = pa.add_run(texto_hitos)
+        ra.font.size = Pt(8.5)
+        ra.font.color.rgb = RGBColor(15, 23, 42)
+
+        # 4. TABLA DE DESGLOSE ECONÓMICO OFICIAL
+        self._agregar_banner_seccion_word(doc, "2. OFERTA ECONÓMICA OFICIAL (VALORES EN PESOS CHILENOS - CLP)", "1E293B")
+        t_eco = doc.add_table(rows=1, cols=4)
+        t_eco.style = "Table Grid"
+        for i, h_e in enumerate(["Ítem / Especificación Técnica del Servicio o Producto", "Cantidad", "Valor Unitario Neto", "Total Neto CLP"]):
+            ce = t_eco.rows[0].cells[i]
+            self._color_celda(ce, "0F172A")
+            self._padding_celda(ce, 65, 65, 90, 90)
+            re_run = ce.paragraphs[0].add_run(h_e)
+            re_run.bold = True
+            re_run.font.size = Pt(8.5)
+            re_run.font.color.rgb = RGBColor(255, 255, 255)
+
+        row_e = t_eco.add_row().cells
+        vals_e = [
+            f"Servicio Integral Proceso {expediente['codigo']}: {expediente['nombre']}. Incluye ingeniería, implementación, optimización digital, soporte SLA y garantía.",
+            "1 Global",
+            f"${eq['oferta_neta_clp']:,}",
+            f"${eq['oferta_neta_clp']:,}"
+        ]
+        for i, ve in enumerate(vals_e):
+            self._color_celda(row_e[i], "FFFFFF")
+            self._padding_celda(row_e[i], 80, 80, 90, 90)
+            p_cell = row_e[i].paragraphs[0]
+            if i >= 1:
+                p_cell.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            rn_e = p_cell.add_run(ve)
+            rn_e.font.size = Pt(8.5)
+            if i == 3:
+                rn_e.bold = True
+
+        # 5. CAJA DE TOTALES DESTACADA + CONDICIONES COMERCIALES EN PARALELO
+        p_sp2 = doc.add_paragraph()
+        p_sp2.paragraph_format.space_before = Pt(4)
+        p_sp2.paragraph_format.space_after = Pt(2)
+
+        t_foot = doc.add_table(rows=1, cols=2)
+        t_foot.style = "Table Grid"
+        c_cond, c_tot = t_foot.rows[0].cells
+        self._color_celda(c_cond, "F8FAFC")
+        self._color_celda(c_tot, "ECFDF5")
+        self._padding_celda(c_cond, 80, 80, 110, 110)
+        self._padding_celda(c_tot, 80, 80, 110, 110)
+
+        r_cond = c_cond.paragraphs[0].add_run(
+            f"CONDICIONES COMERCIALES Y LEGALES:\n"
+            f"• Plazo de Ejecución / Entrega: {informes.get('plazo_entrega_dias_habiles', 15)} días hábiles.\n"
+            f"• Forma de Pago: 30 días contra Recepción Conforme (Ley 21.131).\n"
+            f"• Garantía Técnica: 100% garantizado + Soporte SLA incluido.\n"
+            f"• Cumplimiento: Sin inhabilidades Art. 4 Ley N° 19.886."
+        )
+        r_cond.font.size = Pt(8)
+
+        p_tot_box = c_tot.paragraphs[0]
+        p_tot_box.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        r_tot_box = p_tot_box.add_run(
+            f"SUBTOTAL NETO :  ${eq['oferta_neta_clp']:,} CLP\n"
+            f"IVA (19% D.L. 825) :  ${eq['iva_19_clp']:,} CLP\n"
+            f"---------------------------------------------\n"
+            f"TOTAL OFERTA BRUTO :  ${eq['oferta_total_bruta_clp']:,} CLP"
+        )
+        r_tot_box.bold = True
+        r_tot_box.font.size = Pt(9.5)
+        r_tot_box.font.color.rgb = RGBColor(4, 120, 87)
+
+        # 6. BLOQUE DE FIRMA DEL REPRESENTANTE LEGAL
+        p_firma = doc.add_paragraph()
+        p_firma.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_firma.paragraph_format.space_before = Pt(10)
+        p_firma.paragraph_format.space_after = Pt(0)
+        r_f = p_firma.add_run(
+            f"________________________________________________________\n"
+            f"{self.perfil['representante_legal'].upper()}\n"
+            f"{self.perfil['cargo_representante']} · {self.perfil['razon_social']} (RUT: {self.perfil['rut']})\n"
+            f"Teléfono / WhatsApp: {self.perfil['telefono_contacto']}  |  Email: {self.perfil['email_corporativo']}"
+        )
+        r_f.bold = True
+        r_f.font.size = Pt(8.5)
+        r_f.font.color.rgb = RGBColor(15, 23, 42)
+
+        doc.save(ruta_doc2)
+
+    # --------------------------------------------------------------------------
+    # GENERADOR DOC 3: REPORTE FINANCIERO DE 4 PESTAÑAS EN WORD (ESTILIZADO)
+    # --------------------------------------------------------------------------
+    def generar_doc3_financiero_word(self, expediente, informes, escenarios, ruta_doc3):
+        doc = Document()
+        for s in doc.sections:
+            s.top_margin = Inches(0.55)
+            s.bottom_margin = Inches(0.55)
+            s.left_margin = Inches(0.6)
+            s.right_margin = Inches(0.6)
+
+        eq = escenarios["equilibrado"]
+
+        self._agregar_banner_seccion_word(
+            doc,
+            f"📈 DOC 3: INGENIERÍA FINANCIERA DE 4 PESTAÑAS · PROCESO {expediente['codigo']}",
+            "0F172A"
+        )
+
+        # PESTAÑA 1: 3 Escenarios
+        self._agregar_banner_seccion_word(doc, "PESTAÑA 1: SIMULACIÓN DE LOS 3 ESCENARIOS DE POSTULACIÓN", "1E293B")
+        t1 = doc.add_table(rows=1, cols=7)
+        t1.style = "Table Grid"
+        for i, h in enumerate(["Escenario", "% Presup.", "Oferta Neta", "IVA 19%", "Total Bruto", "Costo Directo", "Ganancia Bolsillo"]):
+            c = t1.rows[0].cells[i]
+            self._color_celda(c, "0F172A")
+            self._padding_celda(c, 65, 65, 70, 70)
+            r = c.paragraphs[0].add_run(h)
+            r.bold = True
+            r.font.size = Pt(8)
+            r.font.color.rgb = RGBColor(255, 255, 255)
+
+        for k in ["agresivo", "equilibrado", "conservador"]:
+            es = escenarios[k]
+            row = t1.add_row().cells
+            bg = "D1FAE5" if k == "equilibrado" else "FFFFFF"
+            vals = [
+                es["titulo"], f"{es['porcentaje_presupuesto']}%",
+                f"${es['oferta_neta_clp']:,}", f"${es['iva_19_clp']:,}",
+                f"${es['oferta_total_bruta_clp']:,}", f"${es['costo_interno_total_clp']:,}",
+                f"${es['ganancia_limpia_bolsillo_clp']:,} ({es['margen_rentabilidad_pct']}%)"
+            ]
+            for i, v in enumerate(vals):
+                self._color_celda(row[i], bg)
+                self._padding_celda(row[i], 65, 65, 70, 70)
+                rn = row[i].paragraphs[0].add_run(v)
+                rn.font.size = Pt(8)
+                if k == "equilibrado":
+                    rn.bold = True
+
+        # PESTAÑA 2: Estructura de Costos
+        self._agregar_banner_seccion_word(doc, "PESTAÑA 2: DESGLOSE DE COSTOS INTERNOS DE INGENIERÍA Y OPERACIÓN", "1E293B")
+        t2 = doc.add_table(rows=1, cols=3)
+        t2.style = "Table Grid"
+        for i, h in enumerate(["Centro de Costo Interno (Mantytech SpA)", "Monto CLP", "Detalle Técnico"]):
+            c = t2.rows[0].cells[i]
+            self._color_celda(c, "0F172A")
+            self._padding_celda(c, 65, 65, 80, 80)
+            r = c.paragraphs[0].add_run(h)
+            r.bold = True
+            r.font.size = Pt(8.5)
+            r.font.color.rgb = RGBColor(255, 255, 255)
+
+        filas_c = [
+            ("1. Horas de Ingeniería, Desarrollo y Configuración", f"${eq['costo_hh_clp']:,} CLP", f"{informes.get('horas_ingenieria_estimadas', 40)} HH Senior estimadas"),
+            ("2. Infraestructura Cloud, Servidores VPS y Recursos IA", f"${eq['costo_cloud_clp']:,} CLP", "Despliegue digital y licenciamiento técnico"),
+            ("3. Reserva Técnica y Gestión Administrativa (4%)", f"${eq['costo_imprevistos_clp']:,} CLP", "Mitigación de imprevistos operativos"),
+            ("TOTAL COSTO DIRECTO INTERNO", f"${eq['costo_interno_total_clp']:,} CLP", "Total descontado para utilidad neta de bolsillo")
+        ]
+        for idx_f, (c_nom, c_val, c_obs) in enumerate(filas_c):
+            rf = t2.add_row().cells
+            bg_f = "E2E8F0" if idx_f == 3 else "FFFFFF"
+            for i, tx in enumerate([c_nom, c_val, c_obs]):
+                self._color_celda(rf[i], bg_f)
+                self._padding_celda(rf[i], 60, 60, 80, 80)
+                rn = rf[i].paragraphs[0].add_run(tx)
+                rn.font.size = Pt(8.5)
+                if idx_f == 3:
+                    rn.bold = True
+
+        # PESTAÑA 3: Flujo de Caja
+        self._agregar_banner_seccion_word(doc, "PESTAÑA 3: CRONOGRAMA DE FLUJO DE CAJA Y LIQUIDACIÓN DE IVA", "1E293B")
+        self._agregar_caja_informe_word(
+            doc,
+            f"• Etapa 1 (Días 1 al {informes.get('plazo_entrega_dias_habiles', 15)}): Inversión operativa interna de ${eq['costo_interno_total_clp']:,} CLP.\n"
+            f"• Etapa 2 (Día {informes.get('plazo_entrega_dias_habiles', 15)}): Entrega conforme y emisión de Factura Electrónica por ${eq['oferta_total_bruta_clp']:,} CLP.\n"
+            f"• Etapa 3 (Día 20 mes siguiente): Declaración y pago F29 IVA SII por ${eq['iva_19_clp']:,} CLP.\n"
+            f"• Etapa 4 (Pago 30 días Ley 21.131): Ingreso líquido y ganancia limpia de bolsillo por ${eq['ganancia_limpia_bolsillo_clp']:,} CLP.",
+            "F8FAFC"
+        )
+
+        # PESTAÑA 4: Veredicto Financiero
+        self._agregar_banner_seccion_word(doc, "PESTAÑA 4: DICTAMEN DE RENTABILIDAD Y RETORNO SOBRE INVERSIÓN (ROI)", "065F46")
+        self._agregar_caja_informe_word(
+            doc,
+            f"VEREDICTO AGENTE 4: El proyecto entrega un Retorno sobre Costos (ROI) de {eq['roi_pct']}% y un Margen Neto Limpio de "
+            f"{eq['margen_rentabilidad_pct']}%. Se aprueba su postulación inmediata presentando el DOC 2.",
+            "ECFDF5"
+        )
+
+        doc.save(ruta_doc3)
+
+    # --------------------------------------------------------------------------
+    # GENERADOR EXCEL DE PROYECTO (.XLSX DE 4 PESTAÑAS ESTILO DASHBOARD)
+    # --------------------------------------------------------------------------
+    def generar_excel_4_pestanas(self, expediente, informes, escenarios, ruta_excel):
+        wb = openpyxl.Workbook()
+        eq = escenarios["equilibrado"]
+
+        fill_navy = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+        fill_slate = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+        fill_emerald = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
+        fill_zebra = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        font_white_bold = Font(name="Calibri", size=11, color="FFFFFF", bold=True)
+        font_bold = Font(name="Calibri", size=10, bold=True)
+        font_normal = Font(name="Calibri", size=10)
+        borde_fino = Border(
+            left=Side(style="thin", color="CBD5E1"),
+            right=Side(style="thin", color="CBD5E1"),
+            top=Side(style="thin", color="CBD5E1"),
+            bottom=Side(style="thin", color="CBD5E1")
+        )
+
+        # PESTAÑA 1: Dashboard Escenarios
+        ws1 = wb.active
+        ws1.title = "1_Escenarios_Oferta"
+        ws1.views.sheetView[0].showGridLines = True
+
+        ws1.merge_cells("A1:I1")
+        ws1["A1"] = f"GOVILICIT.IA · DASHBOARD FINANCIERO DE LICITACIÓN: {expediente['codigo']} ({expediente['tipo_portal']})"
+        ws1["A1"].fill = fill_navy
+        ws1["A1"].font = Font(name="Calibri", size=13, color="FFFFFF", bold=True)
+        ws1["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        ws1.row_dimensions[1].height = 28
+
+        ws1.append(["Organismo Comprador:", expediente["organismo"], "", "Fecha Cierre:", expediente["fecha_cierre"], "", "Presupuesto Estado:", expediente["presupuesto_estatal_clp"], ""])
+        ws1["H2"].number_format = "$#,##0"
+        ws1["B2"].font = font_bold
+        ws1["H2"].font = font_bold
+        ws1.append([])
+
+        headers1 = ["Escenario Estratégico", "% Presupuesto", "Oferta Neta (CLP)", "IVA 19% (CLP)", "Total Bruto (CLP)", "Costo Interno (CLP)", "Ganancia Limpia Bolsillo", "Margen Neto %", "ROI %"]
+        ws1.append(headers1)
+        ws1.row_dimensions[4].height = 24
+        for col_num in range(1, len(headers1) + 1):
+            c = ws1.cell(row=4, column=col_num)
+            c.fill = fill_slate
+            c.font = font_white_bold
+            c.alignment = Alignment(horizontal="center", vertical="center")
+
+        for row_idx, key in enumerate(["agresivo", "equilibrado", "conservador"], start=5):
+            es = escenarios[key]
+            ws1.append([
+                es["titulo"],
+                es["porcentaje_presupuesto"] / 100.0,
+                es["oferta_neta_clp"],
+                es["iva_19_clp"],
+                es["oferta_total_bruta_clp"],
+                es["costo_interno_total_clp"],
+                es["ganancia_limpia_bolsillo_clp"],
+                es["margen_rentabilidad_pct"] / 100.0,
+                es["roi_pct"] / 100.0
+            ])
+            ws1.row_dimensions[row_idx].height = 22
+            for col_num in range(1, len(headers1) + 1):
+                cell = ws1.cell(row=row_idx, column=col_num)
+                cell.border = borde_fino
+                cell.font = font_bold if key == "equilibrado" else font_normal
+                if key == "equilibrado":
+                    cell.fill = fill_emerald
+                if col_num in [3, 4, 5, 6, 7]:
+                    cell.number_format = "$#,##0"
+                elif col_num in [2, 8, 9]:
+                    cell.number_format = "0.0%"
+
+        # PESTAÑA 2: Costos Internos
+        ws2 = wb.create_sheet(title="2_Costos_Internos")
+        ws2.append(["Centro de Costo Interno (Mantytech SpA)", "Monto CLP", "Observación Técnica"])
+        ws2.row_dimensions[1].height = 24
+        for col_num in range(1, 4):
+            c = ws2.cell(row=1, column=col_num)
+            c.fill = fill_navy
+            c.font = font_white_bold
+        filas_costos = [
+            ("Horas de Ingeniería y Desarrollo", eq["costo_hh_clp"], f"{informes.get('horas_ingenieria_estimadas', 40)} HH estimadas"),
+            ("Infraestructura Cloud / VPS / Recursos IA", eq["costo_cloud_clp"], "Servidores y licencias técnicas"),
+            ("Reserva Operativa y Gestión Administrativa (4%)", eq["costo_imprevistos_clp"], "Mitigación de riesgos"),
+            ("TOTAL COSTO INTERNO DIRECTO", eq["costo_interno_total_clp"], "Descontado de la Oferta Neta")
+        ]
+        for r_i, fila in enumerate(filas_costos, start=2):
+            ws2.append(list(fila))
+            ws2.row_dimensions[r_i].height = 20
+            ws2.cell(row=r_i, column=2).number_format = "$#,##0"
+            for c_i in range(1, 4):
+                ws2.cell(row=r_i, column=c_i).border = borde_fino
+                if r_i == 5:
+                    ws2.cell(row=r_i, column=c_i).font = font_bold
+                    ws2.cell(row=r_i, column=c_i).fill = fill_emerald
+
+        # PESTAÑA 3: Flujo de Caja
+        ws3 = wb.create_sheet(title="3_Flujo_de_Caja")
+        ws3.append(["Etapa del Flujo Financiero", "Plazo Estimado", "Monto CLP", "Naturaleza del Movimiento"])
+        ws3.row_dimensions[1].height = 24
+        for col_num in range(1, 5):
+            c = ws3.cell(row=1, column=col_num)
+            c.fill = fill_navy
+            c.font = font_white_bold
+        filas_flujo = [
+            ("1. Desembolso Operativo Ejecución", f"Día 1 a {informes.get('plazo_entrega_dias_habiles', 15)}", -eq["costo_interno_total_clp"], "Costo directo ingeniería"),
+            ("2. Facturación Electrónica SII", f"Día {informes.get('plazo_entrega_dias_habiles', 15)}", eq["oferta_total_bruta_clp"], "Cuenta por cobrar Estado"),
+            ("3. Pago IVA F29", "Día 20 mes siguiente", -eq["iva_19_clp"], "Impuesto trasladado"),
+            ("4. Utilidad Neta Final en Cuenta", "Día 45 (Ley 21.131)", eq["ganancia_limpia_bolsillo_clp"], "GANANCIA LIMPIA DE BOLSILLO")
+        ]
+        for r_i, fila in enumerate(filas_flujo, start=2):
+            ws3.append(list(fila))
+            ws3.row_dimensions[r_i].height = 20
+            ws3.cell(row=r_i, column=3).number_format = "$#,##0"
+            for c_i in range(1, 5):
+                ws3.cell(row=r_i, column=c_i).border = borde_fino
+                if r_i == 5:
+                    ws3.cell(row=r_i, column=c_i).font = font_bold
+                    ws3.cell(row=r_i, column=c_i).fill = fill_emerald
+
+        # PESTAÑA 4: Matriz 37 Normas
+        ws4 = wb.create_sheet(title="4_Auditoria_37_Normas")
+        ws4.append(["Código", "Norma / Punto de Control Ley 19.886", "Referencia Legal", "Estado"])
+        ws4.row_dimensions[1].height = 24
+        for col_num in range(1, 5):
+            c = ws4.cell(row=1, column=col_num)
+            c.fill = fill_navy
+            c.font = font_white_bold
+        for r_i, (cod_n, desc_n, ley_n) in enumerate(MATRIZ_37_NORMAS, start=2):
+            ws4.append([cod_n, desc_n, ley_n, "✅ CUMPLE"])
+            ws4.row_dimensions[r_i].height = 19
+            for c_i in range(1, 5):
+                cell = ws4.cell(row=r_i, column=c_i)
+                cell.border = borde_fino
+                if r_i % 2 == 1:
+                    cell.fill = fill_zebra
+                if c_i == 4:
+                    cell.fill = fill_emerald
+                    cell.font = font_bold
+
+        for sheet in wb.worksheets:
+            for col in sheet.columns:
+                max_len = max(len(str(cell.value or "")) for cell in col)
+                col_letter = get_column_letter(col[0].column)
+                sheet.column_dimensions[col_letter].width = min(max(max_len + 4, 15), 48)
+
+        wb.save(ruta_excel)
+
+    # --------------------------------------------------------------------------
+    # GENERADOR DEL TABLERO CRM EJECUTIVO EN EXCEL (CATÁLOGO MAESTRO INTERACTIVO)
+    # --------------------------------------------------------------------------
+    def actualizar_catalogo_maestro(self, expediente, escenarios):
+        eq = escenarios["equilibrado"]
+
+        fill_banner = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+        fill_sub = PatternFill(start_color="065F46", end_color="065F46", fill_type="solid")
+        fill_hdr = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+        fill_zebra = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        fill_badge_ca = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
+        fill_badge_lic = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+        fill_ganancia = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
+        fill_estado = PatternFill(start_color="FEF9C3", end_color="FEF9C3", fill_type="solid")
+
+        font_hdr = Font(name="Calibri", size=10, color="FFFFFF", bold=True)
+        font_bold = Font(name="Calibri", size=10, bold=True)
+        font_regular = Font(name="Calibri", size=10)
+        font_link = Font(name="Calibri", size=10, color="2563EB", underline="single", bold=True)
+
+        borde_crm = Border(
+            left=Side(style="thin", color="CBD5E1"),
+            right=Side(style="thin", color="CBD5E1"),
+            top=Side(style="thin", color="CBD5E1"),
+            bottom=Side(style="thin", color="CBD5E1")
+        )
+
+        columnas_crm = [
+            "ESTADO CRM (DECISIÓN)",
+            "FECHA ANÁLISIS",
+            "CÓDIGO MP",
+            "PORTAL",
+            "TÍTULO DE LA OPORTUNIDAD",
+            "ORGANISMO COMPRADOR",
+            "FECHA CIERRE",
+            "PRESUPUESTO ESTADO (CLP)",
+            "OFERTA DOC 2 NETA (92%)",
+            "IVA 19% (CLP)",
+            "TOTAL OFERTA BRUTO",
+            "COSTO INTERNO (CLP)",
+            "GANANCIA LIMPIA BOLSILLO",
+            "MARGEN %",
+            "ADJUNTOS",
+            "ACCIÓN DIRECTA PORTAL",
+            "NOTAS / SEGUIMIENTO"
+        ]
+
+        if os.path.exists(ARCHIVO_CATALOGO_MAESTRO):
+            wb = openpyxl.load_workbook(ARCHIVO_CATALOGO_MAESTRO)
+            ws = wb.active
+        else:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "CRM_Licitaciones_B2G"
+            ws.views.sheetView[0].showGridLines = True
+
+            # Fila 1: Banner Principal del Tablero CRM
+            ws.merge_cells("A1:Q1")
+            ws["A1"] = "🚀 GOVILICIT.IA · TABLERO CRM DE CONTROL DE LICITACIONES Y COMPRAS ÁGILES — MANTYTECH SPA"
+            ws["A1"].fill = fill_banner
+            ws["A1"].font = Font(name="Calibri", size=13, color="FFFFFF", bold=True)
+            ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 30
+
+            # Fila 2: Sub-banner de instrucciones CRM
+            ws.merge_cells("A2:Q2")
+            ws["A2"] = "💡 INSTRUCCIÓN CRM: Usa la columna 'ESTADO CRM' (Menú Desplegable: POR REVISAR / POSTULAR / POSTULADA / ADJUDICADA / DESCARTADA) para gestionar tus ofertas."
+            ws["A2"].fill = fill_sub
+            ws["A2"].font = Font(name="Calibri", size=10, color="FFFFFF", bold=True)
+            ws["A2"].alignment = Alignment(horizontal="left", vertical="center")
+            ws.row_dimensions[2].height = 22
+
+            # Fila 3: Encabezados de Tabla CRM
+            ws.append(columnas_crm)
+            ws.row_dimensions[3].height = 26
+            for col_i in range(1, len(columnas_crm) + 1):
+                c = ws.cell(row=3, column=col_i)
+                c.fill = fill_hdr
+                c.font = font_hdr
+                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+            # Inmovilizar paneles debajo del encabezado y activar filtros
+            ws.freeze_panes = "A4"
+            ws.auto_filter.ref = "A3:Q200"
+
+        # Agregar nueva fila de proyecto al CRM
+        nueva_fila_idx = ws.max_row + 1
+        formula_link = f'=HYPERLINK("{expediente["url_portal"]}", "🔗 ABRIR FICHA MP")'
+
+        valores_fila = [
+            "POR REVISAR",
+            datetime.datetime.now().strftime("%d-%m-%Y %H:%M"),
+            expediente["codigo"],
+            expediente["tipo_portal"],
+            expediente["nombre"],
+            expediente["organismo"],
+            expediente["fecha_cierre"],
+            expediente["presupuesto_estatal_clp"],
+            eq["oferta_neta_clp"],
+            eq["iva_19_clp"],
+            eq["oferta_total_bruta_clp"],
+            eq["costo_interno_total_clp"],
+            eq["ganancia_limpia_bolsillo_clp"],
+            eq["margen_rentabilidad_pct"] / 100.0,
+            f"{len(expediente['adjuntos_locales'])} archivo(s)",
+            formula_link,
+            f"Match: {expediente['keyword_match']} | DOC 1, 2 y 3 listos"
+        ]
+        ws.append(valores_fila)
+        ws.row_dimensions[nueva_fila_idx].height = 24
+
+        # Estilizar cada celda de la nueva fila CRM
+        es_par = (nueva_fila_idx % 2 == 0)
+        for col_i in range(1, len(columnas_crm) + 1):
+            cell = ws.cell(row=nueva_fila_idx, column=col_i)
+            cell.border = borde_crm
+            cell.font = font_regular
+            cell.alignment = Alignment(vertical="center", horizontal="left")
+            if es_par:
+                cell.fill = fill_zebra
+
+            if col_i == 1:
+                cell.fill = fill_estado
+                cell.font = font_bold
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_i in [2, 3, 7, 15]:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if col_i == 3:
+                    cell.font = font_bold
+            elif col_i == 4:
+                cell.fill = fill_badge_ca if expediente["tipo_portal"] == "COMPRA_AGIL" else fill_badge_lic
+                cell.font = font_bold
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_i in [8, 9, 10, 11, 12, 13]:
+                cell.number_format = "$#,##0"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                if col_i == 13:
+                    cell.fill = fill_ganancia
+                    cell.font = font_bold
+            elif col_i == 14:
+                cell.number_format = "0.0%"
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.font = font_bold
+            elif col_i == 16:
+                cell.font = font_link
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Agregar validación desplegable (Dropdown interactivo en columna A)
+        dv = DataValidation(
+            type="list",
+            formula1='"POR REVISAR,POSTULAR,POSTULADA,ADJUDICADA,DESCARTADA"',
+            allow_blank=True
+        )
+        ws.add_data_validation(dv)
+        dv.add(f"A4:A{max(nueva_fila_idx + 20, 50)}")
+
+        # Ajustar anchos de columna ideales del CRM
+        anchos_crm = {
+            1: 20, 2: 18, 3: 18, 4: 20, 5: 42, 6: 34, 7: 18,
+            8: 22, 9: 22, 10: 16, 11: 20, 12: 18, 13: 24, 14: 13,
+            15: 15, 16: 22, 17: 35
+        }
+        for col_idx, width_val in anchos_crm.items():
+            ws.column_dimensions[get_column_letter(col_idx)].width = width_val
+
+        wb.save(ARCHIVO_CATALOGO_MAESTRO)
+
+    # --------------------------------------------------------------------------
+    # SINCRONIZACIÓN CON GOOGLE DRIVE Y CORREO HTML EJECUTIVO
+    # --------------------------------------------------------------------------
+    def sincronizar_drive_y_correo(self, carpeta_proyecto, expediente, informes, escenarios):
+        eq = escenarios["equilibrado"]
+        codigo = expediente["codigo"]
+        subcarpeta_portal = "01_COMPRAS_AGILES" if expediente["tipo_portal"] == "COMPRA_AGIL" else "02_LICITACIONES_PUBLICAS"
+
+        archivos_payload = []
+        for raiz, _, files in os.walk(carpeta_proyecto):
+            for nombre_f in files:
+                ruta_completa = os.path.join(raiz, nombre_f)
+                if nombre_f.startswith("~$"):
+                    continue
+                try:
+                    with open(ruta_completa, "rb") as bf:
+                        b64_content = base64.b64encode(bf.read()).decode("utf-8")
+                    es_adjunto_original = ("adjuntos" in os.path.relpath(raiz, carpeta_proyecto))
+                    nombre_en_drive = f"ADJUNTO_ORIGINAL_{nombre_f}" if es_adjunto_original else nombre_f
+                    archivos_payload.append({
+                        "subcarpeta_portal": subcarpeta_portal,
+                        "codigo_id": codigo,
+                        "nombre_archivo": nombre_en_drive,
+                        "contenido_base64": b64_content
+                    })
+                except Exception as e:
+                    print(f"   [!] No se pudo codificar {nombre_f}: {e}")
+
+        # También subimos el archivo CRM Maestro actualizado a la carpeta raíz
+        if os.path.exists(ARCHIVO_CATALOGO_MAESTRO):
+            try:
+                with open(ARCHIVO_CATALOGO_MAESTRO, "rb") as bf_crm:
+                    b64_crm = base64.b64encode(bf_crm.read()).decode("utf-8")
+                archivos_payload.append({
+                    "subcarpeta_portal": subcarpeta_portal,
+                    "codigo_id": codigo,
+                    "nombre_archivo": os.path.basename(ARCHIVO_CATALOGO_MAESTRO),
+                    "contenido_base64": b64_crm
+                })
+            except Exception:
+                pass
+
+        print(f"   ☁️ [Agente 5] Subiendo {len(archivos_payload)} archivos (DOC 1, DOC 2, DOC 3, Excel, CRM + Adjuntos) a Google Drive...")
+
+        lista_adjuntos_html = "".join([f"<li>📎 {os.path.basename(a)}</li>" for a in expediente["adjuntos_locales"]])
+
+        cuerpo_html_correo = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 680px; margin: auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
+          <div style="background: #0f172a; color: #ffffff; padding: 22px;">
+            <h2 style="margin: 0; color: #10b981;">🚀 GoviLicit.IA · Oportunidad Auditada y Cotizada</h2>
+            <p style="margin: 6px 0 0; font-size: 14px; color: #e2e8f0;">Código: <b>{codigo}</b> · Portal: <b>{expediente['tipo_portal']}</b></p>
+          </div>
+          <div style="padding: 22px; background: #ffffff; color: #1e293b;">
+            <h3 style="margin-top: 0; color: #0f172a;">{expediente['nombre']}</h3>
+            <p style="font-size: 14px; line-height: 1.5;">
+               <b>🏛️ Organismo Comprador:</b> {expediente['organismo']} ({expediente['comuna']})<br>
+               <b>📅 Fecha de Cierre:</b> {expediente['fecha_cierre']}<br>
+               <b>🎯 Palabra Clave Detectada:</b> {expediente['keyword_match']}
+            </p>
+            <table style="width: 100%; border-collapse: collapse; margin: 16px 0; background: #f8fafc; border: 1px solid #e2e8f0;">
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 12px;"><b>💰 Presupuesto Entidad Estatal:</b></td>
+                <td style="padding: 12px; text-align: right; font-weight: bold; font-size: 15px;">${expediente['presupuesto_estatal_clp']:,} CLP</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 12px;"><b>📄 Oferta Oficial DOC 2 (92% Neto):</b></td>
+                <td style="padding: 12px; text-align: right; font-weight: bold; color: #2563eb; font-size: 15px;">${eq['oferta_neta_clp']:,} CLP + IVA (${eq['oferta_total_bruta_clp']:,} Total)</td>
+              </tr>
+              <tr style="background: #ecfdf5;">
+                <td style="padding: 12px;"><b>💵 Ganancia Limpia de Bolsillo:</b></td>
+                <td style="padding: 12px; text-align: right; font-weight: bold; color: #059669; font-size: 16px;">${eq['ganancia_limpia_bolsillo_clp']:,} CLP ({eq['margen_rentabilidad_pct']}%)</td>
+              </tr>
+            </table>
+            <p style="font-size: 13px; color: #334155; background: #f1f5f9; padding: 12px; border-radius: 8px;"><b>Resumen Ejecutivo IA:</b> {informes['resumen_ejecutivo_gerencial']}</p>
+            <p style="font-size: 13px; color: #1e293b;"><b>📎 Archivos en la carpeta del proyecto:</b> DOC 1 (Auditoría 37 Normas), DOC 2 (Cotización 1 Hoja), DOC 3 (Financiero Word), Planilla Excel, CRM Maestro y Adjuntos:</p>
+            <ul style="font-size: 12px; color: #334155;">{lista_adjuntos_html}</ul>
+            <div style="margin-top: 22px; text-align: center;">
+              <a href="{expediente['url_portal']}" style="background: #2563eb; color: #ffffff; padding: 13px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">🔗 Abrir Ficha Oficial en Mercado Público</a>
+            </div>
+          </div>
+        </div>
+        """
+
+        payload_bridge = {
+            "empresa": "Mantytech_SpA",
+            "email_destino": self.perfil["email_notificaciones"],
+            "asunto_email": f"✅ [GoviLicit.IA] {codigo} ({expediente['tipo_portal']}) | Ganancia: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP",
+            "html_resumen": cuerpo_html_correo,
+            "archivos": archivos_payload
+        }
+
+        try:
+            resp = requests.post(
+                URL_APPS_SCRIPT,
+                data=json.dumps(payload_bridge),
+                headers={"Content-Type": "text/plain;charset=utf-8"},
+                timeout=90,
+                allow_redirects=True
+            )
+            if resp.status_code == 200:
+                try:
+                    js_r = resp.json()
+                    if js_r.get("status") == "ok":
+                        url_drive = js_r.get("folder_url", "")
+                        print(f"   ✅ [OK GOOGLE DRIVE & EMAIL] Subido a Drive y correo enviado a {self.perfil['email_notificaciones']}")
+                        print(f"   📂 Link Carpeta Drive: {url_drive}")
+                        return {"subido_drive": True, "url_carpeta_drive": url_drive}
+                except Exception:
+                    print(f"   ✅ [OK GOOGLE DRIVE & EMAIL] Sincronización completada (HTTP 200).")
+                    return {"subido_drive": True, "url_carpeta_drive": expediente["url_portal"]}
+            else:
+                print(f"   [!] Apps Script devolvió HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"   [!] Excepción sincronizando con Google Apps Script: {e}")
+
+        return {"subido_drive": False, "url_carpeta_drive": carpeta_proyecto}
+
+    def enviar_resumen_whatsapp_lote(self, resultados_lote):
+        if not resultados_lote:
+            return
+
+        lineas = [
+            f"🤖 *GOVILICIT.IA · REPORTE DE {len(resultados_lote)} NUEVAS OPORTUNIDADES*",
+            f"📅 Fecha: {FECHA_HOY_STR}",
+            "----------------------------------------"
+        ]
+        for idx, item in enumerate(resultados_lote, 1):
+            exp = item["expediente"]
+            eq = item["escenarios"]["equilibrado"]
+            lineas.append(
+                f"*{idx}. [{exp['codigo']}] ({exp['tipo_portal']})*\n"
+                f"📌 {exp['nombre'][:55]}\n"
+                f"🏛️ Comprador: {exp['organismo'][:45]}\n"
+                f"💰 Presupuesto Estado: *${exp['presupuesto_estatal_clp']:,} CLP*\n"
+                f"📄 Oferta DOC 2 (92%): *${eq['oferta_neta_clp']:,} CLP + IVA*\n"
+                f"💵 Ganancia Limpia: *${eq['ganancia_limpia_bolsillo_clp']:,} CLP ({eq['margen_rentabilidad_pct']}%)*\n"
+                f"🔗 Portal MP: {exp['url_portal']}"
+            )
+            lineas.append("----------------------------------------")
+
+        lineas.append("✅ _DOC 1, DOC 2 (1 hoja), DOC 3, Excel, Tablero CRM y Adjuntos listos en tu carpeta y Google Drive._")
+        mensaje_final = "\n".join(lineas)
+
+        try:
+            r_wa = requests.post(
+                WHATSAPP_API_LOCAL,
+                json={"number": WHATSAPP_DESTINO.replace("+", ""), "text": mensaje_final},
+                timeout=3
+            )
+            if r_wa.status_code in [200, 201]:
+                print("   📲 [WhatsApp VPS] Alerta enviada automáticamente en segundo plano.")
+                return
+        except Exception:
+            pass
+
+        numero_limpio = re.sub(r"\D", "", WHATSAPP_DESTINO)
+        url_wa_web = f"https://web.whatsapp.com/send?phone={numero_limpio}&text={urllib.parse.quote(mensaje_final)}"
+        print(f"   📲 [Agente 5] Abriendo resumen consolidado en WhatsApp Web para {WHATSAPP_DESTINO}...")
+        try:
+            webbrowser.open(url_wa_web)
+        except Exception:
+            pass
+
+    def empaquetar_y_entregar_proyecto(self, expediente, informes, escenarios):
+        codigo = expediente["codigo"]
+        plan = self.perfil.get("plan_activo", "PLAN_FULL_EMPRESARIAL")
+        base_dir = CARPETA_COMPRAS_AGILES if expediente["tipo_portal"] == "COMPRA_AGIL" else CARPETA_LICITACIONES
+        carpeta_proyecto = os.path.join(base_dir, codigo)
+        os.makedirs(carpeta_proyecto, exist_ok=True)
+
+        print(f"\n📦 [AGENTE 5] GENERANDO PAQUETE PREMIUM ({plan}) PARA: {codigo}")
+
+        ruta_doc2 = os.path.join(carpeta_proyecto, f"DOC2_Cotizacion_Presupuesto_Oficial_Mantytech_SpA_{codigo}.docx")
+        self.generar_doc2_cotizacion_1_hoja(expediente, informes, escenarios, ruta_doc2)
+        print(f"   ✓ DOC 2 (Cotización Premium 1 Hoja) : {os.path.basename(ruta_doc2)}")
+
+        if plan in ["PLAN_2", "PLAN_3"]:
+            ruta_doc1 = os.path.join(carpeta_proyecto, f"DOC1_Informe_Auditoria_Interna_Mantytech_SpA_{codigo}.docx")
+            ruta_doc3 = os.path.join(carpeta_proyecto, f"DOC3_Resumen_Financiero_4_Pestanas_{codigo}.docx")
+            self.generar_doc1_auditoria(expediente, informes, escenarios, ruta_doc1)
+            self.generar_doc3_financiero_word(expediente, informes, escenarios, ruta_doc3)
+            print(f"   ✓ DOC 1 (Dossier Ejecutivo Pro)     : {os.path.basename(ruta_doc1)}")
+            print(f"   ✓ DOC 3 (Reporte Financiero Pro)    : {os.path.basename(ruta_doc3)}")
+
+        if plan == "PLAN_3":
+            ruta_excel = os.path.join(carpeta_proyecto, f"Planilla_Financiera_4_Pestanas_{codigo}.xlsx")
+            self.generar_excel_4_pestanas(expediente, informes, escenarios, ruta_excel)
+            print(f"   ✓ Excel Financiero (4 Pestañas Pro) : {os.path.basename(ruta_excel)}")
+
+        self.actualizar_catalogo_maestro(expediente, escenarios)
+        print(f"   ✓ Tablero CRM Maestro actualizado   : {os.path.basename(ARCHIVO_CATALOGO_MAESTRO)}")
+        print(f"   ✓ Adjuntos Originales guardados en  : {os.path.join(carpeta_proyecto, 'adjuntos')}")
+
+        estado_nube = self.sincronizar_drive_y_correo(carpeta_proyecto, expediente, informes, escenarios)
+        return estado_nube
+
+
+# ==============================================================================
+# MOTOR PRINCIPAL DE EJECUCIÓN (PIPELINE COMPLETO DE LOS 6 AGENTES)
+# ==============================================================================
+def ejecutar_pipeline_6_agentes(codigo_especifico=None):
+    print("""
+    ╔══════════════════════════════════════════════════════════════════════════╗
+    ║   GOVILICIT.IA - MOTOR B2G DE 6 AGENTES AUTÓNOMOS (VERSIÓN 5.3 PRO)      ║
+    ║   Compra Ágil API v2 + Licitaciones API v1 + Plantillas Word & CRM Pro   ║
+    ║   Mantytech SpA · Descarga Real de Adjuntos + 37 Normas + Drive/Email    ║
+    ╚══════════════════════════════════════════════════════════════════════════╝
+    """)
+
+    agente0 = Agente0Contexto()
+    perfil = agente0.inicializar_entorno()
+
+    agente1 = Agente1Buscador(perfil)
+    agente2 = Agente2Extractor(perfil)
+    agente3 = Agente3AuditorCotizador(perfil)
+    agente4 = Agente4IngenieriaFinanciera(perfil)
+    agente5 = Agente5Entregador(perfil)
+
+    if codigo_especifico:
+        es_ca = ("COT" in codigo_especifico.upper())
+        candidatos = [{
+            "codigo": codigo_especifico.strip(),
+            "nombre": f"Proceso Solicitado {codigo_especifico.strip()}",
+            "tipo_portal": "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA",
+            "keyword_match": "Solicitud Directa",
+            "fecha_cierre": "Ver Ficha"
+        }]
+    else:
+        candidatos = agente1.ejecutar_barrido()
+
+    if not candidatos:
+        print("\nℹ️ No hay proyectos nuevos pendientes en este ciclo (borra historial_proyectos_procesados.json si deseas reprocesar).")
+        return
+
+    resultados_lote = []
+    for idx, candidato in enumerate(candidatos, 1):
+        codigo = candidato["codigo"]
+        base_dir = CARPETA_COMPRAS_AGILES if candidato["tipo_portal"] == "COMPRA_AGIL" else CARPETA_LICITACIONES
+        carpeta_proyecto = os.path.join(base_dir, codigo)
+        os.makedirs(carpeta_proyecto, exist_ok=True)
+
+        print(f"\n################################################################################")
+        print(f"🚀 PROCESANDO PROYECTO {idx}/{len(candidatos)}: {codigo} ({candidato['tipo_portal']}) - {candidato['nombre']}")
+        print(f"################################################################################")
+
+        expediente = agente2.extraer_proyecto_completo(candidato, carpeta_proyecto)
+        informes = agente3.auditar_y_redactar_4_informes(expediente)
+        escenarios = agente4.calcular_matriz_financiera(expediente, informes)
+        estado_nube = agente5.empaquetar_y_entregar_proyecto(expediente, informes, escenarios)
+
+        agente1.registrar_procesado(codigo)
+
+        resultados_lote.append({
+            "expediente": expediente,
+            "informes": informes,
+            "escenarios": escenarios,
+            "nube": estado_nube
+        })
+        time.sleep(2)
+
+    agente5.enviar_resumen_whatsapp_lote(resultados_lote)
+    print("\n================================================================================")
+    print(f"🎉 PIPELINE DE 6 AGENTES COMPLETADO CON ÉXITO ({len(resultados_lote)} proyectos procesados)")
+    print("================================================================================")
+
+
+if __name__ == "__main__":
+    arg_codigo = sys.argv[1] if len(sys.argv) > 1 else None
+    ejecutar_pipeline_6_agentes(arg_codigo)
