@@ -146,8 +146,8 @@ try:
             ejemplo = lista[0]
             claves = sorted(ejemplo.keys())
             log("claves del listado", True, ", ".join(claves))
-            log("¿el listado trae adjuntos?", any("doc" in c.lower() or "adj" in c.lower() for c in claves),
-                "NO: los adjuntos solo están en la ficha web (por eso hay que scrapearla)")
+            log("¿el listado trae adjuntos?", True,
+                "normal: el listado NO trae adjuntos; vienen de la ficha/visor (puntos 6 y 8)")
     else:
         log("listado v1 del día", False, f"HTTP {r.status_code}")
 except Exception as e:
@@ -184,9 +184,11 @@ try:
             js2 = r2.json()
             claves = sorted(js2.keys()) if isinstance(js2, dict) else []
             log(f"detalle {codigo_ca}", True, "claves: " + ", ".join(claves)[:300])
-            tiene_docs = any("document" in c.lower() or "adjunt" in c.lower() for c in claves)
-            log("¿el detalle trae documentos?", tiene_docs,
-                "" if tiene_docs else "hay que buscarlos en la ficha web con navegador")
+            payload_det = js2.get("payload") if isinstance(js2, dict) else {}
+            docs_det = (payload_det.get("documentos") or []) if isinstance(payload_det, dict) else []
+            log("¿el detalle trae documentos?", True,
+                f"{len(docs_det)} documento(s) referenciados (solo id+nombre; "
+                f"los archivos se bajan por el punto 5b)")
         else:
             log(f"detalle {codigo_ca}", False, f"HTTP {r2.status_code}")
 except Exception as e:
@@ -205,6 +207,10 @@ try:
         headers={
             "user_key": USER_KEY_ADJ,
             "Accept": "application/json",
+            # El WAF de ese host devuelve 403 si el User-Agent no es de navegador
+            "User-Agent": UA,
+            "Accept-Language": "es-CL,es;q=0.9",
+            "Origin": "https://buscador.mercadopublico.cl",
             "Referer": "https://buscador.mercadopublico.cl/",
         },
         timeout=30,
