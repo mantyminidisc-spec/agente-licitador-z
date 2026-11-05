@@ -163,6 +163,18 @@ DRIVE_MAX_BYTES = int(os.getenv("DRIVE_MAX_BYTES", str(6 * 1024 * 1024)))  # por
 MAX_BYTES_DESCARGA = int(os.getenv("MAX_BYTES_DESCARGA", str(80 * 1024 * 1024)))
 GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 
+# --- Servicio OFICIAL de adjuntos de Compra Ágil -----------------------------
+# Es el mismo microservicio que usa la web del buscador (SPA de React). Se
+# descubrió leyendo su bundle:  /v1/adjuntos-compra-agil/listar/{codigo}  y
+# /v1/adjuntos-compra-agil/descargar/{guid}, autenticado con el header user_key.
+# Ventaja: NO pasa por el CloudFront del buscador (que responde 403).
+MP_ADJUNTO_CA_BASE = os.getenv(
+    "MP_ADJUNTO_CA_BASE", "https://adjunto.mercadopublico.cl/adjunto-compra-agil"
+).strip()
+MP_ADJUNTO_CA_USER_KEY = os.getenv(
+    "MP_ADJUNTO_CA_USER_KEY", "41186b85826e80d1a0d445a6ce67d1a3"
+).strip()
+
 HEADERS_WEB = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -1138,9 +1150,99 @@ class Agente2Extractor:
                                                 carpeta, codigo, sesion, referer=url_ficha))
         return list(dict.fromkeys(rutas))
 
+    def _adjuntos_compra_agil_servicio(self, codigo, carpeta, sesion):
+        """Servicio OFICIAL de adjuntos de Compra Ágil (el que usa la web).
+
+        Resuelve el problema de raíz: el buscador está detrás de CloudFront (403)
+        y su ficha es una SPA de React, así que no había forma de leer los
+        adjuntos desde el HTML. Este microservicio los entrega por REST:
+
+            GET {BASE}/v1/adjuntos-compra-agil/listar/{codigo}    (header user_key)
+            GET {BASE}/v1/adjuntos-compra-agil/descargar/{guid}   (header user_key)
+        """
+        rutas = []
+        if not MP_ADJUNTO_CA_BASE:
+            return rutas
+        cabecera = {
+            "user_key": MP_ADJUNTO_CA_USER_KEY,
+            "Accept": "application/json",
+            "Referer": "https://buscador.mercadopublico.cl/",
+        }
+        url_listar = f"{MP_ADJUNTO_CA_BASE}/v1/adjuntos-compra-agil/listar/{codigo}"
+
+        datos = None
+        for verificar in (True, False):
+            try:
+                r = sesion.get(url_listar, headers=cabecera, timeout=30, verify=verificar)
+            except Exception as e:
+                texto_error = str(e).upper()
+                if verificar and any(k in texto_error for k in ("SSL", "CERTIFICATE", "TLS")):
+                    continue  # el certificado de ese host no valida: se reintenta sin verificar
+                print(f"      [x] Servicio de adjuntos CA: {e}")
+                return rutas
+            if verificar is False:
+                print("      [!] El certificado de adjunto.mercadopublico.cl no valida; "
+                      "se descarga sin verificar TLS.")
+            if r.status_code != 200:
+                print(f"      [x] Listado de adjuntos CA HTTP {r.status_code}: {str(r.text)[:120]}")
+                return rutas
+            try:
+                datos = r.json()
+            except Exception:
+                print("      [x] El servicio de adjuntos CA no devolvió JSON.")
+                return rutas
+            break
+
+        if not datos:
+            return rutas
+
+        payload = datos.get("payload")
+        if isinstance(payload, dict):
+            archivos = payload.get("files") or payload.get("archivos") or []
+        elif isinstance(payload, list):
+            archivos = payload
+        else:
+            archivos = []
+        archivos = [a for a in archivos if isinstance(a, dict)]
+
+        if not archivos:
+            print("      ℹ️ [CA] El proceso no tiene adjuntos publicados en el servicio oficial.")
+            return rutas
+
+        print(f"      📎 [CA] {len(archivos)} adjunto(s) oficiales detectados.")
+        for arc in archivos:
+            guid = str(arc.get("id") or arc.get("id_adjunto") or arc.get("guid") or "").strip()
+            nombre = str(arc.get("nombreArchivo") or arc.get("nombre") or "").strip()
+            if not guid:
+                continue
+            if not nombre:
+                nombre = f"Adjunto_{codigo}.pdf"
+            url_desc = f"{MP_ADJUNTO_CA_BASE}/v1/adjuntos-compra-agil/descargar/{guid}"
+            contenido = b""
+            for verificar in (True, False):
+                try:
+                    r2 = sesion.get(url_desc, verify=verificar, timeout=180,
+                                    headers={"user_key": MP_ADJUNTO_CA_USER_KEY,
+                                             "Accept": "*/*",
+                                             "Referer": "https://buscador.mercadopublico.cl/"})
+                except Exception:
+                    continue
+                if r2.status_code == 200 and r2.content:
+                    contenido = r2.content
+                    break
+                print(f"      [x] Descarga de adjunto CA HTTP {r2.status_code} ({nombre})")
+                break
+            ruta = self._guardar_bytes(contenido, carpeta, nombre, codigo,
+                                       origen="(servicio oficial adjuntos CA)")
+            if ruta:
+                rutas.append(ruta)
+        return rutas
+
     def _adjuntos_compra_agil(self, codigo, datos_api, carpeta, sesion):
         rutas = []
         extra = {"ticket": TICKET_MERCADO_PUBLICO}
+        # 0) SERVICIO OFICIAL de adjuntos (fuente confiable: no pasa por CloudFront)
+        rutas.extend(self._adjuntos_compra_agil_servicio(codigo, carpeta, sesion))
         # 1) URLs ya vienen en el JSON de detalle de la API v2
         rutas.extend(self._descargar_lista_urls(self._urls_desde_json(datos_api or {}),
                                                 carpeta, codigo, sesion, extra=extra))

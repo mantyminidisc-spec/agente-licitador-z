@@ -49,7 +49,7 @@ for candidato in (".env", "../.env", "/app/.env"):
                     os.environ.setdefault(k.strip(), v.strip())
         break
 
-TICKET = os.getenv("TICKET_MERCADO_PUBLICO", "").strip()
+TICKET = os.getenv("TICKET_MERCADO_PUBLICO", "BB393A5F-C2F1-4027-95EB-300DE6B49C95").strip()
 API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 MODELO = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 CODIGO = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -105,7 +105,7 @@ log("GEMINI_API_KEY", bool(API_KEY), (API_KEY[:6] + "...") if API_KEY else "NO c
 log("GEMINI_MODEL", True, MODELO)
 log("LICITAIA_DATA_DIR", bool(os.getenv("LICITAIA_DATA_DIR")),
     os.getenv("LICITAIA_DATA_DIR", "sin definir -> usa el cwd (se pierde al recrear el contenedor)"))
-log("APPS_SCRIPT_URL", bool(os.getenv("APPS_SCRIPT_URL")), os.getenv("APPS_SCRIPT_URL", "(usa la URL fija del código)"))
+log("APPS_SCRIPT_URL", True, os.getenv("APPS_SCRIPT_URL") or "(se usa la URL fija del código)")
 
 # ---------------------------------------------------------------------------
 bloque("3. GEMINI (el modelo retirado explicaba los informes genéricos)")
@@ -193,6 +193,39 @@ except Exception as e:
     log("listado compra ágil v2", False, str(e)[:90])
 
 # ---------------------------------------------------------------------------
+bloque("5b. SERVICIO OFICIAL DE ADJUNTOS DE COMPRA ÁGIL (la vía que sí funciona)")
+# ---------------------------------------------------------------------------
+USER_KEY_ADJ = os.getenv("MP_ADJUNTO_CA_USER_KEY", "41186b85826e80d1a0d445a6ce67d1a3").strip()
+BASE_ADJ = os.getenv("MP_ADJUNTO_CA_BASE", "https://adjunto.mercadopublico.cl/adjunto-compra-agil").strip()
+codigo_adj = CODIGO or "5626-953-COT26"
+url_adj = f"{BASE_ADJ}/v1/adjuntos-compra-agil/listar/{codigo_adj}"
+try:
+    r_adj = requests.get(
+        url_adj,
+        headers={
+            "user_key": USER_KEY_ADJ,
+            "Accept": "application/json",
+            "Referer": "https://buscador.mercadopublico.cl/",
+        },
+        timeout=30,
+    )
+    if r_adj.status_code == 200:
+        archivos_adj = ((r_adj.json().get("payload") or {}).get("files") or [])
+        log("listar adjuntos de Compra Ágil", True,
+            f"{len(archivos_adj)} archivo(s) para {codigo_adj}")
+        for f_adj in archivos_adj[:5]:
+            log(f"   · {f_adj.get('nombreArchivo')}", True, str(f_adj.get("id"))[:36])
+    else:
+        log("listar adjuntos de Compra Ágil", False,
+            f"HTTP {r_adj.status_code}: {r_adj.text[:120]}")
+except Exception as e_adj:
+    if any(k in str(e_adj).upper() for k in ("SSL", "CERTIFICATE", "TLS")):
+        log("listar adjuntos de Compra Ágil", False,
+            f"certificado TLS: {str(e_adj)[:70]} (el agente reintenta sin verificar)")
+    else:
+        log("listar adjuntos de Compra Ágil", False, str(e_adj)[:100])
+
+# ---------------------------------------------------------------------------
 bloque("6. FICHA DE LICITACIÓN (de aquí salen los PDF/DOCX reales)")
 # ---------------------------------------------------------------------------
 codigo_lic = CODIGO or "1234-1-LE26"
@@ -221,14 +254,34 @@ for etiqueta, cliente in (
 # ---------------------------------------------------------------------------
 bloque("7. BUSCADOR (ficha de Compra Ágil: es una SPA)")
 # ---------------------------------------------------------------------------
-url_buscador = f"https://buscador.mercadopublico.cl/ficha?code={CODIGO or '3681-16-CO26'}"
+url_buscador = f"https://buscador.mercadopublico.cl/ficha?code={CODIGO or '5626-953-COT26'}"
+HDRS_NAV = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+    "Referer": "https://www.mercadopublico.cl/",
+    "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
 try:
-    r = requests.get(url_buscador, timeout=45)
+    r = requests.get(url_buscador, headers=HDRS_NAV, timeout=45)
     cuerpo = r.text or ""
-    log("buscador con requests", r.status_code == 200 and not es_waf(cuerpo),
-        f"HTTP {r.status_code}" + (" · CloudFront 403" if es_waf(cuerpo) else f" · {len(cuerpo)} chars"))
+    es_shell = len(cuerpo) < 5000 and "static/js" in cuerpo
+    detalle = f"HTTP {r.status_code}"
+    if es_waf(cuerpo):
+        detalle += " · CloudFront 403 (el HTML no sirve: usar el servicio de adjuntos del punto 5b)"
+    elif es_shell:
+        detalle += f" · {len(cuerpo)} chars (shell de la SPA: el contenido lo pinta JavaScript)"
+    else:
+        detalle += f" · {len(cuerpo)} chars"
+    log("buscador con cabeceras de navegador", r.status_code == 200 and not es_waf(cuerpo), detalle)
 except Exception as e:
-    log("buscador con requests", False, str(e)[:90])
+    log("buscador con cabeceras de navegador", False, str(e)[:90])
 
 if HAY_PLAYWRIGHT:
     try:
@@ -237,10 +290,11 @@ if HAY_PLAYWRIGHT:
             ctx = nav.new_context(user_agent=UA, locale="es-CL", viewport={"width": 1366, "height": 900})
             pg = ctx.new_page()
             pg.goto(url_buscador, wait_until="domcontentloaded", timeout=60000)
-            pg.wait_for_timeout(6000)
+            pg.wait_for_timeout(8000)
             texto = pg.inner_text("body") or ""
-            log("buscador con Playwright", len(texto) > 200 and not es_waf(texto),
-                f"{len(texto)} chars renderizados")
+            bloqueado = es_waf(texto)
+            log("buscador con Playwright", not bloqueado,
+                f"{len(texto)} chars" + (" · página de bloqueo" if bloqueado else " · render OK"))
             enlaces = pg.eval_on_selector_all(
                 "a[href*='ViewAttachment'], a[href*='.pdf'], a[href*='descargar']",
                 "els => els.map(e => e.getAttribute('href')).slice(0,10)")
