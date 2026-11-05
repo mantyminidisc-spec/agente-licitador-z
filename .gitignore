@@ -4,3 +4,11 @@ __pycache__/
 Entregables_Drive_GoviLicit/
 historial_proyectos_procesados.json
 
+diagnostico.txt
+radiografia_agente2.txt
+codigo_completo.txt
+AGENTELICITADOR1/
+AGENTELICITADOR1
+*.bak_v53
+*.log
+cola_pendientes.json

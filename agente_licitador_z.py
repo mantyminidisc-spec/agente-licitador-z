@@ -58,6 +58,8 @@ import zipfile
 import datetime
 import webbrowser
 import urllib.parse
+import io
+import traceback
 from pathlib import Path
 
 # Soporte UTF-8 para consola en Windows (evita errores con emojis como 🤖 o 🔍)
@@ -98,6 +100,14 @@ try:
         PLAYWRIGHT_DISPONIBLE = True
     except ImportError:
         PLAYWRIGHT_DISPONIBLE = False
+    # curl_cffi clona la huella TLS/JA3 de un Chrome real. Sin esto, CloudFront
+    # responde 403 aunque el User-Agent sea perfecto (el bloqueo es de TLS).
+    try:
+        from curl_cffi import requests as curl_requests
+        CURL_CFFI_DISPONIBLE = True
+    except Exception:
+        curl_requests = None
+        CURL_CFFI_DISPONIBLE = False
 except ImportError as e:
     print(f"[ERROR CRÍTICO] Faltan librerías: {e}")
     print("Ejecuta en tu consola: pip install requests beautifulsoup4 openpyxl python-docx pypdf pdfplumber playwright")
@@ -114,32 +124,59 @@ if os.path.exists(".env"):
                 _k, _v = _env_line.strip().split("=", 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
 
-TICKET_MERCADO_PUBLICO = "BB393A5F-C2F1-4027-95EB-300DE6B49C95"
-API_KEY_GEMINI = os.getenv("GEMINI_API_KEY", "")
-URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbw1gtR2Y37abnEnAIYW1Y8EXAbSoIU6CMd2ZLQnaFGrHY-eRT3JGI7GSrN5SXPhSQc/exec"
+# --- Credenciales: SIEMPRE por variable de entorno en el servidor -----------
+TICKET_MERCADO_PUBLICO = os.getenv("TICKET_MERCADO_PUBLICO", "BB393A5F-C2F1-4027-95EB-300DE6B49C95").strip()
+API_KEY_GEMINI = os.getenv("GEMINI_API_KEY", "").strip()
 
-CORREO_DESTINO = "booknegocios2015@gmail.com"
-WHATSAPP_DESTINO = "+56987567519"
-WHATSAPP_API_LOCAL = "http://localhost:8080/message/sendText/GoviLicit"
+# Modelos vigentes 2026. El modelo 1.5-flash está RETIRADO: cualquier llamada a ese
+# modelo devuelve 404 y el agente caía en silencio al "motor local de respaldo".
+MODELO_GEMINI = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+MODELO_GEMINI_VISION = os.getenv("GEMINI_MODEL_VISION", "gemini-2.5-flash").strip()
 
-DIRECTORIO_RAIZ = os.getcwd()
+URL_APPS_SCRIPT = os.getenv(
+    "APPS_SCRIPT_URL",
+    "https://script.google.com/macros/s/AKfycbw1gtR2Y37abnEnAIYW1Y8EXAbSoIU6CMd2ZLQnaFGrHY-eRT3JGI7GSrN5SXPhSQc/exec"
+).strip()
+
+CORREO_DESTINO = os.getenv("CORREO_DESTINO", "booknegocios2015@gmail.com")
+WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56987567519")
+# En un contenedor "localhost" es el propio contenedor: hay que apuntar a la
+# URL real de la Evolution API (o dejarlo vacío para desactivar WhatsApp).
+WHATSAPP_API_LOCAL = os.getenv("WHATSAPP_API_URL", "").strip()
+
+# --- Rutas de datos persistentes -------------------------------------------
+# En Coolify el filesystem del contenedor es efímero: esto DEBE apuntar a un
+# volumen persistente (ej: LICITAIA_DATA_DIR=/data).
+DIRECTORIO_RAIZ = os.getenv("LICITAIA_DATA_DIR") or os.getcwd()
 CARPETA_ENTREGABLES = os.path.join(DIRECTORIO_RAIZ, "Entregables_Drive_GoviLicit")
 CARPETA_COMPRAS_AGILES = os.path.join(CARPETA_ENTREGABLES, "01_COMPRAS_AGILES")
 CARPETA_LICITACIONES = os.path.join(CARPETA_ENTREGABLES, "02_LICITACIONES_PUBLICAS")
 ARCHIVO_HISTORIAL = os.path.join(DIRECTORIO_RAIZ, "historial_proyectos_procesados.json")
+ARCHIVO_COLA_PENDIENTE = os.path.join(DIRECTORIO_RAIZ, "cola_pendientes.json")
 FECHA_HOY_STR = datetime.datetime.now().strftime("%d-%m-%Y")
 ARCHIVO_CATALOGO_MAESTRO = os.path.join(CARPETA_ENTREGABLES, f"00_CRM_MAESTRO_LICITACIONES_MANTYTECH_{FECHA_HOY_STR}.xlsx")
 
+# --- Parámetros de operación ------------------------------------------------
+PAUSA_ENTRE_PROYECTOS = int(os.getenv("PAUSA_ENTRE_PROYECTOS", "15"))
+REINTENTOS_DRIVE = int(os.getenv("REINTENTOS_DRIVE", "3"))
+DRIVE_MAX_BYTES = int(os.getenv("DRIVE_MAX_BYTES", str(6 * 1024 * 1024)))  # por envío
+MAX_BYTES_DESCARGA = int(os.getenv("MAX_BYTES_DESCARGA", str(80 * 1024 * 1024)))
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
+
 HEADERS_WEB = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "es-CL,es;q=0.9,en;q=0.8"
+    "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 HEADERS_API_COMPRA_AGIL = {
     "ticket": TICKET_MERCADO_PUBLICO,
     "Accept": "application/json",
-    "User-Agent": "GoviLicit-B2G-Engine/5.3 (Mantytech SpA)"
+    "User-Agent": "GoviLicit-B2G-Engine/5.4 (Mantytech SpA)",
 }
 
 # ==============================================================================
@@ -206,6 +243,65 @@ def _normalizar_para_regex(texto):
         t = t.replace(o, d)
     return t
 
+
+
+# ==============================================================================
+# LLAMADA ÚNICA A GEMINI (JSON validado, modelo vigente, reintentos con backoff)
+# ==============================================================================
+def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3):
+    """Devuelve (dict, "") si todo va bien, o (None, motivo_del_fallo).
+
+    Por qué existe: con el modelo 1.5-flash (retirado) o con la respuesta truncada,
+    json.loads fallaba y TODOS los agentes caían en silencio al texto genérico.
+    Aquí el fallo se informa y se reintenta.
+    """
+    if not API_KEY_GEMINI:
+        return None, "GEMINI_API_KEY no configurada en el entorno"
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{MODELO_GEMINI}:generateContent?key={API_KEY_GEMINI}")
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperatura,
+            "maxOutputTokens": max_tokens,
+            "responseMimeType": "application/json",
+        },
+    }
+    ultimo = "sin intentos"
+    for n in range(1, max(1, intentos) + 1):
+        try:
+            r = requests.post(url, json=payload, timeout=timeout or GEMINI_TIMEOUT)
+            if r.status_code != 200:
+                detalle = (r.text or "")[:220].replace("\n", " ")
+                ultimo = f"HTTP {r.status_code}: {detalle}"
+                if r.status_code in (400, 404):
+                    ultimo += "  <-- modelo inexistente o prompt inválido (revisa GEMINI_MODEL)"
+            else:
+                js = r.json()
+                cand = (js.get("candidates") or [{}])[0]
+                fin = cand.get("finishReason", "")
+                partes = (cand.get("content") or {}).get("parts") or []
+                txt = "".join(p.get("text", "") for p in partes).strip()
+                if not txt:
+                    ultimo = f"respuesta vacía (finishReason={fin})"
+                else:
+                    txt = re.sub(r"^\s*```(?:json)?|```\s*$", "", txt, flags=re.IGNORECASE).strip()
+                    try:
+                        return json.loads(txt), ""
+                    except Exception as e:
+                        i, j = txt.find("{"), txt.rfind("}")
+                        if i >= 0 and j > i:
+                            try:
+                                return json.loads(txt[i:j + 1]), ""
+                            except Exception:
+                                pass
+                        ultimo = (f"JSON inválido ({e}) finishReason={fin} "
+                                  f"largo={len(txt)} (si es MAX_TOKENS, sube max_tokens)")
+        except Exception as e:
+            ultimo = f"excepción de red: {e}"
+        if n < intentos:
+            time.sleep(min(3 * n, 15))
+    return None, ultimo
 
 class Agente0Contexto:
     def __init__(self):
@@ -322,8 +418,11 @@ class Agente1Buscador:
     def registrar_procesado(self, codigo):
         self.historial.add(codigo)
         try:
-            with open(ARCHIVO_HISTORIAL, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(ARCHIVO_HISTORIAL) or ".", exist_ok=True)
+            tmp = ARCHIVO_HISTORIAL + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(sorted(list(self.historial)), f, indent=2, ensure_ascii=False)
+            os.replace(tmp, ARCHIVO_HISTORIAL)
         except Exception as e:
             print(f"   [!] Error guardando historial: {e}")
 
@@ -367,7 +466,7 @@ class Agente1Buscador:
             print(f"      ℹ️ [PRE-FILTRO IA] GEMINI_API_KEY no configurada. Continuando con filtro de reglas.")
             return True, "Filtro sintáctico (sin API key)"
 
-        url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY_GEMINI}"
+        url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO_GEMINI}:generateContent?key={API_KEY_GEMINI}"
 
         prompt = f"""
 Actúa como un Auditor Senior de Licitaciones para la empresa de tecnología Mantytech SpA.
@@ -394,34 +493,22 @@ Responde ÚNICAMENTE en formato JSON:
   "motivo": "explicación clara de 1 frase"
 }}
 """
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"response_mime_type": "application/json"}
-        }
-
-        try:
-            r = requests.post(url_gemini, json=payload, timeout=20)
-            if r.status_code == 200:
-                resp_json = r.json()
-                texto_resp = resp_json["candidates"][0]["content"]["parts"][0]["text"]
-                data_veredicto = json.loads(texto_resp)
-
-                es_ti = bool(data_veredicto.get("pertenece_giro_ti"))
-                rubro = data_veredicto.get("rubro_detectado", "No clasificado")
-                motivo = data_veredicto.get("motivo", "")
-
-                if es_ti:
-                    print(f"      🤖 [PRE-FILTRO IA GEMINI: APROBADO] {codigo} -> Rubro: {rubro} | {motivo}")
-                    return True, f"IA Aprobado ({rubro})"
-                else:
-                    print(f"      🚫 [PRE-FILTRO IA GEMINI: DESCARTADO] {codigo} -> Rubro: {rubro} | {motivo}")
-                    return False, f"Descartado por IA ({rubro}: {motivo})"
-            else:
-                print(f"      ⚠️ [PRE-FILTRO IA] API Gemini status {r.status_code}. Pasando con filtro base.")
-                return True, "Filtro sintáctico (API status != 200)"
-        except Exception as e:
-            print(f"      ⚠️ [PRE-FILTRO IA] Aviso consulta Gemini ({e}). Continuando con filtro de reglas.")
+        veredicto, error_ia = _gemini_generar_json(
+            prompt, temperatura=0.0, max_tokens=400, timeout=45, intentos=2
+        )
+        if not veredicto:
+            print(f"      ⚠️ [PRE-FILTRO IA] Sin veredicto ({error_ia}). Se mantiene el filtro de reglas.")
             return True, "Filtro sintáctico (fallback local)"
+
+        es_ti = bool(veredicto.get("pertenece_giro_ti"))
+        rubro = veredicto.get("rubro_detectado", "No clasificado")
+        motivo = veredicto.get("motivo", "")
+
+        if es_ti:
+            print(f"      🤖 [PRE-FILTRO IA: APROBADO] {codigo} -> Rubro: {rubro} | {motivo}")
+            return True, f"IA Aprobado ({rubro})"
+        print(f"      🚫 [PRE-FILTRO IA: DESCARTADO] {codigo} -> Rubro: {rubro} | {motivo}")
+        return False, f"Descartado por IA ({rubro}: {motivo})"
 
     def _extraer_organismo_comprador(self, item, codigo="", tipo_portal="COMPRA_AGIL"):
         """
@@ -625,7 +712,10 @@ Responde ÚNICAMENTE en formato JSON:
                         if not codigo or codigo in self.historial or any(c["codigo"] == codigo for c in candidatos):
                             continue
 
-                        es_ca = ("COT" in codigo.upper())
+                        codigo_up = codigo.upper()
+                        # En el listado v1 aparecen compras ágiles con sufijo -CO26
+                        # (no solo -COT), y antes se clasificaban como licitación.
+                        es_ca = ("COT" in codigo_up) or ("-CO" in codigo_up)
                         tipo_portal = "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA"
 
                         # 1. Filtro Quirúrgico sintáctico con Regex (\b...\b)
@@ -634,7 +724,9 @@ Responde ÚNICAMENTE en formato JSON:
                             continue
 
                         # 2. Pre-Filtro Semántico con IA (Gemini): valida pertenencia 100% al giro TI/Digital
-                        desc_item = str(item.get("Descripcion") or item.get("nombre") or "")
+                        # El listado v1 casi nunca trae "Descripcion": sin este respaldo,
+                        # el pre-filtro de IA evaluaba un texto vacío.
+                        desc_item = str(item.get("Descripcion") or item.get("Nombre") or nombre or "")
                         aprobado_ia, motivo_ia = self._prefiltro_semantico_gemini(
                             codigo=codigo,
                             titulo=nombre,
@@ -711,367 +803,541 @@ class Agente2Extractor:
             "anexos_mencionados": anexos_detectados if anexos_detectados else ["Anexo Económico / Cotización DOC 2"]
         }
 
-    def _descargar_binario(self, url, ruta_destino, headers_extra=None, sesion=None):
-        """
-        Descarga un archivo binario nativo con User-Agent realista, cookies de sesión
-        y manejo de redirecciones HTTP. Valida que el contenido no sea una página HTML de error.
-        """
+    # ------------------------------------------------------------------
+    # MOTOR DE DESCARGAS v5.4 (curl_cffi + visor ASPX + Playwright red)
+    # ------------------------------------------------------------------
+    MARCAS_BLOQUEO = (
+        "403 error", "the request could not be satisfied", "generated by cloudfront",
+        "request blocked", "error 1020", "attention required", "just a moment",
+        "access denied", "en estos momentos no podemos atender su solicitud",
+        "no tiene permisos para acceder", "captcha",
+    )
+
+    @staticmethod
+    def _limpiar_nombre(nombre, defecto="adjunto"):
+        base = os.path.basename(str(nombre or "").split("?")[0].split("#")[0])
+        base = urllib.parse.unquote(base)
+        base = re.sub(r'[\\/*?:"<>|\r\n\t]', "_", base).strip(" ._")
+        return base or defecto
+
+    @staticmethod
+    def _ext_por_magic(datos, nombre=""):
+        """Detecta el tipo REAL del archivo por sus bytes mágicos (no por la URL)."""
+        if not datos or len(datos) < 8:
+            return ""
+        if datos[:5] == b"%PDF-":
+            return ".pdf"
+        if datos[:4] == b"PK\x03\x04":
+            try:
+                with zipfile.ZipFile(io.BytesIO(datos)) as zf:
+                    nombres = zf.namelist()[:500]
+            except Exception:
+                return ".zip"
+            if any(n.startswith("word/") for n in nombres):
+                return ".docx"
+            if any(n.startswith("xl/") for n in nombres):
+                return ".xlsx"
+            if any(n.startswith("ppt/") for n in nombres):
+                return ".pptx"
+            return ".zip"
+        if datos[:4] == b"\xd0\xcf\x11\xe0":
+            return ".xls" if str(nombre).lower().endswith((".xls", ".xlsx")) else ".doc"
+        if datos[:4] == b"Rar!":
+            return ".rar"
+        if datos[:4] == b"\x89PNG":
+            return ".png"
+        if datos[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        return ""
+
+    @classmethod
+    def _es_bloqueo(cls, datos=b"", texto=""):
+        """¿El cuerpo es una pantalla anti-bot / error del WAF?"""
+        muestra = ""
         try:
-            hdrs = dict(HEADERS_WEB)
-            if headers_extra:
-                hdrs.update(headers_extra)
+            muestra += (datos or b"")[:4096].decode("utf-8", "ignore").lower()
+        except Exception:
+            pass
+        muestra += " " + str(texto or "")[:6000].lower()
+        return any(m in muestra for m in cls.MARCAS_BLOQUEO)
 
-            cliente = sesion if sesion else requests
-            r = cliente.get(url, headers=hdrs, stream=True, timeout=25, allow_redirects=True)
-            if r.status_code == 200:
-                content_type = (r.headers.get("Content-Type") or "").lower()
-                primeros_bytes = b""
-                with open(ruta_destino, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            if not primeros_bytes:
-                                primeros_bytes = chunk[:50]
-                            f.write(chunk)
-
-                # Si el servidor retornó HTML en vez de archivo binario, descartar
-                if b"<!doctype html" in primeros_bytes.lower() or b"<html" in primeros_bytes.lower():
-                    if os.path.exists(ruta_destino):
-                        os.remove(ruta_destino)
-                    return False
-
-                if os.path.exists(ruta_destino) and os.path.getsize(ruta_destino) > 200:
-                    tam_kb = os.path.getsize(ruta_destino) // 1024
-                    print(f"      📥 [OK ADJUNTO ORIGINAL DESCARGADO] {os.path.basename(ruta_destino)} ({tam_kb} KB)")
-                    return True
-                else:
-                    if os.path.exists(ruta_destino):
-                        os.remove(ruta_destino)
-        except Exception as e:
-            print(f"      [!] Nota de descarga {os.path.basename(ruta_destino)}: {e}")
-            if os.path.exists(ruta_destino):
+    def _crear_sesion(self):
+        """Sesión HTTP con huella TLS de Chrome real (curl_cffi) si está instalado."""
+        if CURL_CFFI_DISPONIBLE:
+            for perfil in ("chrome", "chrome131", "chrome124", "chrome120"):
                 try:
-                    os.remove(ruta_destino)
+                    s = curl_requests.Session(impersonate=perfil)
+                    s.headers.update(HEADERS_WEB)
+                    print(f"   🔐 [HTTP] curl_cffi activo (huella TLS impersonate='{perfil}')")
+                    return s
                 except Exception:
-                    pass
-        return False
+                    continue
+        s = requests.Session()
+        s.headers.update(HEADERS_WEB)
+        print("   ⚠️ [HTTP] curl_cffi NO disponible -> requests plano (CloudFront puede devolver 403)")
+        return s
+
+    def _guardar_bytes(self, datos, carpeta, nombre_sugerido, codigo, origen=""):
+        """Valida bytes mágicos, corrige la extensión real y guarda. Devuelve ruta o ''."""
+        if not datos or len(datos) < 300:
+            print(f"      [x] Descartado (vacío o muy pequeño, {len(datos or b'')} bytes): {nombre_sugerido}")
+            return ""
+        if self._es_bloqueo(datos):
+            print(f"      [🛡️ WAF] El portal devolvió una pantalla de bloqueo/error en vez del archivo: {nombre_sugerido}")
+            return ""
+
+        ext_real = self._ext_por_magic(datos, nombre_sugerido)
+        if not ext_real:
+            cabecera = datos[:120].decode("utf-8", "ignore").replace("\n", " ")
+            print(f"      [x] No es un documento válido (no hay firma PDF/ZIP/OLE): {nombre_sugerido} -> {cabecera[:80]!r}")
+            return ""
+
+        ext_sugerida = os.path.splitext(nombre_sugerido)[1].lower()
+        nombre = nombre_sugerido
+        if ext_sugerida != ext_real:
+            # Caso clásico del bug: un .docx guardado como .pdf (o viceversa)
+            nombre = os.path.splitext(nombre_sugerido)[0] + ext_real
+
+        nombre = self._limpiar_nombre(nombre, f"Adjunto_{codigo}{ext_real}")
+        ruta = os.path.join(carpeta, nombre)
+        contador = 2
+        while os.path.exists(ruta):
+            raiz, ext = os.path.splitext(nombre)
+            ruta = os.path.join(carpeta, f"{raiz}_{contador}{ext}")
+            contador += 1
+        with open(ruta, "wb") as f:
+            f.write(datos)
+        kb = len(datos) // 1024
+        print(f"      📥 [OK] {os.path.basename(ruta)} ({kb} KB · {ext_real} verificado) {origen}")
+        return ruta
+
+    def _descargar_binario(self, url, ruta_destino, headers_extra=None, sesion=None, referer=""):
+        """Compatibilidad con el código antiguo: descarga y valida el archivo."""
+        carpeta = os.path.dirname(ruta_destino)
+        os.makedirs(carpeta, exist_ok=True)
+        nombre = os.path.basename(ruta_destino)
+        datos = self._get_bytes(url, sesion=sesion, headers_extra=headers_extra, referer=referer)
+        ruta = self._guardar_bytes(datos, carpeta, nombre, os.path.splitext(nombre)[0], origen="")
+        if ruta and ruta != ruta_destino and os.path.exists(ruta_destino):
+            try:
+                os.remove(ruta_destino)
+            except Exception:
+                pass
+        return bool(ruta)
+
+    def _get_bytes(self, url, sesion=None, headers_extra=None, referer="", max_bytes=None):
+        """GET binario tolerante a fallos. Devuelve bytes o b''."""
+        cliente = sesion or self._crear_sesion()
+        hdrs = {"Accept": "*/*"}
+        if referer:
+            hdrs["Referer"] = referer
+        if headers_extra:
+            hdrs.update(headers_extra)
+        tope = max_bytes or MAX_BYTES_DESCARGA
+        try:
+            r = cliente.get(url, headers=hdrs, timeout=120, allow_redirects=True, stream=True)
+            if r.status_code != 200:
+                motivo = ""
+                if r.status_code in (401, 403):
+                    motivo = " (ticket/permisos o WAF)"
+                print(f"      [x] HTTP {r.status_code}{motivo} -> {str(url)[:110]}")
+                return b""
+            buf = io.BytesIO()
+            for chunk in r.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                buf.write(chunk)
+                if buf.tell() > tope:
+                    print(f"      [x] Archivo excede el tope de {tope // (1024 * 1024)} MB: {str(url)[:90]}")
+                    return b""
+            return buf.getvalue()
+        except Exception as e:
+            print(f"      [x] Error de red descargando {str(url)[:90]}: {e}")
+            return b""
+
+    def _get_texto(self, url, sesion=None, headers_extra=None, referer=""):
+        datos = self._get_bytes(url, sesion=sesion, headers_extra=headers_extra, referer=referer)
+        if not datos:
+            return ""
+        if self._es_bloqueo(datos):
+            print(f"      [🛡️ WAF] Página bloqueada: {str(url)[:100]}")
+            return ""
+        return datos.decode("utf-8", "ignore")
+
+    def _get_json(self, url, sesion=None, headers_extra=None):
+        texto = self._get_texto(url, sesion=sesion, headers_extra=headers_extra)
+        if not texto:
+            return None
+        try:
+            return json.loads(texto)
+        except Exception:
+            return None
+
+    # ---------- descubrimiento de URLs --------------------------------
+    def _urls_desde_json(self, nodo, encontrados=None, pista=""):
+        """Recorre TODO el árbol JSON buscando URLs de documentos y sus nombres."""
+        if encontrados is None:
+            encontrados = []
+        if isinstance(nodo, dict):
+            url = ""
+            nombre = ""
+            for k, v in nodo.items():
+                kl = str(k).lower()
+                if isinstance(v, str) and v.strip():
+                    if kl in ("url", "uri", "url_descarga", "urldescarga", "link", "href",
+                              "download", "downloadurl", "archivo", "file", "path") and v.startswith("http"):
+                        url = v.strip()
+                    if kl in ("nombre", "nombre_archivo", "nombrearchivo", "filename", "file_name",
+                              "titulo", "descripcion", "glosa") and not nombre:
+                        nombre = v.strip()[:120]
+                    if not url and re.match(r"^https?://", v) and re.search(
+                            r"\.(pdf|docx?|xlsx?|pptx?|zip|rar)(\?|$)|adjunt|anexo|document|download|archivo",
+                            v, re.IGNORECASE):
+                        url = v.strip()
+            if url:
+                encontrados.append((url, nombre or pista or "documento"))
+            for k, v in nodo.items():
+                if isinstance(v, (dict, list)):
+                    self._urls_desde_json(v, encontrados, str(k))
+        elif isinstance(nodo, list):
+            for elem in nodo:
+                self._urls_desde_json(elem, encontrados, pista)
+        return encontrados
+
+    def _urls_desde_html(self, html, url_base):
+        """Extrae enlaces de descarga reales del HTML de una ficha."""
+        resultados = []
+        if not html:
+            return resultados
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = (a.get("href") or "").strip()
+            bajo = href.lower()
+            if not href or bajo.startswith(("javascript:", "mailto:", "#")):
+                continue
+            if re.search(r"\.(pdf|docx?|xlsx?|pptx?|zip|rar|csv)(\?|$)", bajo) or any(
+                    k in bajo for k in ("viewattachment", "attachment", "adjunto", "download", "descargar", "archivo")):
+                resultados.append((
+                    urllib.parse.urljoin(url_base, href),
+                    a.get_text(" ", strip=True)[:120] or os.path.basename(href.split("?")[0]),
+                ))
+        return resultados
+
+    def _descargar_lista_urls(self, lista, carpeta, codigo, sesion, referer="", extra=None, limite=25):
+        rutas = []
+        vistos = set()
+        for url, nombre in lista[:limite]:
+            if url in vistos:
+                continue
+            vistos.add(url)
+            if not re.match(r"^https?://", url):
+                continue
+            nombre_ok = self._limpiar_nombre(nombre, f"Adjunto_{codigo}")
+            if not os.path.splitext(nombre_ok)[1]:
+                nombre_ok += ".pdf"
+            datos = self._get_bytes(url, sesion=sesion, headers_extra=extra, referer=referer)
+            ruta = self._guardar_bytes(datos, carpeta, nombre_ok, codigo, origen=f"<- {url[:70]}")
+            if ruta:
+                rutas.append(ruta)
+        return rutas
+
+    # ---------- visor ASPX de licitaciones ----------------------------
+    def _adjuntos_por_visor_aspx(self, token, codigo, carpeta, sesion, referer):
+        """El visor real de Mercado Público: ViewAttachmentLC.aspx + postback por botón."""
+        rutas = []
+        token = urllib.parse.unquote(token)
+        url_visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
+                     f"ViewAttachmentLC.aspx?enc={token}")
+        html = self._get_texto(url_visor, sesion=sesion, referer=referer)
+        if not html:
+            return rutas
+        soup = BeautifulSoup(html, "html.parser")
+        ocultos = {i["name"]: (i.get("value") or "") for i in soup.find_all("input", {"type": "hidden"}) if i.get("name")}
+        if not ocultos:
+            print("      [!] Visor ASPX sin campos ocultos (probablemente token vencido).")
+            return rutas
+
+        botones = []
+        for tr in soup.find_all("tr"):
+            inp = tr.find("input", {"type": "image"})
+            if not (inp and inp.get("name")):
+                continue
+            celdas = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
+            nombre = next((c for c in celdas if re.search(r"\.(pdf|docx?|xlsx?|zip)$", c, re.I)), "")
+            botones.append((inp["name"], nombre))
+
+        for nombre_btn, nombre_arch in botones:
+            payload = dict(ocultos)
+            payload[f"{nombre_btn}.x"] = "8"
+            payload[f"{nombre_btn}.y"] = "8"
+            try:
+                r = sesion.post(url_visor, data=payload, timeout=120, allow_redirects=True,
+                                headers={"Referer": url_visor})
+            except Exception as e:
+                print(f"      [x] Postback ASPX ({nombre_btn}): {e}")
+                continue
+            if r.status_code != 200:
+                print(f"      [x] Postback ASPX HTTP {r.status_code} ({nombre_btn})")
+                continue
+            disp = r.headers.get("Content-Disposition", "") or ""
+            m = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", disp, re.IGNORECASE)
+            sugerido = urllib.parse.unquote(m.group(1).strip()) if m else (nombre_arch or f"Anexo_{codigo}.pdf")
+            ruta = self._guardar_bytes(r.content, carpeta, sugerido, codigo, origen="(visor ASPX)")
+            if ruta:
+                rutas.append(ruta)
+        return rutas
+
+    def _postback_ficha_pdf(self, url_ficha, html, codigo, carpeta, sesion):
+        """Descarga la 'Ficha Oficial' en PDF usando el postback ASP.NET del portal.
+        Es el único documento que SIEMPRE existe para toda licitación."""
+        soup = BeautifulSoup(html, "html.parser")
+        ocultos = {i["name"]: (i.get("value") or "") for i in soup.find_all("input", {"type": "hidden"}) if i.get("name")}
+        if not ocultos:
+            return ""
+        payload = dict(ocultos)
+        payload["__EVENTTARGET"] = "descargar_pdf"
+        payload["__EVENTARGUMENT"] = ""
+        try:
+            r = sesion.post(url_ficha, data=payload, timeout=120, allow_redirects=True,
+                            headers={"Referer": url_ficha})
+        except Exception as e:
+            print(f"      [x] Ficha PDF (postback): {e}")
+            return ""
+        if r.status_code != 200:
+            print(f"      [x] Ficha PDF HTTP {r.status_code}")
+            return ""
+        disp = r.headers.get("Content-Disposition", "") or ""
+        m = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", disp, re.IGNORECASE)
+        sugerido = urllib.parse.unquote(m.group(1).strip()) if m else f"FICHA_OFICIAL_{codigo}.pdf"
+        return self._guardar_bytes(r.content, carpeta, sugerido, codigo, origen="(ficha oficial PDF)")
+
+    def _adjuntos_licitacion(self, codigo, carpeta, sesion):
+        rutas = []
+        url_ficha = ("https://www.mercadopublico.cl/Procurement/Modules/RFB/"
+                     f"DetailsAcquisition.aspx?idlicitacion={codigo}")
+        datos = self._get_bytes(url_ficha, sesion=sesion, referer="https://www.mercadopublico.cl/")
+        if not datos:
+            return rutas
+        if self._es_bloqueo(datos):
+            print(f"      [🛡️ WAF] La ficha de {codigo} vino bloqueada; se intentará con navegador.")
+            return rutas
+        html = datos.decode("utf-8", "ignore")
+
+        # 1) Ficha oficial en PDF (postback descargar_pdf)
+        ruta_ficha = self._postback_ficha_pdf(url_ficha, html, codigo, carpeta, sesion)
+        if ruta_ficha:
+            rutas.append(ruta_ficha)
+
+        # 2) Visor de adjuntos (uno o varios tokens enc)
+        tokens = set(re.findall(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>]+)", html, re.IGNORECASE))
+        for token in tokens:
+            rutas.extend(self._adjuntos_por_visor_aspx(token, codigo, carpeta, sesion, url_ficha))
+
+        # 3) Enlaces directos presentes en la ficha (CSV/JSON/anexos)
+        rutas.extend(self._descargar_lista_urls(self._urls_desde_html(html, url_ficha),
+                                                carpeta, codigo, sesion, referer=url_ficha))
+        return list(dict.fromkeys(rutas))
+
+    def _adjuntos_compra_agil(self, codigo, datos_api, carpeta, sesion):
+        rutas = []
+        extra = {"ticket": TICKET_MERCADO_PUBLICO}
+        # 1) URLs ya vienen en el JSON de detalle de la API v2
+        rutas.extend(self._descargar_lista_urls(self._urls_desde_json(datos_api or {}),
+                                                carpeta, codigo, sesion, extra=extra))
+        # 2) Endpoints oficiales de documentos
+        for sufijo in ("documentos", "adjuntos", "archivos"):
+            url_ep = f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/{sufijo}"
+            js = self._get_json(url_ep, sesion=sesion, headers_extra=extra)
+            if js:
+                rutas.extend(self._descargar_lista_urls(self._urls_desde_json(js), carpeta, codigo, sesion, extra=extra))
+        # 3) Detalle v2 (por si el listado no traía documentos)
+        if not rutas:
+            js_det = self._get_json(f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}",
+                                    sesion=sesion, headers_extra=extra)
+            if js_det:
+                rutas.extend(self._descargar_lista_urls(self._urls_desde_json(js_det), carpeta, codigo, sesion, extra=extra))
+        if rutas:
+            return list(dict.fromkeys(rutas))
+        # 4) Navegador con interceptor de red (el buscador es una SPA)
+        if PLAYWRIGHT_DISPONIBLE:
+            rutas.extend(self._descargar_con_playwright(codigo, "COMPRA_AGIL", carpeta))
+        return list(dict.fromkeys(rutas))
 
     def _descargar_adjuntos_reales_portal(self, codigo, tipo_portal, datos_api, carpeta_adjuntos):
-        """
-        Descargador de nivel industrial con 4 estrategias para adjuntos de Compra Agil y Licitaciones.
-        Estrategia 1: API endpoints oficiales (REST). Estrategia 2: Scraping HTML + visor ASPX.
-        Estrategia 3: Busqueda recursiva en payload JSON. Estrategia 4: Playwright headless fallback.
-        """
+        """Punto de entrada único. Devuelve la lista de archivos REALES descargados."""
         os.makedirs(carpeta_adjuntos, exist_ok=True)
-        archivos_descargados = []
-        extensiones_validas = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".zip", ".rar", ".csv", ".png", ".jpg")
-        print(f"   -> [Agente 2] Escaneando adjuntos oficiales del Estado para {codigo}...")
-        sesion = requests.Session()
-        sesion.headers.update(HEADERS_WEB)
-
-        if tipo_portal != "COMPRA_AGIL":
-            # ─── LICITACIONES PUBLICAS ────────────────────────────────────────────────
-            # Estrategia 1A: API oficial de documentos adjuntos
-            urls_api_docs = [
-                f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo={codigo}&ticket={TICKET_MERCADO_PUBLICO}",
-            ]
-            for url_api_d in urls_api_docs:
-                try:
-                    r_api = sesion.get(url_api_d, timeout=20)
-                    if r_api.status_code == 200:
-                        datos_lic = r_api.json()
-                        for lic_item in datos_lic.get("Listado", []):
-                            docs_adj = (
-                                lic_item.get("DocumentosAdjuntos") or
-                                lic_item.get("Documentos") or
-                                lic_item.get("Adjuntos") or []
-                            )
-                            if isinstance(docs_adj, dict):
-                                docs_adj = docs_adj.get("Listado", [])
-                            for doc in (docs_adj or []):
-                                if not isinstance(doc, dict):
-                                    continue
-                                url_doc = (doc.get("Url") or doc.get("url") or
-                                           doc.get("UrlDescarga") or doc.get("urlDescarga") or "")
-                                nom_doc = (doc.get("Nombre") or doc.get("nombre") or
-                                           doc.get("NombreArchivo") or doc.get("nombre_archivo") or "")
-                                if url_doc:
-                                    nom_doc = nom_doc or os.path.basename(url_doc.split("?")[0]) or f"Adjunto_{codigo}.pdf"
-                                    nom_doc = re.sub(r'[\\/*?:"<>|]', "_", str(nom_doc))
-                                    if not any(nom_doc.lower().endswith(e) for e in extensiones_validas):
-                                        nom_doc += ".pdf"
-                                    ruta_dest = os.path.join(carpeta_adjuntos, nom_doc)
-                                    if self._descargar_binario(url_doc, ruta_dest, sesion=sesion):
-                                        archivos_descargados.append(ruta_dest)
-                except Exception:
-                    pass
-
-            # Estrategia 1B: Portal ASPX + visor de adjuntos
-            urls_ficha = [
-                f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo}",
-                f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?qs={codigo}"
-            ]
-            enc_token = None
-            for u_f in urls_ficha:
-                try:
-                    r1 = sesion.get(u_f, timeout=20, allow_redirects=True)
-                    if r1.status_code == 200 and len(r1.text) > 500:
-                        m_enc = re.search(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'\&\s<>\)]+)", r1.text, re.IGNORECASE)
-                        if m_enc:
-                            enc_token = m_enc.group(1)
-                            break
-                        soup_ficha = BeautifulSoup(r1.text, "html.parser")
-                        for a_tag in soup_ficha.find_all("a", href=True):
-                            href = a_tag["href"]
-                            if any(href.lower().endswith(ext) for ext in extensiones_validas) or "attachment" in href.lower():
-                                url_full = urllib.parse.urljoin("https://www.mercadopublico.cl", href)
-                                nom_f = a_tag.get_text(strip=True) or os.path.basename(href.split("?")[0])
-                                nom_f = urllib.parse.unquote(re.sub(r'[\\/*?:"<>|]', "_", nom_f))
-                                if not any(nom_f.lower().endswith(e) for e in extensiones_validas):
-                                    nom_f += ".pdf"
-                                ruta_dest = os.path.join(carpeta_adjuntos, nom_f)
-                                if self._descargar_binario(url_full, ruta_dest, sesion=sesion):
-                                    archivos_descargados.append(ruta_dest)
-                except Exception:
-                    pass
-
-            if enc_token:
-                try:
-                    url_grid = f"https://www.mercadopublico.cl/Procurement/Modules/Attachment/ViewAttachmentLC.aspx?enc={enc_token}"
-                    r_grid = sesion.get(url_grid, timeout=20, allow_redirects=True)
-                    if r_grid.status_code == 200:
-                        soup_grid = BeautifulSoup(r_grid.text, "html.parser")
-                        form_data_base = {inp["name"]: inp.get("value", "") for inp in soup_grid.find_all("input", {"type": "hidden"}) if inp.get("name")}
-                        botones_descarga = []
-                        for tr in soup_grid.find_all("tr"):
-                            inp_img = tr.find("input", {"type": "image"})
-                            if inp_img and inp_img.get("name"):
-                                celdas = [td.get_text(strip=True) for td in tr.find_all("td") if td.get_text(strip=True)]
-                                nom_sug = next((c for c in celdas if any(c.lower().endswith(e) for e in extensiones_validas)), None)
-                                botones_descarga.append((inp_img["name"], nom_sug or f"Anexo_{codigo}.pdf"))
-                        for btn_name, nom_sug in botones_descarga:
-                            post_payload = dict(form_data_base)
-                            post_payload[f"{btn_name}.x"] = "8"
-                            post_payload[f"{btn_name}.y"] = "8"
-                            r_file = sesion.post(url_grid, data=post_payload, stream=True, timeout=30, allow_redirects=True)
-                            if r_file.status_code == 200:
-                                c_disp = r_file.headers.get("Content-Disposition", "")
-                                c_type = (r_file.headers.get("Content-Type", "")).lower()
-                                if "text/html" not in c_type or "attachment" in c_disp.lower():
-                                    m_fn = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", c_disp, re.IGNORECASE)
-                                    nom_real = urllib.parse.unquote(m_fn.group(1).strip()) if m_fn else nom_sug
-                                    nom_real = re.sub(r'[\\/*?:"<>|]', "_", nom_real)
-                                    if not any(nom_real.lower().endswith(e) for e in extensiones_validas):
-                                        nom_real += ".pdf"
-                                    ruta_dest = os.path.join(carpeta_adjuntos, nom_real)
-                                    with open(ruta_dest, "wb") as f_out:
-                                        for chunk in r_file.iter_content(chunk_size=8192):
-                                            if chunk:
-                                                f_out.write(chunk)
-                                    if os.path.exists(ruta_dest) and os.path.getsize(ruta_dest) > 200:
-                                        print(f"      📥 [OK ASPX] {nom_real} ({os.path.getsize(ruta_dest)//1024} KB)")
-                                        archivos_descargados.append(ruta_dest)
-                                    elif os.path.exists(ruta_dest):
-                                        os.remove(ruta_dest)
-                except Exception as e:
-                    print(f"      [!] Visor ASPX: {e}")
-
-            # Estrategia 1C: Playwright headless fallback
-            if not archivos_descargados and PLAYWRIGHT_DISPONIBLE:
-                archivos_descargados.extend(self._descargar_con_playwright(codigo, tipo_portal, carpeta_adjuntos))
-
+        print(f"   -> [Agente 2] Buscando adjuntos oficiales de {codigo} ({tipo_portal})...")
+        sesion = self._crear_sesion()
+        rutas = []
+        if tipo_portal == "COMPRA_AGIL":
+            rutas = self._adjuntos_compra_agil(codigo, datos_api, carpeta_adjuntos, sesion)
         else:
-            # ─── COMPRA AGIL ─────────────────────────────────────────────────────────
-            # Estrategia 2A: Endpoints REST de adjuntos de Compra Agil
-            endpoints_ca = [
-                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/adjuntos",
-                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/documentos",
-                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/archivos",
-                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/anexos",
-            ]
-            for ep in endpoints_ca:
-                try:
-                    r_ep = sesion.get(ep, headers=HEADERS_API_COMPRA_AGIL, timeout=15)
-                    if r_ep.status_code == 200:
-                        datos_ep = r_ep.json()
-                        archivos_ep = (
-                            datos_ep if isinstance(datos_ep, list) else
-                            datos_ep.get("adjuntos") or datos_ep.get("files") or
-                            datos_ep.get("archivos") or datos_ep.get("documentos") or
-                            datos_ep.get("anexos") or []
-                        )
-                        for archi in (archivos_ep or []):
-                            if not isinstance(archi, dict):
-                                continue
-                            url_a = (archi.get("url") or archi.get("Url") or
-                                     archi.get("urlDescarga") or archi.get("UrlDescarga") or
-                                     archi.get("link") or "")
-                            nom_a = (archi.get("nombre") or archi.get("Nombre") or
-                                     archi.get("nombreArchivo") or archi.get("NombreArchivo") or
-                                     os.path.basename(url_a.split("?")[0]) or f"Adjunto_{codigo}.pdf")
-                            nom_a = urllib.parse.unquote(re.sub(r'[\\/*?:"<>|]', "_", str(nom_a)))
-                            if not any(nom_a.lower().endswith(e) for e in extensiones_validas):
-                                nom_a += ".pdf"
-                            if url_a:
-                                ruta_dest = os.path.join(carpeta_adjuntos, nom_a)
-                                if self._descargar_binario(url_a, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
-                                    archivos_descargados.append(ruta_dest)
-                except Exception:
-                    pass
+            rutas = self._adjuntos_licitacion(codigo, carpeta_adjuntos, sesion)
+        if not rutas and PLAYWRIGHT_DISPONIBLE:
+            print("      ℹ️ Sin resultados por HTTP; reintentando con navegador headless...")
+            rutas = self._descargar_con_playwright(codigo, tipo_portal, carpeta_adjuntos)
 
-            # Estrategia 2B: Busqueda recursiva de URLs en payload JSON
-            texto_ca = json.dumps(datos_api, ensure_ascii=False)
-            urls_halladas = set(re.findall(r'https?://[^"\'\s<>\\]+', texto_ca))
-            for u_h in urls_halladas:
-                if any(ext in u_h.lower() for ext in extensiones_validas) or any(k in u_h.lower() for k in ["adjunto", "document", "download", "archivo", "storage", "anexo"]):
-                    nom_h = urllib.parse.unquote(os.path.basename(u_h.split("?")[0]) or f"Adjunto_{codigo}.pdf")
-                    nom_h = re.sub(r'[\\/*?:"<>|]', "_", nom_h)
-                    if not any(nom_h.lower().endswith(e) for e in extensiones_validas):
-                        nom_h += ".pdf"
-                    ruta_dest = os.path.join(carpeta_adjuntos, nom_h)
-                    if ruta_dest not in archivos_descargados and self._descargar_binario(u_h, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
-                        archivos_descargados.append(ruta_dest)
-
-            # Estrategia 2C: Visor web Compra Agil
-            urls_ca_web = [
-                f"https://buscador.mercadopublico.cl/ficha?code={codigo}",
-                f"https://www.mercadopublico.cl/CompraAgil/Modules/RFQ/DetailsRFQ.aspx?qs={codigo}",
-            ]
-            for u_web in urls_ca_web:
-                try:
-                    r_w = sesion.get(u_web, timeout=15, allow_redirects=True)
-                    if r_w.status_code == 200 and len(r_w.text) > 400:
-                        soup_ca = BeautifulSoup(r_w.text, "html.parser")
-                        for a_tag in soup_ca.find_all("a", href=True):
-                            href = a_tag["href"]
-                            if any(href.lower().endswith(ext) for ext in extensiones_validas) or any(k in href.lower() for k in ["download", "adjunto", "attachment"]):
-                                url_completa = urllib.parse.urljoin("https://www.mercadopublico.cl", href)
-                                nom_ca = urllib.parse.unquote(a_tag.get_text(strip=True) or os.path.basename(href.split("?")[0]))
-                                nom_ca = re.sub(r'[\\/*?:"<>|]', "_", nom_ca)
-                                if not any(nom_ca.lower().endswith(e) for e in extensiones_validas):
-                                    nom_ca += ".pdf"
-                                ruta_dest = os.path.join(carpeta_adjuntos, nom_ca)
-                                if ruta_dest not in archivos_descargados and self._descargar_binario(url_completa, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
-                                    archivos_descargados.append(ruta_dest)
-                except Exception:
-                    pass
-
-            # Estrategia 2D: Playwright headless fallback
-            if not archivos_descargados and PLAYWRIGHT_DISPONIBLE:
-                archivos_descargados.extend(self._descargar_con_playwright(codigo, tipo_portal, carpeta_adjuntos))
-
-        # Descomprimir ZIPs
-        for arc in list(archivos_descargados):
+        # Descomprimir ZIP reales
+        for arc in list(rutas):
             if arc.lower().endswith(".zip") and zipfile.is_zipfile(arc):
                 try:
-                    with zipfile.ZipFile(arc, "r") as zf:
-                        zf.extractall(carpeta_adjuntos)
-                        for extraido in zf.namelist():
-                            ruta_ext = os.path.join(carpeta_adjuntos, extraido)
-                            if os.path.isfile(ruta_ext) and os.path.getsize(ruta_ext) > 100:
-                                archivos_descargados.append(ruta_ext)
-                    print(f"      📦 [ZIP] {os.path.basename(arc)}")
-                except Exception:
-                    pass
+                    destino = os.path.join(carpeta_adjuntos, "zip_" + os.path.splitext(os.path.basename(arc))[0])
+                    with zipfile.ZipFile(arc) as zf:
+                        zf.extractall(destino)
+                    for raiz, _, files in os.walk(destino):
+                        for f in files:
+                            p = os.path.join(raiz, f)
+                            if os.path.getsize(p) > 300 and self._ext_por_magic(open(p, "rb").read(256)):
+                                rutas.append(p)
+                    print(f"      📦 [ZIP] {os.path.basename(arc)} descomprimido")
+                except Exception as e:
+                    print(f"      [x] ZIP {os.path.basename(arc)}: {e}")
 
-        return list(dict.fromkeys(archivos_descargados))
+        if not rutas:
+            print("      ⚠️ No se pudo bajar ningún adjunto nativo. Revisa el log de arriba:")
+            print("         - HTTP 403 / WAF  -> falta curl_cffi o el ticket no tiene permiso")
+            print("         - HTTP 500 'no podemos atender su solicitud' -> token del visor vencido")
+            print("         - 'No es un documento válido' -> el portal devolvió HTML en vez del archivo")
+        return list(dict.fromkeys(rutas))
 
     def _descargar_con_playwright(self, codigo, tipo_portal, carpeta_adjuntos):
+        """Navegador real + interceptor de red (page.on('response')).
+
+        Captura los binarios que el navegador descarga por su cuenta, en vez de
+        hacer clic con timeouts de 18s en cada enlace (lo que colgaba el proceso).
         """
-        Estrategia fallback con Playwright (Chromium headless).
-        Intercepta descargas reales haciendo clic en botones/enlaces de adjuntos.
-        Tambien captura el texto completo renderizado de la ficha (DOM).
-        """
-        archivos_descargados = []
-        extensiones_validas = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".zip")
+        rutas = []
+        if not PLAYWRIGHT_DISPONIBLE:
+            return rutas
         if tipo_portal == "COMPRA_AGIL":
             url_ficha = f"https://buscador.mercadopublico.cl/ficha?code={codigo}"
         else:
-            url_ficha = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo}"
+            url_ficha = ("https://www.mercadopublico.cl/Procurement/Modules/RFB/"
+                         f"DetailsAcquisition.aspx?idlicitacion={codigo}")
 
-        print(f"      🌐 [Playwright] Abriendo ficha headless: {url_ficha}")
+        print(f"      🌐 [Playwright] Navegando: {url_ficha}")
+        capturados = {}
+
+        def _al_response(resp):
+            try:
+                if resp.status != 200:
+                    return
+                ct = (resp.headers or {}).get("content-type", "").lower()
+                url = resp.url
+                parece_doc = any(k in ct for k in ("pdf", "word", "excel", "spreadsheet", "octet-stream", "zip")) \
+                    or re.search(r"\.(pdf|docx?|xlsx?|zip)(\?|$)", url.lower()) \
+                    or "viewattachment" in url.lower()
+                if not parece_doc:
+                    return
+                cuerpo = resp.body()
+                if not cuerpo or len(cuerpo) < 300:
+                    return
+                if self._es_bloqueo(cuerpo):
+                    print(f"      [🛡️ WAF] Respuesta bloqueada interceptada: {url[:90]}")
+                    return
+                if not self._ext_por_magic(cuerpo):
+                    return
+                capturados[url] = cuerpo
+            except Exception:
+                pass
+
         try:
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(
+                navegador = pw.chromium.launch(
                     headless=True,
                     args=[
                         "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-web-security"
-                    ]
+                        "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+                    ],
                 )
-                context = browser.new_context(
+                contexto = navegador.new_context(
                     accept_downloads=True,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    user_agent=HEADERS_WEB["User-Agent"],
                     locale="es-CL",
                     timezone_id="America/Santiago",
-                    extra_http_headers={
-                        "Accept-Language": "es-CL,es;q=0.9,en-US;q=0.8,en;q=0.7",
-                        "Referer": "https://buscador.mercadopublico.cl/"
-                    }
+                    viewport={"width": 1366, "height": 900},
+                    extra_http_headers={"Accept-Language": "es-CL,es;q=0.9,en;q=0.8"},
                 )
-                page = context.new_page()
+                contexto.add_init_script(
+                    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                    "window.chrome={runtime:{}};"
+                )
+                pagina = contexto.new_page()
+                pagina.on("response", _al_response)
+                descargas = []
+
+                def _al_download(dl):
+                    try:
+                        nombre = self._limpiar_nombre(dl.suggested_filename, f"Adjunto_{codigo}.pdf")
+                        destino = os.path.join(carpeta_adjuntos, nombre)
+                        dl.save_as(destino)
+                        descargas.append(destino)
+                    except Exception:
+                        pass
+
+                pagina.on("download", _al_download)
                 try:
-                    page.goto(url_ficha, wait_until="networkidle", timeout=30000)
-                    page.wait_for_timeout(2500)
-                    # Capturar DOM renderizado completo
-                    texto_dom = page.inner_text("body") or ""
-                    if len(texto_dom) > 200 and not _es_bloqueo_waf_403(texto_dom):
-                        ruta_txt = os.path.join(carpeta_adjuntos, f"DOM_RENDERIZADO_{codigo}.txt")
-                        with open(ruta_txt, "w", encoding="utf-8", errors="replace") as f_txt:
-                            f_txt.write(f"[DOM RENDERIZADO PLAYWRIGHT - FICHA {codigo}]\n{texto_dom}")
-                        archivos_descargados.append(ruta_txt)
-                    elif _es_bloqueo_waf_403(texto_dom):
-                        print(f"      [!] [WAF] Bloqueo 403 / CloudFront detectado en el DOM de {codigo}. Omitiendo guardado de txt.")
-                        print(f"      📄 [Playwright DOM] {len(texto_dom)} caracteres capturados")
-                    # Localizar todos los elementos descargables
-                    selectores_adjuntos = [
-                        "a[href*='.pdf']", "a[href*='.docx']", "a[href*='.doc']",
-                        "a[href*='.xlsx']", "a[href*='.xls']", "a[href*='.zip']",
-                        "a[href*='download']", "a[href*='adjunto']", "a[href*='attachment']",
-                        "a[href*='ViewAttachment']", "a[href*='storage']",
-                        "button[onclick*='download']",
-                        "input[type='image'][name*='Download']",
-                    ]
-                    elementos_adjunto = []
-                    for sel in selectores_adjuntos:
-                        try:
-                            elementos_adjunto.extend(page.query_selector_all(sel))
-                        except Exception:
-                            pass
-                    vistos = set()
-                    for elem in elementos_adjunto:
-                        try:
-                            clave = (elem.get_attribute("href") or elem.inner_text() or "")[:80]
-                            if clave in vistos:
+                    pagina.goto(url_ficha, wait_until="domcontentloaded", timeout=45000)
+                    pagina.wait_for_timeout(6000)
+                    for _ in range(3):
+                        pagina.mouse.wheel(0, 1800)
+                        pagina.wait_for_timeout(1200)
+                    texto = pagina.inner_text("body") or ""
+                    if texto and not self._es_bloqueo(texto=texto):
+                        ruta_txt = os.path.join(carpeta_adjuntos, f"FICHA_TEXTO_{codigo}.txt")
+                        with open(ruta_txt, "w", encoding="utf-8", errors="replace") as f:
+                            f.write(f"[FICHA RENDERIZADA {codigo}]\n{texto}")
+                        print(f"      📝 Ficha renderizada: {len(texto)} caracteres")
+                    # Clics acotados (máx. 5) solo en enlaces de adjunto visibles
+                    selectores = ["a[href*='ViewAttachment']", "a[href*='.pdf']", "a[href*='descargar']",
+                                  "input[type='image'][name*='Down']", "button[onclick*='download']"]
+                    clics = 0
+                    for sel in selectores:
+                        for elem in pagina.query_selector_all(sel)[:2]:
+                            if clics >= 5:
+                                break
+                            try:
+                                with pagina.expect_download(timeout=8000):
+                                    elem.click()
+                                clics += 1
+                                pagina.wait_for_timeout(800)
+                            except Exception:
                                 continue
-                            vistos.add(clave)
-                            with page.expect_download(timeout=18000) as dl_info:
-                                elem.click()
-                            download = dl_info.value
-                            nom_dl = download.suggested_filename or f"Adjunto_PW_{len(archivos_descargados)+1}.pdf"
-                            nom_dl = re.sub(r'[\\/*?:"<>|]', "_", urllib.parse.unquote(nom_dl))
-                            if not any(nom_dl.lower().endswith(e) for e in extensiones_validas):
-                                nom_dl += ".pdf"
-                            ruta_dl = os.path.join(carpeta_adjuntos, nom_dl)
-                            download.save_as(ruta_dl)
-                            if os.path.exists(ruta_dl) and os.path.getsize(ruta_dl) > 200:
-                                print(f"      📥 [Playwright OK] {nom_dl} ({os.path.getsize(ruta_dl)//1024} KB)")
-                                archivos_descargados.append(ruta_dl)
-                            page.wait_for_timeout(700)
-                        except Exception:
-                            pass
-                except Exception as e_page:
-                    print(f"      [!] Playwright error navegando: {e_page}")
+                except Exception as e_pagina:
+                    print(f"      [x] Playwright navegando: {e_pagina}")
                 finally:
-                    context.close()
-                    browser.close()
+                    try:
+                        contexto.close()
+                    except Exception:
+                        pass
+                    try:
+                        navegador.close()
+                    except Exception:
+                        pass
         except Exception as e_pw:
-            print(f"      [!] Playwright no disponible: {e_pw}")
-        return archivos_descargados
+            print(f"      [x] Playwright no disponible: {e_pw}")
+            return rutas
 
-
+        for url, cuerpo in capturados.items():
+            sugerido = self._limpiar_nombre(os.path.basename(url.split("?")[0]), f"Adjunto_{codigo}.pdf")
+            if not os.path.splitext(sugerido)[1]:
+                sugerido += ".pdf"
+            ruta = self._guardar_bytes(cuerpo, carpeta_adjuntos, sugerido, codigo, origen="(interceptor de red)")
+            if ruta:
+                rutas.append(ruta)
+        for destino in descargas:
+            if os.path.exists(destino) and os.path.getsize(destino) > 300:
+                with open(destino, "rb") as f:
+                    datos = f.read()
+                if self._ext_por_magic(datos):
+                    print(f"      📥 [OK] {os.path.basename(destino)} (descarga del navegador)")
+                    rutas.append(destino)
+                else:
+                    try:
+                        os.remove(destino)
+                    except Exception:
+                        pass
+        return list(dict.fromkeys(rutas))
 
     def _extraer_texto_de_adjuntos_locales(self, lista_rutas):
         """
@@ -1447,9 +1713,40 @@ class Agente2Extractor:
 
                     descripcion = str(datos_api.get("descripcion") or datos_api.get("glosa") or candidato["nombre"])
                     fecha_cie = str(datos_api.get("fecha_cierre") or fecha_cie)
-                    items = datos_api.get("productos_solicitados") or datos_api.get("items") or []
+                    items_raw = datos_api.get("productos_solicitados") or datos_api.get("items") or []
+                    items = items_raw.get("items") if isinstance(items_raw, dict) else items_raw
+                    items = [i for i in (items or []) if isinstance(i, dict)]
             except Exception as e:
                 print(f"   [!] Aviso consultando API v2 detalle Compra Ágil: {e}")
+
+            if not datos_api:
+                # Respaldo: el endpoint v1 también publica las compras ágiles (Tipo "CO")
+                # con Descripción, Comprador e Ítems. Evita documentos vacíos cuando
+                # el ticket v2 no tiene permisos.
+                try:
+                    url_v1_ca = ("https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"
+                                 f"?codigo={codigo}&ticket={TICKET_MERCADO_PUBLICO}")
+                    r_v1 = requests.get(url_v1_ca, timeout=25)
+                    if r_v1.status_code == 200:
+                        lista_v1 = (r_v1.json() or {}).get("Listado") or []
+                        if lista_v1 and isinstance(lista_v1[0], dict):
+                            datos_api = lista_v1[0]
+                            comp_v1 = datos_api.get("Comprador") or {}
+                            fechas_v1 = datos_api.get("Fechas") or {}
+                            organismo = comp_v1.get("NombreOrganismo") or organismo
+                            rut_comprador = comp_v1.get("RutUnidad", rut_comprador)
+                            unidad_compradora = comp_v1.get("NombreUnidad", unidad_compradora)
+                            comuna = comp_v1.get("ComunaUnidad", comuna)
+                            region = comp_v1.get("RegionUnidad", region)
+                            fecha_pub = fechas_v1.get("FechaPublicacion", fecha_pub)
+                            fecha_cie = fechas_v1.get("FechaCierre", fecha_cie)
+                            descripcion = str(datos_api.get("Descripcion") or descripcion)
+                            items_v1 = datos_api.get("Items") or {}
+                            if isinstance(items_v1, dict):
+                                items = [i for i in (items_v1.get("Listado") or []) if isinstance(i, dict)]
+                            print("   ℹ️ [CA] Detalle recuperado con el respaldo v1 (Tipo CO).")
+                except Exception as e_v1:
+                    print(f"   [!] Respaldo v1 para Compra Ágil: {e_v1}")
         else:
             url_detalle = f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo={codigo}&ticket={TICKET_MERCADO_PUBLICO}"
             try:
@@ -1512,16 +1809,10 @@ class Agente2Extractor:
             candidato=candidato
         )
 
-        try:
-            shutil.copy2(ruta_clon_proyecto, ruta_clon_adjuntos)
-        except Exception:
-            pass
-
-        # Agregar el Word Clon a la lista de entregables del proyecto y adjuntos locales
+        # El Anexo Clon se guarda UNA sola vez (antes se copiaba también a /adjuntos
+        # y con eso el envío a Drive subía al doble de peso).
         if ruta_clon_proyecto not in adjuntos_descargados:
             adjuntos_descargados.append(ruta_clon_proyecto)
-        if ruta_clon_adjuntos not in adjuntos_descargados:
-            adjuntos_descargados.append(ruta_clon_adjuntos)
 
         # 2.5. LECTURA FORENSE MULTIMODAL (Agente 2.5)
         agente25 = Agente2_5LectorForense(self.perfil)
@@ -1595,7 +1886,7 @@ class Agente2_5LectorForense:
     def __init__(self, perfil):
         self.perfil = perfil
         self.url_gemini_upload = "https://generativelanguage.googleapis.com/upload/v1beta/files"
-        self.url_gemini_gen = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY_GEMINI}"
+        self.url_gemini_gen = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO_GEMINI}:generateContent?key={API_KEY_GEMINI}"
 
     def _extraer_texto_pdfplumber(self, ruta_pdf):
         """Extrae texto Y tablas hoja por hoja de PDF con pdfplumber."""
@@ -1687,19 +1978,12 @@ class Agente2_5LectorForense:
             print(f"      🤖 [Agente 2.5 Gemini] Subiendo {nombre_archivo} ({tam_mb:.1f} MB) a Gemini File API...")
 
             # Upload con resumable upload
-            headers_upload = {
-                "X-Goog-Upload-Protocol": "raw",
-                "X-Goog-Upload-Command": "start, upload, finalize",
-                "X-Goog-Upload-Header-Content-Type": "application/pdf",
-                "X-Goog-Upload-Header-Content-Length": str(len(pdf_bytes)),
-                "Content-Type": "application/pdf",
-                "Content-Length": str(len(pdf_bytes)),
-            }
+            headers_upload = {"Content-Type": "application/pdf"}
             r_up = requests.post(
                 f"{self.url_gemini_upload}?key={API_KEY_GEMINI}&uploadType=media",
                 headers=headers_upload,
                 data=pdf_bytes,
-                timeout=120
+                timeout=180
             )
             if r_up.status_code not in [200, 201]:
                 return ""
@@ -1964,7 +2248,7 @@ class Agente3AuditorCotizador:
 
     def auditar_y_redactar_4_informes(self, expediente):
         print(f"\n🧠 [AGENTE 3] MOTOR CONSULTOR SENIOR EN CONTRATACIÓN PÚBLICA (LEY 19.886 / DS 661 / LEY 21.634)...")
-        url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY_GEMINI}"
+        url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO_GEMINI}:generateContent?key={API_KEY_GEMINI}"
 
         presupuesto = int(expediente.get("presupuesto_estatal_clp", 0) or 0)
         organismo = expediente.get("organismo_comprador") or expediente.get("organismo") or "Organismo Público Requirente"
@@ -2123,25 +2407,27 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
 }}
 """
 
-        try:
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"response_mime_type": "application/json"}
-            }
-            r = requests.post(url_gemini, json=payload, timeout=50)
-            if r.status_code == 200:
-                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                datos_ia = json.loads(txt)
-
-                # QA Matemático determinista sobre los 3 escenarios con IVA incluido
-                datos_ia["estudio_financiero_escenarios"] = estudio_base
+        datos_ia, error_ia = _gemini_generar_json(
+            prompt, temperatura=0.2, max_tokens=8192, timeout=240, intentos=3
+        )
+        if datos_ia:
+            # QA Matemático determinista sobre los 3 escenarios con IVA incluido
+            datos_ia["estudio_financiero_escenarios"] = estudio_base
+            try:
                 datos_ia["horas_ingenieria_estimadas"] = int(datos_ia.get("horas_ingenieria_estimadas") or 40)
+            except Exception:
+                datos_ia["horas_ingenieria_estimadas"] = 40
+            try:
                 datos_ia["plazo_entrega_dias_habiles"] = int(datos_ia.get("plazo_entrega_dias_habiles") or 15)
+            except Exception:
+                datos_ia["plazo_entrega_dias_habiles"] = 15
+            print(f"   ✓ [Agente 3] Auditoría SENIOR con IA completada "
+                  f"(Admisibilidad: {datos_ia.get('estado_admisibilidad', 'APTO')})")
+            return datos_ia
 
-                print(f"   ✓ [Agente 3] Auditoría Senior LicitIA completada (Admisibilidad: {datos_ia.get('estado_admisibilidad', 'APTO')})")
-                return datos_ia
-        except Exception as e:
-            print(f"   ℹ️ [Agente 3] Usando motor local de respaldo con las 7 secciones obligatorias ({e})")
+        print(f"   ⚠️ [Agente 3] Gemini NO respondió: {error_ia}")
+        print("      -> Se usa el motor local: el dossier saldrá GENÉRICO y no citará los adjuntos.")
+        print(f"      -> Revisa GEMINI_API_KEY, GEMINI_MODEL={MODELO_GEMINI} y la cuota de la API.")
 
         # Fallback local ultra completo con las 7 secciones obligatorias
         return {
@@ -2779,7 +3065,7 @@ class Agente5Entregador:
         p_tot_box = c_tot.paragraphs[0]
         p_tot_box.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         r_tot_box = p_tot_box.add_run(
-            f"PRESUPUESTO TOPE PUBLICADO :  ${presupuesto:,} CLP\n"
+            f"{'PRESUPUESTO TOPE PUBLICADO' if 'Oficial' in str(expediente.get('origen_presupuesto', '')) else 'PRESUPUESTO REFERENCIAL (NO PUBLICADO)'} :  ${presupuesto:,} CLP\n"
             f"SUBTOTAL NETO OFERTADO :  ${eq.get('oferta_neta_clp', 0):,} CLP\n"
             f"IVA (19% D.L. 825) :  ${eq.get('iva_19_clp', 0):,} CLP\n"
             f"=============================================\n"
@@ -3228,50 +3514,94 @@ class Agente5Entregador:
     # --------------------------------------------------------------------------
     # SINCRONIZACIÓN CON GOOGLE DRIVE Y CORREO HTML EJECUTIVO
     # --------------------------------------------------------------------------
-    def sincronizar_drive_y_correo(self, carpeta_proyecto, expediente, informes, escenarios):
+    # ------------------------------------------------------------------
+    # PUENTE GOOGLE DRIVE v5.4 (honesto, por lotes y con reintentos reales)
+    # ------------------------------------------------------------------
+    def _recopilar_archivos_proyecto(self, carpeta_proyecto):
+        """Archivos a subir. El CRM Maestro NUNCA entra aquí (iba duplicado en
+        cada carpeta y engordaba el envío hasta tumbar Apps Script)."""
+        archivos = []
+        for raiz, _, files in os.walk(carpeta_proyecto):
+            for nombre in files:
+                if nombre.startswith("~$") or nombre.startswith("."):
+                    continue
+                ruta = os.path.join(raiz, nombre)
+                try:
+                    tam = os.path.getsize(ruta)
+                except OSError:
+                    continue
+                if tam < 200:
+                    continue
+                archivos.append((ruta, tam))
+
+        def _prioridad(item):
+            base = os.path.basename(item[0]).upper()
+            for i, prefijo in enumerate(("DOC1", "DOC2", "DOC3", "PLANILLA", "ANEXO_CLON")):
+                if base.startswith(prefijo):
+                    return i
+            return 5
+
+        archivos.sort(key=_prioridad)
+        return archivos
+
+    @staticmethod
+    def _a_base64(ruta):
+        with open(ruta, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+
+    def _enviar_lote_apps_script(self, payload, timeout=240):
+        """(ok, folder_url, detalle). OK solo si status=='ok' Y hay carpeta.
+
+        Antes bastaba HTTP 200: Apps Script devuelve 200 incluso cuando falla por
+        cuota, y por eso se perdían carpetas con un falso 'status': 'ok'.
+        """
+        ultimo = "sin intentos"
+        for intento in range(1, REINTENTOS_DRIVE + 1):
+            try:
+                resp = requests.post(
+                    URL_APPS_SCRIPT,
+                    data=json.dumps(payload, ensure_ascii=False),
+                    headers={"Content-Type": "text/plain;charset=utf-8"},
+                    timeout=timeout,
+                    allow_redirects=True,
+                )
+                cuerpo = resp.text or ""
+                if resp.status_code != 200:
+                    pista = ""
+                    if "accounts.google.com" in cuerpo or "iniciar sesión" in cuerpo.lower():
+                        pista = " (el despliegue de Apps Script NO es público: 'Cualquier persona')"
+                    elif "Service unavailable" in cuerpo or "quota" in cuerpo.lower():
+                        pista = " (cuota de Google agotada)"
+                    ultimo = f"HTTP {resp.status_code}{pista}"
+                else:
+                    js = None
+                    try:
+                        js = resp.json()
+                    except Exception:
+                        ultimo = ("HTTP 200 pero la respuesta NO es JSON "
+                                  "(cuota excedida o excepción interna de Apps Script)")
+                    if js is not None:
+                        estado = str(js.get("status", "")).strip().lower()
+                        carpeta = js.get("folder_url") or js.get("carpeta_url") or js.get("url") or ""
+                        if estado == "ok" and carpeta:
+                            return True, carpeta, ""
+                        detalle = str(js.get("mensaje") or js.get("error") or js.get("detalle") or "")[:160]
+                        ultimo = (f"status={estado or 'vacío'} | carpeta={'sí' if carpeta else 'no'}"
+                                  + (f" | {detalle}" if detalle else ""))
+            except Exception as e:
+                ultimo = f"excepción: {e}"
+            print(f"      [!] Drive intento {intento}/{REINTENTOS_DRIVE}: {ultimo}")
+            if intento < REINTENTOS_DRIVE:
+                time.sleep(6 * intento)
+        return False, "", ultimo
+
+    def _html_correo_ejecutivo(self, expediente, informes, escenarios):
         eq = escenarios["equilibrado"]
         codigo = expediente["codigo"]
-        subcarpeta_portal = "01_COMPRAS_AGILES" if expediente["tipo_portal"] == "COMPRA_AGIL" else "02_LICITACIONES_PUBLICAS"
-
-        archivos_payload = []
-        for raiz, _, files in os.walk(carpeta_proyecto):
-            for nombre_f in files:
-                ruta_completa = os.path.join(raiz, nombre_f)
-                if nombre_f.startswith("~$"):
-                    continue
-                try:
-                    with open(ruta_completa, "rb") as bf:
-                        b64_content = base64.b64encode(bf.read()).decode("utf-8")
-                    es_adjunto_original = ("adjuntos" in os.path.relpath(raiz, carpeta_proyecto))
-                    nombre_en_drive = f"ADJUNTO_ORIGINAL_{nombre_f}" if es_adjunto_original else nombre_f
-                    archivos_payload.append({
-                        "subcarpeta_portal": subcarpeta_portal,
-                        "codigo_id": codigo,
-                        "nombre_archivo": nombre_en_drive,
-                        "contenido_base64": b64_content
-                    })
-                except Exception as e:
-                    print(f"   [!] No se pudo codificar {nombre_f}: {e}")
-
-        # También subimos el archivo CRM Maestro actualizado a la carpeta raíz
-        if os.path.exists(ARCHIVO_CATALOGO_MAESTRO):
-            try:
-                with open(ARCHIVO_CATALOGO_MAESTRO, "rb") as bf_crm:
-                    b64_crm = base64.b64encode(bf_crm.read()).decode("utf-8")
-                archivos_payload.append({
-                    "subcarpeta_portal": subcarpeta_portal,
-                    "codigo_id": codigo,
-                    "nombre_archivo": os.path.basename(ARCHIVO_CATALOGO_MAESTRO),
-                    "contenido_base64": b64_crm
-                })
-            except Exception:
-                pass
-
-        print(f"   ☁️ [Agente 5] Subiendo {len(archivos_payload)} archivos (DOC 1, DOC 2, DOC 3, Excel, CRM + Adjuntos) a Google Drive...")
-
-        lista_adjuntos_html = "".join([f"<li>📎 {os.path.basename(a)}</li>" for a in expediente["adjuntos_locales"]])
-
-        cuerpo_html_correo = f"""
+        lista_adjuntos = "".join(
+            f"<li>📎 {os.path.basename(a)}</li>" for a in expediente.get("adjuntos_locales", [])
+        ) or "<li>(sin adjuntos nativos descargados)</li>"
+        return f"""
         <div style="font-family: Arial, sans-serif; max-width: 680px; margin: auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
           <div style="background: #0f172a; color: #ffffff; padding: 22px;">
             <h2 style="margin: 0; color: #10b981;">🚀 GoviLicit.IA · Oportunidad Auditada y Cotizada</h2>
@@ -3280,9 +3610,9 @@ class Agente5Entregador:
           <div style="padding: 22px; background: #ffffff; color: #1e293b;">
             <h3 style="margin-top: 0; color: #0f172a;">{expediente['nombre']}</h3>
             <p style="font-size: 14px; line-height: 1.5;">
-               <b>🏛️ Organismo Comprador:</b> {expediente['organismo']} ({expediente['comuna']})<br>
-               <b>📅 Fecha de Cierre:</b> {expediente['fecha_cierre']}<br>
-               <b>🎯 Palabra Clave Detectada:</b> {expediente['keyword_match']}
+               <b>🏛️ Organismo Comprador:</b> {expediente['organismo']} ({expediente.get('comuna', 'Chile')})<br>
+               <b>📅 Fecha de Cierre:</b> {expediente.get('fecha_cierre', 'Ver ficha')}<br>
+               <b>🎯 Palabra Clave Detectada:</b> {expediente.get('keyword_match', 'Solicitud directa')}
             </p>
             <table style="width: 100%; border-collapse: collapse; margin: 16px 0; background: #f8fafc; border: 1px solid #e2e8f0;">
               <tr style="border-bottom: 1px solid #e2e8f0;">
@@ -3290,7 +3620,7 @@ class Agente5Entregador:
                 <td style="padding: 12px; text-align: right; font-weight: bold; font-size: 15px;">${expediente['presupuesto_estatal_clp']:,} CLP</td>
               </tr>
               <tr style="border-bottom: 1px solid #e2e8f0;">
-                <td style="padding: 12px;"><b>📄 Oferta Oficial DOC 2 (92% Neto):</b></td>
+                <td style="padding: 12px;"><b>📄 Oferta Oficial DOC 2 (92%):</b></td>
                 <td style="padding: 12px; text-align: right; font-weight: bold; color: #2563eb; font-size: 15px;">${eq['oferta_neta_clp']:,} CLP + IVA (${eq['oferta_total_bruta_clp']:,} Total)</td>
               </tr>
               <tr style="background: #ecfdf5;">
@@ -3298,9 +3628,9 @@ class Agente5Entregador:
                 <td style="padding: 12px; text-align: right; font-weight: bold; color: #059669; font-size: 16px;">${eq['ganancia_limpia_bolsillo_clp']:,} CLP ({eq['margen_rentabilidad_pct']}%)</td>
               </tr>
             </table>
-            <p style="font-size: 13px; color: #334155; background: #f1f5f9; padding: 12px; border-radius: 8px;"><b>Resumen Ejecutivo IA:</b> {informes['resumen_ejecutivo_gerencial']}</p>
-            <p style="font-size: 13px; color: #1e293b;"><b>📎 Archivos en la carpeta del proyecto:</b> DOC 1 (Auditoría 37 Normas), DOC 2 (Cotización 1 Hoja), DOC 3 (Financiero Word), Planilla Excel, CRM Maestro y Adjuntos:</p>
-            <ul style="font-size: 12px; color: #334155;">{lista_adjuntos_html}</ul>
+            <p style="font-size: 13px; color: #334155; background: #f1f5f9; padding: 12px; border-radius: 8px;"><b>Resumen Ejecutivo IA:</b> {informes.get('resumen_ejecutivo_gerencial', '')}</p>
+            <p style="font-size: 13px; color: #1e293b;"><b>📎 Archivos de la carpeta:</b> DOC 1 (Auditoría 37 Normas), DOC 2 (Cotización 1 hoja), DOC 3 (Financiero), Planilla Excel, Anexo Clon y adjuntos oficiales:</p>
+            <ul style="font-size: 12px; color: #334155;">{lista_adjuntos}</ul>
             <div style="margin-top: 22px; text-align: center;">
               <a href="{expediente['url_portal']}" style="background: #2563eb; color: #ffffff; padding: 13px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">🔗 Abrir Ficha Oficial en Mercado Público</a>
             </div>
@@ -3308,39 +3638,103 @@ class Agente5Entregador:
         </div>
         """
 
-        payload_bridge = {
+    def _subir_crm_maestro(self):
+        """El CRM se sube UNA vez por corrida, fuera de las subcarpetas.
+        Se activa con SUBIR_CRM_DRIVE=1 y requiere que el Apps Script acepte
+        codigo_id vacío con subcarpeta_portal='00_CRM_MAESTRO'."""
+        if os.getenv("SUBIR_CRM_DRIVE", "0") != "1":
+            return
+        if not os.path.exists(ARCHIVO_CATALOGO_MAESTRO):
+            return
+        payload = {
             "empresa": "Mantytech_SpA",
             "email_destino": self.perfil["email_notificaciones"],
-            "asunto_email": f"✅ [GoviLicit.IA] {codigo} ({expediente['tipo_portal']}) | Ganancia: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP",
-            "html_resumen": cuerpo_html_correo,
-            "archivos": archivos_payload
+            "asunto_email": "",
+            "html_resumen": "",
+            "enviar_correo": False,
+            "subcarpeta_portal": "00_CRM_MAESTRO",
+            "codigo_id": "00_CRM_MAESTRO",
+            "archivos": [{
+                "subcarpeta_portal": "00_CRM_MAESTRO",
+                "codigo_id": "00_CRM_MAESTRO",
+                "nombre_archivo": os.path.basename(ARCHIVO_CATALOGO_MAESTRO),
+                "contenido_base64": self._a_base64(ARCHIVO_CATALOGO_MAESTRO),
+            }],
         }
+        ok, url, detalle = self._enviar_lote_apps_script(payload)
+        if ok:
+            print(f"   ✅ CRM Maestro actualizado en Drive: {url}")
+        else:
+            print(f"   [!] CRM Maestro no se pudo subir: {detalle}")
 
-        try:
-            resp = requests.post(
-                URL_APPS_SCRIPT,
-                data=json.dumps(payload_bridge),
-                headers={"Content-Type": "text/plain;charset=utf-8"},
-                timeout=90,
-                allow_redirects=True
-            )
-            if resp.status_code == 200:
-                try:
-                    js_r = resp.json()
-                    if js_r.get("status") == "ok":
-                        url_drive = js_r.get("folder_url", "")
-                        print(f"   ✅ [OK GOOGLE DRIVE & EMAIL] Subido a Drive y correo enviado a {self.perfil['email_notificaciones']}")
-                        print(f"   📂 Link Carpeta Drive: {url_drive}")
-                        return {"subido_drive": True, "url_carpeta_drive": url_drive}
-                except Exception:
-                    print(f"   ✅ [OK GOOGLE DRIVE & EMAIL] Sincronización completada (HTTP 200).")
-                    return {"subido_drive": True, "url_carpeta_drive": expediente["url_portal"]}
+    def sincronizar_drive_y_correo(self, carpeta_proyecto, expediente, informes, escenarios):
+        eq = escenarios["equilibrado"]
+        codigo = expediente["codigo"]
+        subcarpeta = "01_COMPRAS_AGILES" if expediente["tipo_portal"] == "COMPRA_AGIL" else "02_LICITACIONES_PUBLICAS"
+
+        archivos = self._recopilar_archivos_proyecto(carpeta_proyecto)
+        if not archivos:
+            print("   [!] No hay archivos para subir en esta carpeta.")
+            return {"subido_drive": False, "url_carpeta_drive": ""}
+
+        # Lotes por peso (base64 infla ~33%) y por número de archivos
+        lotes, actual, peso = [], [], 0
+        for ruta, tam in archivos:
+            peso_b64 = int(tam * 4 / 3)
+            if actual and (peso + peso_b64 > DRIVE_MAX_BYTES or len(actual) >= 6):
+                lotes.append(actual)
+                actual, peso = [], 0
+            actual.append((ruta, tam))
+            peso += peso_b64
+        if actual:
+            lotes.append(actual)
+
+        html_correo = self._html_correo_ejecutivo(expediente, informes, escenarios)
+        print(f"   ☁️ [Agente 5] Subiendo {len(archivos)} archivo(s) en {len(lotes)} lote(s) a Google Drive...")
+
+        todo_ok, url_drive, fallos = True, "", []
+        for idx, lote in enumerate(lotes, 1):
+            payload = {
+                "empresa": "Mantytech_SpA",
+                "email_destino": self.perfil["email_notificaciones"],
+                "asunto_email": (f"✅ [GoviLicit.IA] {codigo} ({expediente['tipo_portal']}) | "
+                                 f"Ganancia: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP"),
+                "html_resumen": html_correo,
+                "enviar_correo": (idx == 1),
+                "subcarpeta_portal": subcarpeta,
+                "codigo_id": codigo,
+                "lote": f"{idx}/{len(lotes)}",
+                "archivos": [
+                    {
+                        "subcarpeta_portal": subcarpeta,
+                        "codigo_id": codigo,
+                        "nombre_archivo": (
+                            "ADJUNTO_ORIGINAL_" if "adjuntos" in os.path.relpath(r, carpeta_proyecto)
+                            else ""
+                        ) + os.path.basename(r),
+                        "contenido_base64": self._a_base64(r),
+                    }
+                    for r, _ in lote
+                ],
+            }
+            ok, carpeta_url, detalle = self._enviar_lote_apps_script(payload)
+            if ok:
+                url_drive = carpeta_url or url_drive
+                print(f"   ✅ Lote {idx}/{len(lotes)} entregado -> {carpeta_url}")
             else:
-                print(f"   [!] Apps Script devolvió HTTP {resp.status_code}")
-        except Exception as e:
-            print(f"   [!] Excepción sincronizando con Google Apps Script: {e}")
+                todo_ok = False
+                fallos.append(f"lote {idx}: {detalle}")
+                print(f"   ❌ Lote {idx}/{len(lotes)} NO entregado -> {detalle}")
 
-        return {"subido_drive": False, "url_carpeta_drive": carpeta_proyecto}
+        self._subir_crm_maestro()
+
+        if todo_ok:
+            print(f"   ✅ [DRIVE OK] {len(archivos)} archivo(s) en {subcarpeta}/{codigo}")
+            print(f"   📂 Carpeta Drive: {url_drive}")
+            return {"subido_drive": True, "url_carpeta_drive": url_drive}
+
+        print("   ❌ [DRIVE INCOMPLETO] El proyecto NO se marcará como procesado y quedará en cola.")
+        return {"subido_drive": False, "url_carpeta_drive": url_drive, "detalle": " | ".join(fallos)}
 
     def enviar_resumen_whatsapp_lote(self, resultados_lote):
         if not resultados_lote:
@@ -3368,25 +3762,30 @@ class Agente5Entregador:
         lineas.append("✅ _DOC 1, DOC 2 (1 hoja), DOC 3, Excel, Tablero CRM y Adjuntos listos en tu carpeta y Google Drive._")
         mensaje_final = "\n".join(lineas)
 
-        try:
-            r_wa = requests.post(
-                WHATSAPP_API_LOCAL,
-                json={"number": WHATSAPP_DESTINO.replace("+", ""), "text": mensaje_final},
-                timeout=3
-            )
-            if r_wa.status_code in [200, 201]:
-                print("   📲 [WhatsApp VPS] Alerta enviada automáticamente en segundo plano.")
-                return
-        except Exception:
-            pass
+        if WHATSAPP_API_LOCAL:
+            try:
+                r_wa = requests.post(
+                    WHATSAPP_API_LOCAL,
+                    json={"number": WHATSAPP_DESTINO.replace("+", ""), "text": mensaje_final},
+                    timeout=10
+                )
+                if r_wa.status_code in (200, 201):
+                    print("   📲 [WhatsApp] Resumen del lote enviado.")
+                    return
+                print(f"   [!] WhatsApp API respondió HTTP {r_wa.status_code}")
+            except Exception as e:
+                print(f"   [!] WhatsApp no disponible ({e}).")
+        else:
+            print("   ℹ️ WHATSAPP_API_URL no configurada: se omite el envío por WhatsApp.")
 
-        numero_limpio = re.sub(r"\D", "", WHATSAPP_DESTINO)
-        url_wa_web = f"https://web.whatsapp.com/send?phone={numero_limpio}&text={urllib.parse.quote(mensaje_final)}"
-        print(f"   📲 [Agente 5] Abriendo resumen consolidado en WhatsApp Web para {WHATSAPP_DESTINO}...")
+        # En un contenedor no hay navegador: se deja el reporte en disco.
         try:
-            webbrowser.open(url_wa_web)
-        except Exception:
-            pass
+            ruta_reporte = os.path.join(CARPETA_ENTREGABLES, f"REPORTE_LOTE_{FECHA_HOY_STR}.txt")
+            with open(ruta_reporte, "w", encoding="utf-8") as f:
+                f.write(mensaje_final)
+            print(f"   📝 Reporte del lote guardado en: {ruta_reporte}")
+        except Exception as e:
+            print(f"   [!] No se pudo guardar el reporte del lote: {e}")
 
     def empaquetar_y_entregar_proyecto(self, expediente, informes, escenarios):
         codigo = expediente["codigo"]
@@ -3437,12 +3836,59 @@ class Agente5Entregador:
 # ==============================================================================
 # MOTOR PRINCIPAL DE EJECUCIÓN (PIPELINE COMPLETO DE LOS 6 AGENTES)
 # ==============================================================================
+def _obtener_titulo_oficial(codigo, tipo_portal):
+    """Título real del proceso. Se usa cuando se fuerza un código por consola,
+    para que DOC 1 / DOC 2 no digan 'Proceso Solicitado ...'."""
+    try:
+        if tipo_portal == "COMPRA_AGIL":
+            r = requests.get(f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}",
+                             headers=HEADERS_API_COMPRA_AGIL, timeout=25)
+            if r.status_code == 200:
+                js = r.json() or {}
+                for clave in ("nombre", "titulo", "descripcion"):
+                    if isinstance(js, dict) and js.get(clave):
+                        return str(js[clave]).strip()
+        else:
+            url = ("https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"
+                   f"?codigo={codigo}&ticket={TICKET_MERCADO_PUBLICO}")
+            r = requests.get(url, timeout=25)
+            if r.status_code == 200:
+                listado = (r.json() or {}).get("Listado") or []
+                if listado and isinstance(listado[0], dict) and listado[0].get("Nombre"):
+                    return str(listado[0]["Nombre"]).strip()
+    except Exception as e:
+        print(f"   [!] No se pudo consultar el título oficial: {e}")
+    return ""
+
+
+def _leer_cola_pendiente():
+    if os.path.exists(ARCHIVO_COLA_PENDIENTE):
+        try:
+            with open(ARCHIVO_COLA_PENDIENTE, "r", encoding="utf-8") as f:
+                datos = json.load(f)
+            if isinstance(datos, list):
+                return {str(c.get("codigo")): c for c in datos if isinstance(c, dict) and c.get("codigo")}
+        except Exception as e:
+            print(f"   [!] No se pudo leer la cola de pendientes: {e}")
+    return {}
+
+
+def _guardar_cola_pendiente(cola):
+    try:
+        os.makedirs(os.path.dirname(ARCHIVO_COLA_PENDIENTE) or ".", exist_ok=True)
+        tmp = ARCHIVO_COLA_PENDIENTE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(list(cola.values()), f, indent=2, ensure_ascii=False)
+        os.replace(tmp, ARCHIVO_COLA_PENDIENTE)
+    except Exception as e:
+        print(f"   [!] No se pudo guardar la cola de pendientes: {e}")
+
+
 def ejecutar_pipeline_6_agentes(codigo_especifico=None):
     print("""
     ╔══════════════════════════════════════════════════════════════════════════╗
-    ║   GOVILICIT.IA - MOTOR B2G DE 6 AGENTES AUTÓNOMOS (VERSIÓN 5.3 PRO)      ║
-    ║   Compra Ágil API v2 + Licitaciones API v1 + Plantillas Word & CRM Pro   ║
-    ║   Mantytech SpA · Descarga Real de Adjuntos + 37 Normas + Drive/Email    ║
+    ║   GOVILICIT.IA - MOTOR B2G DE 6 AGENTES (VERSIÓN 5.4 · CORREGIDA)        ║
+    ║   Orden estricto CA -> Licitaciones + Cola persistente + Drive honesto   ║
     ╚══════════════════════════════════════════════════════════════════════════╝
     """)
 
@@ -3456,51 +3902,99 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None):
     agente5 = Agente5Entregador(perfil)
 
     if codigo_especifico:
-        es_ca = ("COT" in codigo_especifico.upper())
+        codigo_forzado = codigo_especifico.strip()
+        es_ca = any(m in codigo_forzado.upper() for m in ("COT", "-CO"))
+        tipo_forzado = "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA"
+        titulo_forzado = _obtener_titulo_oficial(codigo_forzado, tipo_forzado)
+        if titulo_forzado:
+            print(f"   ✓ Título oficial: {titulo_forzado[:85]}")
+        else:
+            print("   [!] No se pudo leer el título oficial; se usará un nombre genérico.")
         candidatos = [{
-            "codigo": codigo_especifico.strip(),
-            "nombre": f"Proceso Solicitado {codigo_especifico.strip()}",
-            "tipo_portal": "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA",
+            "codigo": codigo_forzado,
+            "nombre": titulo_forzado or f"Proceso Solicitado {codigo_forzado}",
+            "tipo_portal": tipo_forzado,
             "keyword_match": "Solicitud Directa",
-            "fecha_cierre": "Ver Ficha"
+            "fecha_cierre": "Ver Ficha",
         }]
     else:
         candidatos = agente1.ejecutar_barrido()
 
-    if not candidatos:
-        print("\nℹ️ No hay proyectos nuevos pendientes en este ciclo (borra historial_proyectos_procesados.json si deseas reprocesar).")
+    # 1) Recuperar lo que quedó pendiente de corridas anteriores
+    cola = _leer_cola_pendiente()
+    for cand in candidatos:
+        if codigo_especifico or cand["codigo"] not in agente1.historial:
+            cola.setdefault(cand["codigo"], cand)
+
+    if not cola:
+        print("\nℹ️ No hay proyectos pendientes en este ciclo.")
+        print("   (Si quieres reprocesar algo, bórralo de historial_proyectos_procesados.json)")
         return
 
-    resultados_lote = []
-    for idx, candidato in enumerate(candidatos, 1):
+    # 2) ORDEN ESTRICTO: primero TODAS las Compras Ágiles, después las Licitaciones
+    lote = sorted(cola.values(), key=lambda c: (0 if c.get("tipo_portal") == "COMPRA_AGIL" else 1,
+                                                str(c.get("fecha_cierre") or "")))
+    _guardar_cola_pendiente(cola)
+
+    total_ca = sum(1 for c in lote if c.get("tipo_portal") == "COMPRA_AGIL")
+    print(f"\n📋 COLA DE TRABAJO: {len(lote)} proceso(s) | "
+          f"{total_ca} Compra(s) Ágil(es) primero, luego {len(lote) - total_ca} Licitación(es)")
+    for i, c in enumerate(lote, 1):
+        print(f"   {i}. [{c.get('tipo_portal', '?')}] {c.get('codigo')} · {str(c.get('nombre', ''))[:70]}")
+
+    resultados_lote, fallidos = [], []
+    for idx, candidato in enumerate(lote, 1):
         codigo = candidato["codigo"]
-        base_dir = CARPETA_COMPRAS_AGILES if candidato["tipo_portal"] == "COMPRA_AGIL" else CARPETA_LICITACIONES
+        base_dir = CARPETA_COMPRAS_AGILES if candidato.get("tipo_portal") == "COMPRA_AGIL" else CARPETA_LICITACIONES
         carpeta_proyecto = os.path.join(base_dir, codigo)
         os.makedirs(carpeta_proyecto, exist_ok=True)
 
         print(f"\n################################################################################")
-        print(f"🚀 PROCESANDO PROYECTO {idx}/{len(candidatos)}: {codigo} ({candidato['tipo_portal']}) - {candidato['nombre']}")
+        print(f"🚀 PROCESANDO {idx}/{len(lote)}: {codigo} ({candidato.get('tipo_portal')}) - {candidato.get('nombre')}")
         print(f"################################################################################")
 
-        expediente = agente2.extraer_proyecto_completo(candidato, carpeta_proyecto)
-        informes = agente3.auditar_y_redactar_4_informes(expediente)
-        escenarios = agente4.calcular_matriz_financiera(expediente, informes)
-        estado_nube = agente5.empaquetar_y_entregar_proyecto(expediente, informes, escenarios)
+        try:
+            expediente = agente2.extraer_proyecto_completo(candidato, carpeta_proyecto)
+            informes = agente3.auditar_y_redactar_4_informes(expediente)
+            escenarios = agente4.calcular_matriz_financiera(expediente, informes)
+            estado_nube = agente5.empaquetar_y_entregar_proyecto(expediente, informes, escenarios)
 
-        agente1.registrar_procesado(codigo)
+            n_adjuntos = len(expediente.get("adjuntos_locales") or [])
+            print(f"   📎 Adjuntos nativos + clones: {n_adjuntos}")
 
-        resultados_lote.append({
-            "expediente": expediente,
-            "informes": informes,
-            "escenarios": escenarios,
-            "nube": estado_nube
-        })
-        print("   ⏳ [Agente 5] Esperando 15 segundos para evitar bloqueos por concurrencia en Google Drive...")
-        time.sleep(15)
+            resultados_lote.append({
+                "expediente": expediente,
+                "informes": informes,
+                "escenarios": escenarios,
+                "nube": estado_nube,
+            })
+
+            # 3) SOLO se marca como procesado si llegó a Drive
+            if estado_nube.get("subido_drive"):
+                agente1.registrar_procesado(codigo)
+                cola.pop(codigo, None)
+                _guardar_cola_pendiente(cola)
+            else:
+                fallidos.append(codigo)
+                print(f"   ⚠️ {codigo} queda PENDIENTE: no se registra en el historial para reintentarlo.")
+        except Exception as e:
+            fallidos.append(codigo)
+            print(f"   ❌ ERROR procesando {codigo}: {e}")
+            print("   --- traza ---")
+            traceback.print_exc()
+            print("   -------------")
+
+        if idx < len(lote):
+            print(f"   ⏳ Esperando {PAUSA_ENTRE_PROYECTOS}s antes del siguiente proyecto...")
+            time.sleep(PAUSA_ENTRE_PROYECTOS)
 
     agente5.enviar_resumen_whatsapp_lote(resultados_lote)
+
     print("\n================================================================================")
-    print(f"🎉 PIPELINE DE 6 AGENTES COMPLETADO CON ÉXITO ({len(resultados_lote)} proyectos procesados)")
+    print(f"🎉 PIPELINE FINALIZADO: {len(resultados_lote)} procesado(s) | {len(fallidos)} pendiente(s)")
+    if fallidos:
+        print(f"   ⚠️ Pendientes (se reintentan en la próxima corrida): {', '.join(fallidos)}")
+    print(f"   📁 Entregables locales: {CARPETA_ENTREGABLES}")
     print("================================================================================")
 
 
