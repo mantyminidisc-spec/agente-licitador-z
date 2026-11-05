@@ -3495,7 +3495,8 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None):
             "escenarios": escenarios,
             "nube": estado_nube
         })
-        time.sleep(2)
+        print("   ⏳ [Agente 5] Esperando 15 segundos para evitar bloqueos por concurrencia en Google Drive...")
+        time.sleep(15)
 
     agente5.enviar_resumen_whatsapp_lote(resultados_lote)
     print("\n================================================================================")
