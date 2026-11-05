@@ -73,9 +73,18 @@ try:
         import pypdf
     except ImportError:
         pypdf = None
+    try:
+        import pdfplumber
+    except ImportError:
+        pdfplumber = None
+    try:
+        from playwright.sync_api import sync_playwright
+        PLAYWRIGHT_DISPONIBLE = True
+    except ImportError:
+        PLAYWRIGHT_DISPONIBLE = False
 except ImportError as e:
     print(f"[ERROR CRÍTICO] Faltan librerías: {e}")
-    print("Ejecuta en tu consola: pip install requests beautifulsoup4 openpyxl python-docx pypdf")
+    print("Ejecuta en tu consola: pip install requests beautifulsoup4 openpyxl python-docx pypdf pdfplumber playwright")
     sys.exit(1)
 
 # ==============================================================================
@@ -732,21 +741,55 @@ class Agente2Extractor:
 
     def _descargar_adjuntos_reales_portal(self, codigo, tipo_portal, datos_api, carpeta_adjuntos):
         """
-        Escaner y descargador profundo de archivos adjuntos originales (.pdf, .docx, .doc, .xlsx, .xls)
-        tanto para Compra Ágil (API v2 + Visor Digital) como para Licitaciones Públicas (API v1 + ASPX).
-        Crea la subcarpeta y mantiene cookies y cabeceras realistas.
+        Descargador de nivel industrial con 4 estrategias para adjuntos de Compra Agil y Licitaciones.
+        Estrategia 1: API endpoints oficiales (REST). Estrategia 2: Scraping HTML + visor ASPX.
+        Estrategia 3: Busqueda recursiva en payload JSON. Estrategia 4: Playwright headless fallback.
         """
         os.makedirs(carpeta_adjuntos, exist_ok=True)
         archivos_descargados = []
         extensiones_validas = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".zip", ".rar", ".csv", ".png", ".jpg")
-
-        print(f"   -> [Agente 2] Conectando y escaneando adjuntos oficiales del Estado para {codigo}...")
-
+        print(f"   -> [Agente 2] Escaneando adjuntos oficiales del Estado para {codigo}...")
         sesion = requests.Session()
         sesion.headers.update(HEADERS_WEB)
 
         if tipo_portal != "COMPRA_AGIL":
-            # 1. PROCEDIMIENTO PARA LICITACIONES PÚBLICAS (API v1 / Portal RFB)
+            # ─── LICITACIONES PUBLICAS ────────────────────────────────────────────────
+            # Estrategia 1A: API oficial de documentos adjuntos
+            urls_api_docs = [
+                f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo={codigo}&ticket={TICKET_MERCADO_PUBLICO}",
+            ]
+            for url_api_d in urls_api_docs:
+                try:
+                    r_api = sesion.get(url_api_d, timeout=20)
+                    if r_api.status_code == 200:
+                        datos_lic = r_api.json()
+                        for lic_item in datos_lic.get("Listado", []):
+                            docs_adj = (
+                                lic_item.get("DocumentosAdjuntos") or
+                                lic_item.get("Documentos") or
+                                lic_item.get("Adjuntos") or []
+                            )
+                            if isinstance(docs_adj, dict):
+                                docs_adj = docs_adj.get("Listado", [])
+                            for doc in (docs_adj or []):
+                                if not isinstance(doc, dict):
+                                    continue
+                                url_doc = (doc.get("Url") or doc.get("url") or
+                                           doc.get("UrlDescarga") or doc.get("urlDescarga") or "")
+                                nom_doc = (doc.get("Nombre") or doc.get("nombre") or
+                                           doc.get("NombreArchivo") or doc.get("nombre_archivo") or "")
+                                if url_doc:
+                                    nom_doc = nom_doc or os.path.basename(url_doc.split("?")[0]) or f"Adjunto_{codigo}.pdf"
+                                    nom_doc = re.sub(r'[\\/*?:"<>|]', "_", str(nom_doc))
+                                    if not any(nom_doc.lower().endswith(e) for e in extensiones_validas):
+                                        nom_doc += ".pdf"
+                                    ruta_dest = os.path.join(carpeta_adjuntos, nom_doc)
+                                    if self._descargar_binario(url_doc, ruta_dest, sesion=sesion):
+                                        archivos_descargados.append(ruta_dest)
+                except Exception:
+                    pass
+
+            # Estrategia 1B: Portal ASPX + visor de adjuntos
             urls_ficha = [
                 f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo}",
                 f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?qs={codigo}"
@@ -756,19 +799,17 @@ class Agente2Extractor:
                 try:
                     r1 = sesion.get(u_f, timeout=20, allow_redirects=True)
                     if r1.status_code == 200 and len(r1.text) > 500:
-                        # Extraer token del visor de adjuntos
-                        m_enc = re.search(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>\)]+)", r1.text, re.IGNORECASE)
+                        m_enc = re.search(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'\&\s<>\)]+)", r1.text, re.IGNORECASE)
                         if m_enc:
                             enc_token = m_enc.group(1)
                             break
-                        # Enlaces directos en la ficha
                         soup_ficha = BeautifulSoup(r1.text, "html.parser")
                         for a_tag in soup_ficha.find_all("a", href=True):
                             href = a_tag["href"]
                             if any(href.lower().endswith(ext) for ext in extensiones_validas) or "attachment" in href.lower():
                                 url_full = urllib.parse.urljoin("https://www.mercadopublico.cl", href)
                                 nom_f = a_tag.get_text(strip=True) or os.path.basename(href.split("?")[0])
-                                nom_f = re.sub(r'[\\/*?:"<>|]', "_", nom_f)
+                                nom_f = urllib.parse.unquote(re.sub(r'[\\/*?:"<>|]', "_", nom_f))
                                 if not any(nom_f.lower().endswith(e) for e in extensiones_validas):
                                     nom_f += ".pdf"
                                 ruta_dest = os.path.join(carpeta_adjuntos, nom_f)
@@ -777,90 +818,107 @@ class Agente2Extractor:
                 except Exception:
                     pass
 
-            # Si se encontró el visor ASPX oficial de archivos adjuntos
             if enc_token:
                 try:
-                    url_bridge = f"https://www.mercadopublico.cl/Procurement/Modules/Attachment/ViewAttachment.aspx?enc={enc_token}"
-                    sesion.get(url_bridge, timeout=15, allow_redirects=True)
-
                     url_grid = f"https://www.mercadopublico.cl/Procurement/Modules/Attachment/ViewAttachmentLC.aspx?enc={enc_token}"
                     r_grid = sesion.get(url_grid, timeout=20, allow_redirects=True)
-
                     if r_grid.status_code == 200:
                         soup_grid = BeautifulSoup(r_grid.text, "html.parser")
-                        form_data_base = {}
-                        for inp in soup_grid.find_all("input", {"type": "hidden"}):
-                            if inp.get("name"):
-                                form_data_base[inp["name"]] = inp.get("value", "")
-
+                        form_data_base = {inp["name"]: inp.get("value", "") for inp in soup_grid.find_all("input", {"type": "hidden"}) if inp.get("name")}
                         botones_descarga = []
                         for tr in soup_grid.find_all("tr"):
                             inp_img = tr.find("input", {"type": "image"})
                             if inp_img and inp_img.get("name"):
                                 celdas = [td.get_text(strip=True) for td in tr.find_all("td") if td.get_text(strip=True)]
-                                nombre_sugerido = None
-                                for txt_c in celdas:
-                                    if any(txt_c.lower().endswith(ext) for ext in extensiones_validas):
-                                        nombre_sugerido = txt_c
-                                        break
-                                if not nombre_sugerido and celdas:
-                                    nombre_sugerido = celdas[0] + ".pdf"
-                                botones_descarga.append((inp_img["name"], nombre_sugerido or f"Anexo_{codigo}.pdf"))
-
-                        for idx_b, (btn_name, nom_sugerido) in enumerate(botones_descarga, 1):
+                                nom_sug = next((c for c in celdas if any(c.lower().endswith(e) for e in extensiones_validas)), None)
+                                botones_descarga.append((inp_img["name"], nom_sug or f"Anexo_{codigo}.pdf"))
+                        for btn_name, nom_sug in botones_descarga:
                             post_payload = dict(form_data_base)
                             post_payload[f"{btn_name}.x"] = "8"
                             post_payload[f"{btn_name}.y"] = "8"
-
                             r_file = sesion.post(url_grid, data=post_payload, stream=True, timeout=30, allow_redirects=True)
                             if r_file.status_code == 200:
-                                c_disp = r_file.headers.get("Content-Disposition") or r_file.headers.get("content-disposition") or ""
-                                c_type = (r_file.headers.get("Content-Type") or "").lower()
-
-                                if "text/html" not in c_type or "attachment" in c_disp.lower() or "filename=" in c_disp.lower():
-                                    nom_real = nom_sugerido
+                                c_disp = r_file.headers.get("Content-Disposition", "")
+                                c_type = (r_file.headers.get("Content-Type", "")).lower()
+                                if "text/html" not in c_type or "attachment" in c_disp.lower():
                                     m_fn = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", c_disp, re.IGNORECASE)
-                                    if m_fn:
-                                        nom_real = urllib.parse.unquote(m_fn.group(1).strip())
+                                    nom_real = urllib.parse.unquote(m_fn.group(1).strip()) if m_fn else nom_sug
                                     nom_real = re.sub(r'[\\/*?:"<>|]', "_", nom_real)
                                     if not any(nom_real.lower().endswith(e) for e in extensiones_validas):
                                         nom_real += ".pdf"
-
                                     ruta_dest = os.path.join(carpeta_adjuntos, nom_real)
                                     with open(ruta_dest, "wb") as f_out:
                                         for chunk in r_file.iter_content(chunk_size=8192):
                                             if chunk:
                                                 f_out.write(chunk)
-
                                     if os.path.exists(ruta_dest) and os.path.getsize(ruta_dest) > 200:
-                                        tam_kb = os.path.getsize(ruta_dest) // 1024
-                                        print(f"      📥 [OK ANEXO OFICIAL DESCARGADO] {nom_real} ({tam_kb} KB)")
+                                        print(f"      📥 [OK ASPX] {nom_real} ({os.path.getsize(ruta_dest)//1024} KB)")
                                         archivos_descargados.append(ruta_dest)
-                                    else:
-                                        if os.path.exists(ruta_dest):
-                                            os.remove(ruta_dest)
+                                    elif os.path.exists(ruta_dest):
+                                        os.remove(ruta_dest)
                 except Exception as e:
-                    print(f"      [!] Aviso en visor de anexos: {e}")
+                    print(f"      [!] Visor ASPX: {e}")
+
+            # Estrategia 1C: Playwright headless fallback
+            if not archivos_descargados and PLAYWRIGHT_DISPONIBLE:
+                archivos_descargados.extend(self._descargar_con_playwright(codigo, tipo_portal, carpeta_adjuntos))
+
         else:
-            # 2. PROCEDIMIENTO PARA COMPRA ÁGIL (API v2 + Ficha Digital)
-            # A) Búsqueda recursiva de URLs en payload JSON
+            # ─── COMPRA AGIL ─────────────────────────────────────────────────────────
+            # Estrategia 2A: Endpoints REST de adjuntos de Compra Agil
+            endpoints_ca = [
+                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/adjuntos",
+                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/documentos",
+                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/archivos",
+                f"https://api2.mercadopublico.cl/v2/compra-agil/{codigo}/anexos",
+            ]
+            for ep in endpoints_ca:
+                try:
+                    r_ep = sesion.get(ep, headers=HEADERS_API_COMPRA_AGIL, timeout=15)
+                    if r_ep.status_code == 200:
+                        datos_ep = r_ep.json()
+                        archivos_ep = (
+                            datos_ep if isinstance(datos_ep, list) else
+                            datos_ep.get("adjuntos") or datos_ep.get("files") or
+                            datos_ep.get("archivos") or datos_ep.get("documentos") or
+                            datos_ep.get("anexos") or []
+                        )
+                        for archi in (archivos_ep or []):
+                            if not isinstance(archi, dict):
+                                continue
+                            url_a = (archi.get("url") or archi.get("Url") or
+                                     archi.get("urlDescarga") or archi.get("UrlDescarga") or
+                                     archi.get("link") or "")
+                            nom_a = (archi.get("nombre") or archi.get("Nombre") or
+                                     archi.get("nombreArchivo") or archi.get("NombreArchivo") or
+                                     os.path.basename(url_a.split("?")[0]) or f"Adjunto_{codigo}.pdf")
+                            nom_a = urllib.parse.unquote(re.sub(r'[\\/*?:"<>|]', "_", str(nom_a)))
+                            if not any(nom_a.lower().endswith(e) for e in extensiones_validas):
+                                nom_a += ".pdf"
+                            if url_a:
+                                ruta_dest = os.path.join(carpeta_adjuntos, nom_a)
+                                if self._descargar_binario(url_a, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
+                                    archivos_descargados.append(ruta_dest)
+                except Exception:
+                    pass
+
+            # Estrategia 2B: Busqueda recursiva de URLs en payload JSON
             texto_ca = json.dumps(datos_api, ensure_ascii=False)
             urls_halladas = set(re.findall(r'https?://[^"\'\s<>\\]+', texto_ca))
             for u_h in urls_halladas:
-                if any(ext in u_h.lower() for ext in extensiones_validas) or any(k in u_h.lower() for k in ["adjunto", "document", "download", "archivo", "storage"]):
-                    nom_h = os.path.basename(u_h.split("?")[0]) or f"Adjunto_{codigo}.pdf"
+                if any(ext in u_h.lower() for ext in extensiones_validas) or any(k in u_h.lower() for k in ["adjunto", "document", "download", "archivo", "storage", "anexo"]):
+                    nom_h = urllib.parse.unquote(os.path.basename(u_h.split("?")[0]) or f"Adjunto_{codigo}.pdf")
                     nom_h = re.sub(r'[\\/*?:"<>|]', "_", nom_h)
                     if not any(nom_h.lower().endswith(e) for e in extensiones_validas):
                         nom_h += ".pdf"
                     ruta_dest = os.path.join(carpeta_adjuntos, nom_h)
-                    if self._descargar_binario(u_h, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
+                    if ruta_dest not in archivos_descargados and self._descargar_binario(u_h, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
                         archivos_descargados.append(ruta_dest)
 
-            # B) Exploración del visor web de Compra Ágil
+            # Estrategia 2C: Visor web Compra Agil
             urls_ca_web = [
                 f"https://buscador.mercadopublico.cl/ficha?code={codigo}",
                 f"https://www.mercadopublico.cl/CompraAgil/Modules/RFQ/DetailsRFQ.aspx?qs={codigo}",
-                f"https://www.mercadopublico.cl/CompraAgil/Modules/RFQ/DetailsRFQ.aspx?idcotizacion={codigo}"
             ]
             for u_web in urls_ca_web:
                 try:
@@ -871,17 +929,21 @@ class Agente2Extractor:
                             href = a_tag["href"]
                             if any(href.lower().endswith(ext) for ext in extensiones_validas) or any(k in href.lower() for k in ["download", "adjunto", "attachment"]):
                                 url_completa = urllib.parse.urljoin("https://www.mercadopublico.cl", href)
-                                nom_ca = a_tag.get_text(strip=True) or os.path.basename(href.split("?")[0])
+                                nom_ca = urllib.parse.unquote(a_tag.get_text(strip=True) or os.path.basename(href.split("?")[0]))
                                 nom_ca = re.sub(r'[\\/*?:"<>|]', "_", nom_ca)
                                 if not any(nom_ca.lower().endswith(e) for e in extensiones_validas):
                                     nom_ca += ".pdf"
                                 ruta_dest = os.path.join(carpeta_adjuntos, nom_ca)
-                                if self._descargar_binario(url_completa, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
+                                if ruta_dest not in archivos_descargados and self._descargar_binario(url_completa, ruta_dest, headers_extra={"ticket": TICKET_MERCADO_PUBLICO}, sesion=sesion):
                                     archivos_descargados.append(ruta_dest)
                 except Exception:
                     pass
 
-        # Descomprimir archivos .zip o .rar descargados
+            # Estrategia 2D: Playwright headless fallback
+            if not archivos_descargados and PLAYWRIGHT_DISPONIBLE:
+                archivos_descargados.extend(self._descargar_con_playwright(codigo, tipo_portal, carpeta_adjuntos))
+
+        # Descomprimir ZIPs
         for arc in list(archivos_descargados):
             if arc.lower().endswith(".zip") and zipfile.is_zipfile(arc):
                 try:
@@ -891,11 +953,93 @@ class Agente2Extractor:
                             ruta_ext = os.path.join(carpeta_adjuntos, extraido)
                             if os.path.isfile(ruta_ext) and os.path.getsize(ruta_ext) > 100:
                                 archivos_descargados.append(ruta_ext)
-                    print(f"      📦 [ZIP DESCOMPRIMIDO] {os.path.basename(arc)}")
+                    print(f"      📦 [ZIP] {os.path.basename(arc)}")
                 except Exception:
                     pass
 
         return list(dict.fromkeys(archivos_descargados))
+
+    def _descargar_con_playwright(self, codigo, tipo_portal, carpeta_adjuntos):
+        """
+        Estrategia fallback con Playwright (Chromium headless).
+        Intercepta descargas reales haciendo clic en botones/enlaces de adjuntos.
+        Tambien captura el texto completo renderizado de la ficha (DOM).
+        """
+        archivos_descargados = []
+        extensiones_validas = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".zip")
+        if tipo_portal == "COMPRA_AGIL":
+            url_ficha = f"https://buscador.mercadopublico.cl/ficha?code={codigo}"
+        else:
+            url_ficha = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo}"
+
+        print(f"      🌐 [Playwright] Abriendo ficha headless: {url_ficha}")
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+                context = browser.new_context(
+                    accept_downloads=True,
+                    user_agent=HEADERS_WEB["User-Agent"],
+                    extra_http_headers={"Accept-Language": "es-CL,es;q=0.9"}
+                )
+                page = context.new_page()
+                try:
+                    page.goto(url_ficha, wait_until="networkidle", timeout=30000)
+                    page.wait_for_timeout(2500)
+                    # Capturar DOM renderizado completo
+                    texto_dom = page.inner_text("body") or ""
+                    if len(texto_dom) > 200:
+                        ruta_txt = os.path.join(carpeta_adjuntos, f"DOM_RENDERIZADO_{codigo}.txt")
+                        with open(ruta_txt, "w", encoding="utf-8", errors="replace") as f_txt:
+                            f_txt.write(f"[DOM RENDERIZADO PLAYWRIGHT - FICHA {codigo}]\n{texto_dom}")
+                        archivos_descargados.append(ruta_txt)
+                        print(f"      📄 [Playwright DOM] {len(texto_dom)} caracteres capturados")
+                    # Localizar todos los elementos descargables
+                    selectores_adjuntos = [
+                        "a[href*='.pdf']", "a[href*='.docx']", "a[href*='.doc']",
+                        "a[href*='.xlsx']", "a[href*='.xls']", "a[href*='.zip']",
+                        "a[href*='download']", "a[href*='adjunto']", "a[href*='attachment']",
+                        "a[href*='ViewAttachment']", "a[href*='storage']",
+                        "button[onclick*='download']",
+                        "input[type='image'][name*='Download']",
+                    ]
+                    elementos_adjunto = []
+                    for sel in selectores_adjuntos:
+                        try:
+                            elementos_adjunto.extend(page.query_selector_all(sel))
+                        except Exception:
+                            pass
+                    vistos = set()
+                    for elem in elementos_adjunto:
+                        try:
+                            clave = (elem.get_attribute("href") or elem.inner_text() or "")[:80]
+                            if clave in vistos:
+                                continue
+                            vistos.add(clave)
+                            with page.expect_download(timeout=18000) as dl_info:
+                                elem.click()
+                            download = dl_info.value
+                            nom_dl = download.suggested_filename or f"Adjunto_PW_{len(archivos_descargados)+1}.pdf"
+                            nom_dl = re.sub(r'[\\/*?:"<>|]', "_", urllib.parse.unquote(nom_dl))
+                            if not any(nom_dl.lower().endswith(e) for e in extensiones_validas):
+                                nom_dl += ".pdf"
+                            ruta_dl = os.path.join(carpeta_adjuntos, nom_dl)
+                            download.save_as(ruta_dl)
+                            if os.path.exists(ruta_dl) and os.path.getsize(ruta_dl) > 200:
+                                print(f"      📥 [Playwright OK] {nom_dl} ({os.path.getsize(ruta_dl)//1024} KB)")
+                                archivos_descargados.append(ruta_dl)
+                            page.wait_for_timeout(700)
+                        except Exception:
+                            pass
+                except Exception as e_page:
+                    print(f"      [!] Playwright error navegando: {e_page}")
+                finally:
+                    context.close()
+                    browser.close()
+        except Exception as e_pw:
+            print(f"      [!] Playwright no disponible: {e_pw}")
+        return archivos_descargados
+
+
 
     def _extraer_texto_de_adjuntos_locales(self, lista_rutas):
         """
@@ -1347,6 +1491,22 @@ class Agente2Extractor:
         if ruta_clon_adjuntos not in adjuntos_descargados:
             adjuntos_descargados.append(ruta_clon_adjuntos)
 
+        # 2.5. LECTURA FORENSE MULTIMODAL (Agente 2.5)
+        agente25 = Agente2_5LectorForense(self.perfil)
+        resultado_forense = agente25.leer_adjuntos_forense(adjuntos_descargados, carpeta_proyecto)
+        informe_forense = resultado_forense["informe_forense_consolidado"]
+        clones_forenses = resultado_forense["archivos_clon_generados"]
+        nombres_adjuntos_leidos = resultado_forense["nombres_adjuntos_leidos"]
+
+        # Usar el informe forense como texto_adjuntos (es más completo)
+        if informe_forense and len(informe_forense) > len(texto_adjuntos):
+            texto_adjuntos = informe_forense
+
+        # Agregar clones forenses a la lista de entregables
+        for clon_path in clones_forenses:
+            if clon_path not in adjuntos_descargados:
+                adjuntos_descargados.append(clon_path)
+
         descripcion_full = f"{candidato['nombre']} {descripcion} {texto_adjuntos}"
         info_firmas = self._detectar_firmas_y_anexos(descripcion_full)
 
@@ -1379,10 +1539,347 @@ class Agente2Extractor:
             "origen_presupuesto": origen_presupuesto,
             "adjuntos_locales": adjuntos_descargados,
             "texto_extraido_adjuntos": texto_adjuntos,
+            "informe_forense_adjuntos": informe_forense if 'informe_forense' in dir() else texto_adjuntos,
+            "nombres_adjuntos_leidos": nombres_adjuntos_leidos if 'nombres_adjuntos_leidos' in dir() else [],
             "firmas_y_anexos": info_firmas,
             "url_portal": url_ficha_portal,
             "datos_api_raw": datos_api
         }
+
+
+
+# ==============================================================================
+# AGENTE 2.5: ESPECIALISTA FORENSE EN LECTURA MULTIMODAL DE ADJUNTOS (IA GEMINI)
+# ==============================================================================
+class Agente2_5LectorForense:
+    """
+    Lector Forense Multimodal de nivel industrial. Para cada adjunto descargado:
+    1. Extrae texto hoja-por-hoja con pdfplumber (tablas+texto), pypdf, python-docx y openpyxl.
+    2. Envia el PDF binario directamente a Gemini como parte multimodal (application/pdf).
+    3. Genera un Word clon CLON_EXACTO_ADJUNTO_[nombre].docx con todo el contenido forense.
+    4. Devuelve un informe forense consolidado que el Agente 3 DEBE usar 100%.
+    """
+
+    def __init__(self, perfil):
+        self.perfil = perfil
+        self.url_gemini_upload = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+        self.url_gemini_gen = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY_GEMINI}"
+
+    def _extraer_texto_pdfplumber(self, ruta_pdf):
+        """Extrae texto Y tablas hoja por hoja de PDF con pdfplumber."""
+        if pdfplumber is None:
+            return ""
+        textos = []
+        try:
+            with pdfplumber.open(ruta_pdf) as pdf:
+                for i, page in enumerate(pdf.pages, 1):
+                    txt_pg = page.extract_text() or ""
+                    tablas = page.extract_tables() or []
+                    bloque = f"[Pag.{i}]"
+                    if txt_pg.strip():
+                        bloque += " " + txt_pg.strip()
+                    for tabla in tablas:
+                        for fila in tabla:
+                            celdas = [str(c or "").strip() for c in fila if c]
+                            if celdas:
+                                bloque += "\n  " + " | ".join(celdas)
+                    textos.append(bloque)
+        except Exception as e:
+            textos.append(f"(pdfplumber error: {e})")
+        return "\n".join(textos)
+
+    def _extraer_texto_pypdf(self, ruta_pdf):
+        """Fallback pypdf para texto plano."""
+        if pypdf is None:
+            return ""
+        textos = []
+        try:
+            reader = pypdf.PdfReader(ruta_pdf)
+            for i, page in enumerate(reader.pages, 1):
+                t = page.extract_text() or ""
+                if t.strip():
+                    textos.append(f"[Pag.{i}]: {t.strip()}")
+        except Exception as e:
+            textos.append(f"(pypdf error: {e})")
+        return "\n".join(textos)
+
+    def _extraer_texto_word(self, ruta_docx):
+        """Extrae texto completo + todas las tablas de un Word."""
+        textos = []
+        try:
+            d = Document(ruta_docx)
+            for p in d.paragraphs:
+                if p.text.strip():
+                    textos.append(p.text.strip())
+            for idx_t, tabla in enumerate(d.tables, 1):
+                textos.append(f"[Tabla {idx_t}]")
+                for row in tabla.rows:
+                    celdas = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if celdas:
+                        textos.append("  " + " | ".join(celdas))
+        except Exception as e:
+            textos.append(f"(word error: {e})")
+        return "\n".join(textos)
+
+    def _extraer_texto_excel(self, ruta_xlsx):
+        """Extrae TODAS las hojas y celdas del Excel."""
+        textos = []
+        try:
+            wb = openpyxl.load_workbook(ruta_xlsx, data_only=True)
+            for sname in wb.sheetnames:
+                ws = wb[sname]
+                filas_hoja = []
+                for row in ws.iter_rows(values_only=True):
+                    vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
+                    if vals:
+                        filas_hoja.append(" | ".join(vals))
+                if filas_hoja:
+                    textos.append(f"[Hoja: {sname}]\n" + "\n".join(filas_hoja))
+        except Exception as e:
+            textos.append(f"(excel error: {e})")
+        return "\n".join(textos)
+
+    def _leer_pdf_con_gemini_multimodal(self, ruta_pdf, nombre_archivo):
+        """
+        Envia el PDF binario directamente a Gemini como parte multimodal.
+        Usa la File API para subir y luego generateContent con mime_type=application/pdf.
+        """
+        if not API_KEY_GEMINI:
+            return ""
+        try:
+            # Subir archivo a File API
+            with open(ruta_pdf, "rb") as f_bin:
+                pdf_bytes = f_bin.read()
+
+            tam_mb = len(pdf_bytes) / (1024 * 1024)
+            print(f"      🤖 [Agente 2.5 Gemini] Subiendo {nombre_archivo} ({tam_mb:.1f} MB) a Gemini File API...")
+
+            # Upload con resumable upload
+            headers_upload = {
+                "X-Goog-Upload-Protocol": "raw",
+                "X-Goog-Upload-Command": "start, upload, finalize",
+                "X-Goog-Upload-Header-Content-Type": "application/pdf",
+                "X-Goog-Upload-Header-Content-Length": str(len(pdf_bytes)),
+                "Content-Type": "application/pdf",
+                "Content-Length": str(len(pdf_bytes)),
+            }
+            r_up = requests.post(
+                f"{self.url_gemini_upload}?key={API_KEY_GEMINI}&uploadType=media",
+                headers=headers_upload,
+                data=pdf_bytes,
+                timeout=120
+            )
+            if r_up.status_code not in [200, 201]:
+                return ""
+
+            file_data = r_up.json()
+            file_uri = file_data.get("file", {}).get("uri", "")
+            if not file_uri:
+                return ""
+
+            print(f"      🤖 [Agente 2.5 Gemini] Archivo subido. Enviando prompt forense hoja por hoja...")
+
+            prompt_forense = f"""Eres un Lector Forense Especialista en Documentos de Contratacion Publica Chilena.
+Lee el documento adjunto HOJA POR HOJA y extrae el 100% de su contenido tecnico.
+
+INSTRUCCION ESTRICTA: NO omitas NINGUNA informacion del documento. Debes extraer y transcribir:
+1. Cada item solicitado con su descripcion completa, cantidad exacta y unidad de medida.
+2. Especificaciones tecnicas detalladas (medidas, formatos, resolucion, alcance, canales, medios).
+3. Plan de medios, pautas, cronogramas, distribuciones por canal si los hay.
+4. Plazos de entrega, hitos de entrega, fechas fatales.
+5. Multas, penalizaciones y requisitos excluyentes.
+6. Tablas completas (trascribelas fila por fila con sus columnas).
+7. Anexos tecnicos, bases administrativas y cualquier especificacion adicional.
+
+NOMBRE DEL ARCHIVO: {nombre_archivo}
+Lee y transcribe el contenido completo en formato estructurado."""
+
+            payload_gen = {
+                "contents": [{
+                    "parts": [
+                        {"file_data": {"mime_type": "application/pdf", "file_uri": file_uri}},
+                        {"text": prompt_forense}
+                    ]
+                }],
+                "generationConfig": {"temperature": 0.1, "max_output_tokens": 8192}
+            }
+            r_gen = requests.post(self.url_gemini_gen, json=payload_gen, timeout=90)
+            if r_gen.status_code == 200:
+                txt = r_gen.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                if txt:
+                    print(f"      ✅ [Agente 2.5 Gemini Multimodal] {len(txt)} chars extraidos de {nombre_archivo}")
+                    return txt
+        except Exception as e:
+            print(f"      [!] Gemini File API error para {nombre_archivo}: {e}")
+        return ""
+
+    def leer_adjuntos_forense(self, lista_rutas, carpeta_proyecto):
+        """
+        Proceso forense completo para todos los adjuntos.
+        Retorna un dict con:
+          - informe_forense_consolidado: texto completo para Agente 3
+          - archivos_clon_generados: lista de paths de los Word clones
+          - nombres_adjuntos_leidos: lista de nombres de archivos citados
+        """
+        print(f"\n🔬 [AGENTE 2.5] LECTURA FORENSE MULTIMODAL DE {len(lista_rutas)} ADJUNTOS...")
+        informe_bloques = []
+        archivos_clon = []
+        nombres_leidos = []
+
+        # Filtrar solo archivos con contenido real (no clones anteriores ni DOM txt para PDF-lectura)
+        rutas_a_leer = [r for r in lista_rutas if os.path.exists(r) and not os.path.basename(r).startswith("CLON_EXACTO_")]
+
+        for ruta in rutas_a_leer:
+            nom = os.path.basename(ruta)
+            ext = os.path.splitext(ruta)[1].lower()
+            if nom.startswith("ANEXO_CLON_BASES_OFICIALES_"):
+                continue
+
+            texto_extraido = ""
+            metodo_usado = "ninguno"
+
+            if ext == ".pdf":
+                # Prioridad 1: Gemini multimodal (hoja por hoja, tablas incluidas)
+                texto_gemini = self._leer_pdf_con_gemini_multimodal(ruta, nom)
+                if texto_gemini and len(texto_gemini) > 100:
+                    texto_extraido = texto_gemini
+                    metodo_usado = "Gemini-Multimodal"
+                else:
+                    # Prioridad 2: pdfplumber (texto + tablas)
+                    texto_plumber = self._extraer_texto_pdfplumber(ruta)
+                    if texto_plumber and len(texto_plumber) > 100:
+                        texto_extraido = texto_plumber
+                        metodo_usado = "pdfplumber"
+                    else:
+                        # Fallback: pypdf
+                        texto_extraido = self._extraer_texto_pypdf(ruta)
+                        metodo_usado = "pypdf"
+
+            elif ext in [".docx", ".doc"]:
+                texto_extraido = self._extraer_texto_word(ruta)
+                metodo_usado = "python-docx"
+
+            elif ext in [".xlsx", ".xls"]:
+                texto_extraido = self._extraer_texto_excel(ruta)
+                metodo_usado = "openpyxl"
+
+            elif ext == ".txt":
+                try:
+                    texto_extraido = open(ruta, encoding="utf-8", errors="ignore").read()
+                    metodo_usado = "texto-plano"
+                except Exception:
+                    pass
+
+            if texto_extraido and len(texto_extraido.strip()) > 50:
+                bloque = (
+                    f"=== [LECTURA FORENSE COMPLETA: {nom}] (Metodo: {metodo_usado}) ===\n"
+                    f"{texto_extraido.strip()}\n"
+                    f"=== [FIN ADJUNTO: {nom}] ==="
+                )
+                informe_bloques.append(bloque)
+                nombres_leidos.append(nom)
+                print(f"      ✅ [2.5 Forense] {nom}: {len(texto_extraido)} chars ({metodo_usado})")
+
+                # Generar Word Clon CLON_EXACTO_ADJUNTO_[nombre].docx
+                ruta_clon = os.path.join(carpeta_proyecto, f"CLON_EXACTO_ADJUNTO_{re.sub(r'[^\w.-]', '_', nom)}.docx")
+                self._generar_clon_word(nom, texto_extraido, metodo_usado, ruta_clon)
+                archivos_clon.append(ruta_clon)
+            else:
+                # Si no se pudo leer, intenta Gemini con DOM txt si existe
+                print(f"      [!] [2.5 Forense] No se pudo leer contenido de: {nom}")
+                informe_bloques.append(f"[ADJUNTO SIN CONTENIDO EXTRAIBLE: {nom}]")
+
+        informe_consolidado = "\n\n".join(informe_bloques)
+        print(f"   ✅ [Agente 2.5] Informe forense: {len(informe_consolidado)} chars | {len(archivos_clon)} clones Word generados")
+
+        return {
+            "informe_forense_consolidado": informe_consolidado,
+            "archivos_clon_generados": archivos_clon,
+            "nombres_adjuntos_leidos": nombres_leidos
+        }
+
+    def _generar_clon_word(self, nombre_archivo, texto_forense, metodo, ruta_docx):
+        """
+        Genera un Word clon estructurado con diseño oficial que replica
+        hoja por hoja todo el contenido forense extraido del adjunto.
+        """
+        try:
+            doc = Document()
+            for s in doc.sections:
+                s.top_margin = Inches(0.65)
+                s.bottom_margin = Inches(0.65)
+                s.left_margin = Inches(0.75)
+                s.right_margin = Inches(0.75)
+
+            # Banner
+            t_ban = doc.add_table(rows=1, cols=1)
+            t_ban.alignment = WD_TABLE_ALIGNMENT.CENTER
+            c_ban = t_ban.rows[0].cells[0]
+            c_ban._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="0F172A"/>'))
+            p_b = c_ban.paragraphs[0]
+            p_b.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p_b.paragraph_format.space_before = Pt(6)
+            p_b.paragraph_format.space_after = Pt(4)
+            r_b1 = p_b.add_run(f"CLON EXACTO DE ADJUNTO OFICIAL - LECTURA FORENSE\n")
+            r_b1.bold = True
+            r_b1.font.size = Pt(12)
+            r_b1.font.color.rgb = RGBColor(255, 255, 255)
+            r_b2 = p_b.add_run(f"Archivo Fuente: {nombre_archivo} | Metodo: {metodo}")
+            r_b2.font.size = Pt(9)
+            r_b2.font.color.rgb = RGBColor(148, 163, 184)
+
+            doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+            # Contenido forense hoja por hoja
+            secciones = texto_forense.split("[Pag.")
+            if len(secciones) > 1:
+                # Dividir por paginas detectadas
+                for sec in secciones:
+                    if not sec.strip():
+                        continue
+                    p_sec = doc.add_paragraph()
+                    idx_fin = sec.find("]")
+                    if idx_fin > 0:
+                        num_pag = sec[:idx_fin].strip()
+                        contenido_pag = sec[idx_fin+1:].strip()
+                        r_hdr = p_sec.add_run(f"Pagina {num_pag}")
+                        r_hdr.bold = True
+                        r_hdr.font.size = Pt(10)
+                        r_hdr.font.color.rgb = RGBColor(30, 58, 138)
+                        p_cont = doc.add_paragraph()
+                        r_cont = p_cont.add_run(contenido_pag[:8000])
+                        r_cont.font.size = Pt(9)
+                    else:
+                        p_sec.add_run(sec[:8000]).font.size = Pt(9)
+            else:
+                # Contenido sin paginacion detectada
+                fragmentos = [texto_forense[i:i+6000] for i in range(0, min(len(texto_forense), 36000), 6000)]
+                for idx_f, frag in enumerate(fragmentos, 1):
+                    p_frag = doc.add_paragraph()
+                    if len(fragmentos) > 1:
+                        r_hdr = p_frag.add_run(f"Seccion {idx_f}:")
+                        r_hdr.bold = True
+                        r_hdr.font.size = Pt(10)
+                        r_hdr.font.color.rgb = RGBColor(30, 58, 138)
+                        doc.add_paragraph().add_run(frag).font.size = Pt(9)
+                    else:
+                        p_frag.add_run(frag).font.size = Pt(9)
+
+            # Pie
+            p_pie = doc.add_paragraph()
+            p_pie.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p_pie.paragraph_format.space_before = Pt(12)
+            r_pie = p_pie.add_run(
+                f"Clon Forense Oficial B2G · Mantytech SpA · "
+                f"Generado el {datetime.datetime.now().strftime('%d-%m-%Y %H:%M')}"
+            )
+            r_pie.font.size = Pt(8)
+            r_pie.font.color.rgb = RGBColor(148, 163, 184)
+
+            doc.save(ruta_docx)
+            print(f"      📄 [Agente 2.5] Clon Word generado: {os.path.basename(ruta_docx)}")
+        except Exception as e:
+            print(f"      [!] Error generando Clon Word {os.path.basename(ruta_docx)}: {e}")
 
 
 # ==============================================================================
@@ -1465,12 +1962,13 @@ DATOS GENERALES DEL PROCESO:
 - PRESUPUESTO OFICIAL MÁXIMO PUBLICADO (TOPE BRUTO CON 19% IVA INCLUIDO): ${presupuesto:,} CLP
 - NETO MÁXIMO OFICIAL PERMITIDO: ${estudio_base['neto_maximo_oficial_clp']:,} CLP
 - DESCRIPCIÓN DE BASES / GLOSA: {expediente['descripcion']}
-- ESPECIFICACIONES TÉCNICAS Y ADJUNTOS LEÍDOS:
-{expediente.get('texto_extraido_adjuntos', '')[:5000]}
+- ADJUNTOS OFICIALES LEIDOS (INFORME FORENSE COMPLETO DEL AGENTE 2.5):
+  Archivos citados: {', '.join(expediente.get('nombres_adjuntos_leidos', []) or ['Ver adjuntos del proyecto'])}
+{expediente.get('informe_forense_adjuntos', expediente.get('texto_extraido_adjuntos', ''))[:7000]}
 
 ESTRUCTURA DE AUDITORÍA OBLIGATORIA (DEBES DESARROLLAR LAS 7 SECCIONES):
 1. IDENTIFICACIÓN EXACTA DEL COMPRADOR: Analiza la naturaleza institucional del organismo ({organismo}) y su unidad requirente ({unidad_compra}), contextualizando las prioridades de contratación para esta entidad del Estado.
-2. RESUMEN EJECUTIVO Y DE QUÉ TRATA EL PROYECTO: Explicación profunda y técnica del requerimiento, objetivo de la contratación, problemas que resuelve en la entidad pública y alcance concreto.
+2. RESUMEN EJECUTIVO Y DE QUÉ TRATA EL PROYECTO: Explicación profunda y técnica del requerimiento, objetivo de la contratación, problemas que resuelve y alcance concreto. IMPORTANTE: Basa este punto 100% en el contenido real de los adjuntos leidos. Cita explicitamente cada archivo adjunto (ej: 'Segun el archivo PLAN DE MEDIOS CONCIENCIA TURISTICA.pdf...') y detalla exactamente los items, cantidades y servicios que pide ese documento. PROHIBIDO inventar items genericos si los adjuntos tienen contenido especifico.
 3. ANÁLISIS DE PROS, CONTRAS Y RIESGOS: Matriz exhaustiva con fortalezas competitivas de Mantytech SpA, desafíos de implementación, mitigación de riesgos técnicos y administrativos, plazos críticos, análisis de multas diarias / topes y régimen de garantías (exención bajo 2.000 UTM según Art. 31 del Reglamento).
 4. AUDITORÍA DE LAS 37 NORMAS Y LEY 19.886 (MÁS REGLAMENTO DS 661 Y LEY 21.634): Evaluación de admisibilidad jurídica, vigencia en ChileProveedores, no concurrencia de inhabilidades del Art. 4, cumplimiento de declaraciones juradas de probidad y no parentesco directivo, ausencia de cláusulas arbitrarias y fórmula de evaluación.
 5. NORMAS CHILENAS (NCh) Y ESTÁNDARES TÉCNICOS: Identificación de normas chilenas aplicables (NCh 2728 para gestión de calidad, NCh-ISO 27001 para seguridad de la información, normas técnicas Segpres de Interoperabilidad y Accesibilidad Web) y acreditación de cumplimiento por Mantytech SpA.
@@ -1479,7 +1977,7 @@ ESTRUCTURA DE AUDITORÍA OBLIGATORIA (DEBES DESARROLLAR LAS 7 SECCIONES):
    * Opción 1 - Competitiva / Agresiva al 83%: Total Bruto ${esc1['total_bruto_clp']:,} CLP (Neto: ${esc1['neto_clp']:,} CLP + IVA 19%: ${esc1['iva_19_clp']:,} CLP).
    * Opción 2 - Equilibrada / Recomendada al 92%: Total Bruto ${esc2['total_bruto_clp']:,} CLP (Neto: ${esc2['neto_clp']:,} CLP + IVA 19%: ${esc2['iva_19_clp']:,} CLP).
    * Opción 3 - Premium / Alta Gama al 98%: Total Bruto ${esc3['total_bruto_clp']:,} CLP (Neto: ${esc3['neto_clp']:,} CLP + IVA 19%: ${esc3['iva_19_clp']:,} CLP).
-7. PROPUESTA DE ESPECIFICACIONES TÉCNICAS ESPECIALIZADAS: Redacción técnica para el Agente 4 detallando arquitectura de solución, metodología de trabajo ágil por fases, entregables tangibles, SLA y garantía técnica postventa.
+7. PROPUESTA DE ESPECIFICACIONES TÉCNICAS ESPECIALIZADAS: Redaccion tecnica para el Agente 4. DEBES basarte 100% en los items y cantidades especificadas en los adjuntos leidos (citando el nombre de cada archivo adjunto). Desglosar en la tabla economica y tecnica EXACTAMENTE los items, cantidades y servicios solicitados en los archivos adjuntos. PROHIBIDO usar items genericos si los adjuntos contienen informacion especifica.
 
 Genera la respuesta estrictamente en formato JSON válido con esta estructura:
 {{
