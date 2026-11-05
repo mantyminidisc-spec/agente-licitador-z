@@ -991,11 +991,25 @@ class Agente2Extractor:
         print(f"      🌐 [Playwright] Abriendo ficha headless: {url_ficha}")
         try:
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+                browser = pw.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-web-security"
+                    ]
+                )
                 context = browser.new_context(
                     accept_downloads=True,
-                    user_agent=HEADERS_WEB["User-Agent"],
-                    extra_http_headers={"Accept-Language": "es-CL,es;q=0.9"}
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    locale="es-CL",
+                    timezone_id="America/Santiago",
+                    extra_http_headers={
+                        "Accept-Language": "es-CL,es;q=0.9,en-US;q=0.8,en;q=0.7",
+                        "Referer": "https://buscador.mercadopublico.cl/"
+                    }
                 )
                 page = context.new_page()
                 try:
@@ -1003,11 +1017,13 @@ class Agente2Extractor:
                     page.wait_for_timeout(2500)
                     # Capturar DOM renderizado completo
                     texto_dom = page.inner_text("body") or ""
-                    if len(texto_dom) > 200:
+                    if len(texto_dom) > 200 and not _es_bloqueo_waf_403(texto_dom):
                         ruta_txt = os.path.join(carpeta_adjuntos, f"DOM_RENDERIZADO_{codigo}.txt")
                         with open(ruta_txt, "w", encoding="utf-8", errors="replace") as f_txt:
                             f_txt.write(f"[DOM RENDERIZADO PLAYWRIGHT - FICHA {codigo}]\n{texto_dom}")
                         archivos_descargados.append(ruta_txt)
+                    elif _es_bloqueo_waf_403(texto_dom):
+                        print(f"      [!] [WAF] Bloqueo 403 / CloudFront detectado en el DOM de {codigo}. Omitiendo guardado de txt.")
                         print(f"      📄 [Playwright DOM] {len(texto_dom)} caracteres capturados")
                     # Localizar todos los elementos descargables
                     selectores_adjuntos = [
@@ -3381,22 +3397,34 @@ class Agente5Entregador:
 
         print(f"\n📦 [AGENTE 5] GENERANDO PAQUETE COMPLETO DE ENTREGABLES PARA: {codigo}")
 
-        # Generación obligatoria y garantizada de DOC 1, DOC 2, DOC 3 y Excel Financiero
+        # Generación obligatoria y garantizada de DOC 1, DOC 2, DOC 3 y Excel Financiero con tolerancia a fallos
         ruta_doc1 = os.path.join(carpeta_proyecto, f"DOC1_Informe_Auditoria_Interna_Mantytech_SpA_{codigo}.docx")
-        self.generar_doc1_auditoria(expediente, informes, escenarios, ruta_doc1)
-        print(f"   ✓ DOC 1 (Dossier Auditoría y 37 Normas) : {os.path.basename(ruta_doc1)}")
+        try:
+            self.generar_doc1_auditoria(expediente, informes, escenarios, ruta_doc1)
+            print(f"   ✓ DOC 1 (Dossier Auditoría y 37 Normas) : {os.path.basename(ruta_doc1)}")
+        except Exception as e_doc1:
+            print(f"   [!] Error generando DOC 1 para {codigo}: {e_doc1}")
 
         ruta_doc2 = os.path.join(carpeta_proyecto, f"DOC2_Cotizacion_Presupuesto_Oficial_Mantytech_SpA_{codigo}.docx")
-        self.generar_doc2_cotizacion_1_hoja(expediente, informes, escenarios, ruta_doc2)
-        print(f"   ✓ DOC 2 (Cotización Oficial B2G)         : {os.path.basename(ruta_doc2)}")
+        try:
+            self.generar_doc2_cotizacion_1_hoja(expediente, informes, escenarios, ruta_doc2)
+            print(f"   ✓ DOC 2 (Cotización Oficial B2G)         : {os.path.basename(ruta_doc2)}")
+        except Exception as e_doc2:
+            print(f"   [!] Error generando DOC 2 para {codigo}: {e_doc2}")
 
         ruta_doc3 = os.path.join(carpeta_proyecto, f"DOC3_Resumen_Financiero_4_Pestanas_{codigo}.docx")
-        self.generar_doc3_financiero_word(expediente, informes, escenarios, ruta_doc3)
-        print(f"   ✓ DOC 3 (Reporte Financiero Pro)         : {os.path.basename(ruta_doc3)}")
+        try:
+            self.generar_doc3_financiero_word(expediente, informes, escenarios, ruta_doc3)
+            print(f"   ✓ DOC 3 (Reporte Financiero Pro)         : {os.path.basename(ruta_doc3)}")
+        except Exception as e_doc3:
+            print(f"   [!] Error generando DOC 3 para {codigo}: {e_doc3}")
 
         ruta_excel = os.path.join(carpeta_proyecto, f"Planilla_Financiera_4_Pestanas_{codigo}.xlsx")
-        self.generar_excel_4_pestanas(expediente, informes, escenarios, ruta_excel)
-        print(f"   ✓ Excel Financiero (4 Pestañas Pro)      : {os.path.basename(ruta_excel)}")
+        try:
+            self.generar_excel_4_pestanas(expediente, informes, escenarios, ruta_excel)
+            print(f"   ✓ Excel Financiero (4 Pestañas Pro)      : {os.path.basename(ruta_excel)}")
+        except Exception as e_excel:
+            print(f"   [!] Error generando Excel para {codigo}: {e_excel}")
 
         self.actualizar_catalogo_maestro(expediente, escenarios)
         print(f"   ✓ Tablero CRM Maestro actualizado   : {os.path.basename(ARCHIVO_CATALOGO_MAESTRO)}")
