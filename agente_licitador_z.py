@@ -396,6 +396,38 @@ def mostrar_horario():
         print("   ⏸ Ahora NO corresponde (con --auto se saltaría; a mano corre igual)")
     print("")
 
+
+# ==============================================================================
+# GET CON REINTENTOS (la API de Compra Ágil a veces tarda más de 20s)
+# ==============================================================================
+def _crear_sesion_api():
+    """Sesión con huella TLS de navegador si curl_cffi está disponible."""
+    if CURL_CFFI_DISPONIBLE:
+        try:
+            sesion = curl_requests.Session(impersonate="chrome")
+            sesion.headers.update(HEADERS_WEB)
+            return sesion
+        except Exception:
+            pass
+    sesion = requests.Session()
+    sesion.headers.update(HEADERS_WEB)
+    return sesion
+
+
+def _get_con_reintento(url, headers=None, timeout=45, intentos=2, sesion=None):
+    """GET tolerante a timeouts. Devuelve la respuesta o None."""
+    cliente = sesion or requests
+    ultimo = None
+    for numero in range(1, max(1, intentos) + 1):
+        try:
+            return cliente.get(url, headers=headers or {}, timeout=timeout)
+        except Exception as e:
+            ultimo = e
+            if numero < intentos:
+                time.sleep(2 * numero)
+    print(f"      [!] Sin respuesta de la API tras {intentos} intento(s): {str(ultimo)[:110]}")
+    return None
+
 class Agente0Contexto:
     def __init__(self):
         self.perfil = {
@@ -696,6 +728,8 @@ Responde ÚNICAMENTE en formato JSON:
         hallazgos_ca = []
         codigos_procesados_lote = set()
         print("   -> [1A] Escaneando Portal COMPRA ÁGIL V2 (Barrido de 72h con Keywords de Giro)...")
+        sesion_ca = _crear_sesion_api()
+        fallos_ca = 0
 
         # Keywords de consulta compuestas y específicas del giro TI (sin palabras ambiguas como 'sistema')
         keywords_consulta = [
@@ -711,7 +745,11 @@ Responde ÚNICAMENTE en formato JSON:
             url_api = f"https://api2.mercadopublico.cl/v2/compra-agil?q={kw_url}&estado=publicada&numero_pagina=1"
 
             try:
-                r = requests.get(url_api, headers=HEADERS_API_COMPRA_AGIL, timeout=20)
+                r = _get_con_reintento(url_api, HEADERS_API_COMPRA_AGIL,
+                                       timeout=45, intentos=2, sesion=sesion_ca)
+                if r is None:
+                    fallos_ca += 1
+                    continue
                 if r.status_code == 200:
                     js = r.json()
 
@@ -769,6 +807,9 @@ Responde ÚNICAMENTE en formato JSON:
             except Exception as e:
                 print(f"      [!] Nota de consulta en keyword '{kw}': {e}")
 
+        if fallos_ca and not hallazgos_ca:
+            print(f"      ⚠️ La API v2 de Compra Ágil no respondió ({fallos_ca} consultas).")
+            print("         Las compras ágiles se buscarán igualmente en el listado v1 (respaldo).")
         print(f"      ✓ {len(hallazgos_ca)} Compras Ágiles vigentes detectadas e incorporadas.")
         return hallazgos_ca
 
