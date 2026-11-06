@@ -142,7 +142,8 @@ CORREO_DESTINO = os.getenv("CORREO_DESTINO", "booknegocios2015@gmail.com")
 WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56950901627")
 # En un contenedor "localhost" es el propio contenedor: hay que apuntar a la
 # URL real de la Evolution API (o dejarlo vacío para desactivar WhatsApp).
-WHATSAPP_API_LOCAL = os.getenv("WHATSAPP_API_URL", "").strip()
+WHATSAPP_API_URL = os.getenv("WHATSAPP_API_URL", "").strip()
+WHATSAPP_API_LOCAL = WHATSAPP_API_URL  # compatibilidad con el nombre antiguo
 
 # --- WhatsApp (Evolution API o webhook genérico) -----------------------------
 # Con Evolution API se necesitan 3 datos: URL base, nombre de la instancia y apikey.
@@ -4223,6 +4224,9 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
 
     # 1) Recuperar lo que quedó pendiente de corridas anteriores
     cola = _leer_cola_pendiente()
+    # Si ya está entregado en Drive, no se reintenta aunque haya quedado anotado
+    # en la cola por un error posterior (por ejemplo, un fallo de WhatsApp).
+    cola = {c: v for c, v in cola.items() if c not in agente1.historial}
     for cand in candidatos:
         if codigo_especifico or cand["codigo"] not in agente1.historial:
             cola.setdefault(cand["codigo"], cand)
@@ -4275,8 +4279,12 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
                 agente1.registrar_procesado(codigo)
                 cola.pop(codigo, None)
                 _guardar_cola_pendiente(cola)
-                # Aviso al cliente por WhatsApp (sin márgenes) en cuanto está listo
-                agente5.notificar_cliente_whatsapp(expediente, escenarios, estado_nube)
+                # Aviso al cliente por WhatsApp (sin márgenes) en cuanto está listo.
+                # Si el WhatsApp falla, NO debe afectar el proyecto (ya está en Drive).
+                try:
+                    agente5.notificar_cliente_whatsapp(expediente, escenarios, estado_nube)
+                except Exception as e_wa:
+                    print(f"   [!] Aviso de WhatsApp no enviado: {e_wa}")
             else:
                 fallidos.append(codigo)
                 _anotar_fallo(cola, codigo, candidato,
@@ -4294,7 +4302,10 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
             print(f"   ⏳ Esperando {PAUSA_ENTRE_PROYECTOS}s antes del siguiente proyecto...")
             time.sleep(PAUSA_ENTRE_PROYECTOS)
 
-    agente5.enviar_resumen_whatsapp_lote(resultados_lote)
+    try:
+        agente5.enviar_resumen_whatsapp_lote(resultados_lote)
+    except Exception as e_res:
+        print(f"   [!] No se pudo enviar el resumen por WhatsApp: {e_res}")
 
     print("\n================================================================================")
     print(f"🎉 PIPELINE FINALIZADO: {len(resultados_lote)} procesado(s) | {len(fallidos)} pendiente(s)")
