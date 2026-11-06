@@ -48,6 +48,8 @@ RUN playwright install chromium --with-deps
 # --- Estos dos COPY deben apuntar al nombre real del agente ----------------
 COPY agente_licitador_z.py .
 COPY probar_conexion.py .
+# Logo corporativo (se usa en DOC 1 y DOC 2). Si no lo quieres, bórralo del repo.
+COPY logo.png .
 
 RUN mkdir -p /data
 VOLUME ["/data"]

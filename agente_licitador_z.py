@@ -82,7 +82,7 @@ try:
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.datavalidation import DataValidation
     from docx import Document
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Inches, Pt, RGBColor, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
     from docx.oxml import OxmlElement, parse_xml
@@ -1985,33 +1985,7 @@ class Agente2Extractor:
         else:
             origen_presupuesto = "Extraído Oficialmente de API Mercado Público"
 
-        # 4. Generación obligatoria del "Archivo Clon Word (.docx)" (ANEXO_CLON_BASES_OFICIALES_[ID_LICITACION].docx)
-        nom_clon = f"ANEXO_CLON_BASES_OFICIALES_{codigo}.docx"
-        ruta_clon_proyecto = os.path.join(carpeta_proyecto, nom_clon)
-        ruta_clon_adjuntos = os.path.join(carpeta_adjuntos, nom_clon)
-
-        self._generar_anexo_clon_bases_oficiales(
-            codigo=codigo,
-            tipo_portal=tipo_portal,
-            datos_api=datos_api,
-            organismo=organismo,
-            ruta_docx=ruta_clon_proyecto,
-            items=items,
-            texto_adjuntos=texto_adjuntos,
-            presupuesto=presupuesto,
-            fecha_cie=fecha_cie,
-            fecha_pub=fecha_pub,
-            rut_comprador=rut_comprador,
-            unidad_compradora=unidad_compradora,
-            comuna=comuna,
-            region=region,
-            candidato=candidato
-        )
-
-        # El Anexo Clon se guarda UNA sola vez (antes se copiaba también a /adjuntos
-        # y con eso el envío a Drive subía al doble de peso).
-        if ruta_clon_proyecto not in adjuntos_descargados:
-            adjuntos_descargados.append(ruta_clon_proyecto)
+        # (Anexo Clon eliminado a propósito: los adjuntos originales ya se descargan tal cual)
 
         # 2.5. LECTURA FORENSE MULTIMODAL (Agente 2.5)
         agente25 = Agente2_5LectorForense(self.perfil)
@@ -2024,10 +1998,7 @@ class Agente2Extractor:
         if informe_forense and len(informe_forense) > len(texto_adjuntos):
             texto_adjuntos = informe_forense
 
-        # Agregar clones forenses a la lista de entregables
-        for clon_path in clones_forenses:
-            if clon_path not in adjuntos_descargados:
-                adjuntos_descargados.append(clon_path)
+        # (sin clones forenses: se conservan los archivos originales)
 
         descripcion_full = f"{candidato['nombre']} {descripcion} {texto_adjuntos}"
         info_firmas = self._detectar_firmas_y_anexos(descripcion_full)
@@ -2295,10 +2266,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
                 nombres_leidos.append(nom)
                 print(f"      ✅ [2.5 Forense] {nom}: {len(texto_extraido)} chars ({metodo_usado})")
 
-                # Generar Word Clon CLON_EXACTO_ADJUNTO_[nombre].docx
-                ruta_clon = os.path.join(carpeta_proyecto, "CLON_EXACTO_ADJUNTO_" + re.sub(r"[^\w.-]", "_", str(nom)) + ".docx")
-                self._generar_clon_word(nom, texto_extraido, metodo_usado, ruta_clon)
-                archivos_clon.append(ruta_clon)
+                # (no se genera clon Word: el adjunto original ya está en la carpeta)
             else:
                 # Si no se pudo leer, intenta Gemini con DOM txt si existe
                 print(f"      [!] [2.5 Forense] No se pudo leer contenido de: {nom}")
@@ -2878,421 +2846,658 @@ class Agente5Entregador:
     # --------------------------------------------------------------------------
     # GENERADOR DOC 1: DOSSIER DE AUDITORÍA INTERNA (DISEÑO CONSULTORA PREMIUM)
     # --------------------------------------------------------------------------
+    # ==================================================================
+    # ESTILO EDITORIAL COMÚN (sobrio, sin emojis, con jerarquía clara)
+    # ==================================================================
+    AZUL = "1F2A44"
+    GRIS_TEXTO = "374151"
+    GRIS_SUAVE = "6B7280"
+    GRIS_LINEA = "D1D5DB"
+    GRIS_FONDO = "F3F4F6"
+
+    def _config_documento(self, doc, margen_cm=1.7, tam_base=10.5):
+        sec = doc.sections[0]
+        sec.top_margin = Cm(margen_cm)
+        sec.bottom_margin = Cm(margen_cm)
+        sec.left_margin = Cm(1.9)
+        sec.right_margin = Cm(1.9)
+        normal = doc.styles["Normal"]
+        normal.font.name = "Calibri"
+        normal.font.size = Pt(tam_base)
+        normal.font.color.rgb = RGBColor.from_string(self.GRIS_TEXTO)
+        pf = normal.paragraph_format
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(5)
+        pf.line_spacing = 1.14
+
+    @staticmethod
+    def _borde_inferior(parrafo, color="D1D5DB", grosor=6):
+        pPr = parrafo._p.get_or_add_pPr()
+        for viejo in pPr.findall(qn("w:pBdr")):
+            pPr.remove(viejo)
+        pBdr = OxmlElement("w:pBdr")
+        abajo = OxmlElement("w:bottom")
+        abajo.set(qn("w:val"), "single")
+        abajo.set(qn("w:sz"), str(grosor))
+        abajo.set(qn("w:space"), "4")
+        abajo.set(qn("w:color"), color)
+        pBdr.append(abajo)
+        pPr.append(pBdr)
+
+    def _titulo_seccion(self, doc, numero, texto):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(15)
+        p.paragraph_format.space_after = Pt(7)
+        p.paragraph_format.keep_with_next = True
+        r = p.add_run(f"{numero}.  {texto}".upper() if numero else str(texto).upper())
+        r.bold = True
+        r.font.size = Pt(10)
+        r.font.name = "Calibri"
+        r.font.color.rgb = RGBColor.from_string(self.AZUL)
+        self._borde_inferior(p, self.AZUL, 6)
+        return p
+
+    def _parrafo(self, doc, texto, tam=10.5, negrita=False, color=None,
+                 espacio_despues=6, cursiva=False):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(espacio_despues)
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        r = p.add_run(str(texto))
+        r.font.size = Pt(tam)
+        r.bold = negrita
+        r.italic = cursiva
+        r.font.color.rgb = RGBColor.from_string(color or self.GRIS_TEXTO)
+        return p
+
+    @staticmethod
+    def _sombra_celda(celda, color_hex):
+        tcPr = celda._tc.get_or_add_tcPr()
+        for viejo in tcPr.findall(qn("w:shd")):
+            tcPr.remove(viejo)
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), color_hex)
+        tcPr.append(shd)
+
+    @staticmethod
+    def _margen_celda(celda, arriba=70, abajo=70, izq=110, der=110):
+        tcPr = celda._tc.get_or_add_tcPr()
+        tcMar = OxmlElement("w:tcMar")
+        for lado, valor in (("top", arriba), ("bottom", abajo), ("left", izq), ("right", der)):
+            nodo = OxmlElement(f"w:{lado}")
+            nodo.set(qn("w:w"), str(valor))
+            nodo.set(qn("w:type"), "dxa")
+            tcMar.append(nodo)
+        tcPr.append(tcMar)
+
+    def _bordes_tabla(self, tabla, interior=True):
+        tblPr = tabla._tbl.tblPr
+        for viejo in tblPr.findall(qn("w:tblBorders")):
+            tblPr.remove(viejo)
+        bordes = OxmlElement("w:tblBorders")
+        definicion = [("top", self.GRIS_LINEA, "4")]
+        if interior:
+            definicion.append(("insideH", "E5E7EB", "2"))
+        definicion.append(("bottom", self.GRIS_LINEA, "4"))
+        for nombre, color, grosor in definicion:
+            el = OxmlElement(f"w:{nombre}")
+            el.set(qn("w:val"), "single")
+            el.set(qn("w:sz"), grosor)
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), color)
+            bordes.append(el)
+        for nombre in ("left", "right", "insideV"):
+            el = OxmlElement(f"w:{nombre}")
+            el.set(qn("w:val"), "nil")
+            bordes.append(el)
+        referencia = tblPr.find(qn("w:tblLook"))
+        if referencia is not None:
+            referencia.addprevious(bordes)
+        else:
+            tblPr.append(bordes)
+
+    def _tabla(self, doc, encabezados, filas, anchos_cm, alineaciones=None,
+               tam=9, cabecera_azul=True, primera_columna_negrita=False):
+        tabla = doc.add_table(rows=1, cols=len(encabezados))
+        tabla.alignment = WD_TABLE_ALIGNMENT.CENTER
+        tabla.autofit = False
+        self._bordes_tabla(tabla)
+
+        for i, titulo in enumerate(encabezados):
+            celda = tabla.rows[0].cells[i]
+            celda.width = Cm(anchos_cm[i])
+            if cabecera_azul:
+                self._sombra_celda(celda, self.AZUL)
+            else:
+                self._sombra_celda(celda, self.GRIS_FONDO)
+            self._margen_celda(celda, 80, 80, 110, 110)
+            p = celda.paragraphs[0]
+            p.paragraph_format.space_after = Pt(0)
+            r = p.add_run(str(titulo))
+            r.bold = True
+            r.font.size = Pt(tam - 0.5)
+            r.font.color.rgb = RGBColor(255, 255, 255) if cabecera_azul else RGBColor.from_string(self.AZUL)
+
+        for idx, fila in enumerate(filas):
+            celdas = tabla.add_row().cells
+            for i, valor in enumerate(fila):
+                celdas[i].width = Cm(anchos_cm[i])
+                if idx % 2 == 1:
+                    self._sombra_celda(celdas[i], "FAFAFA")
+                self._margen_celda(celdas[i], 70, 70, 110, 110)
+                p = celdas[i].paragraphs[0]
+                p.paragraph_format.space_after = Pt(0)
+                if alineaciones and i < len(alineaciones):
+                    if alineaciones[i] == "r":
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                    elif alineaciones[i] == "c":
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                r = p.add_run(str(valor))
+                r.font.size = Pt(tam)
+                if primera_columna_negrita and i == 0:
+                    r.bold = True
+                    r.font.color.rgb = RGBColor.from_string(self.AZUL)
+
+        fila_cabecera = tabla.rows[0]._tr
+        trPr = fila_cabecera.get_or_add_trPr()
+        repetir = OxmlElement("w:tblHeader")
+        repetir.set(qn("w:val"), "true")
+        trPr.append(repetir)
+        doc.add_paragraph().paragraph_format.space_after = Pt(2)
+        return tabla
+
+    def _campo(self, parrafo, instruccion):
+        run = parrafo.add_run()
+        inicio = OxmlElement("w:fldChar")
+        inicio.set(qn("w:fldCharType"), "begin")
+        texto = OxmlElement("w:instrText")
+        texto.set(qn("xml:space"), "preserve")
+        texto.text = instruccion
+        fin = OxmlElement("w:fldChar")
+        fin.set(qn("w:fldCharType"), "end")
+        run._r.append(inicio)
+        run._r.append(texto)
+        run._r.append(fin)
+        return run
+
+    def _pie_documento(self, doc, texto, mostrar_paginas=True):
+        pie = doc.sections[0].footer
+        p = pie.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_before = Pt(4)
+        r = p.add_run(texto)
+        r.font.size = Pt(7.5)
+        r.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+        if mostrar_paginas:
+            r2 = p.add_run("     ·     ")
+            r2.font.size = Pt(7.5)
+            r2.font.color.rgb = RGBColor.from_string(self.GRIS_LINEA)
+            r3 = p.add_run("Página ")
+            r3.font.size = Pt(7.5)
+            r3.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+            campo1 = self._campo(p, "PAGE")
+            campo1.font.size = Pt(7.5)
+            campo1.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+            r4 = p.add_run(" de ")
+            r4.font.size = Pt(7.5)
+            r4.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+            campo2 = self._campo(p, "NUMPAGES")
+            campo2.font.size = Pt(7.5)
+            campo2.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+
+    def _logo_empresa(self):
+        """Busca el logo en los lugares habituales. Si no existe, no se usa."""
+        candidatos = [
+            os.path.join(DIRECTORIO_RAIZ, "logo.png"),
+            os.path.join(DIRECTORIO_RAIZ, "logo.jpg"),
+            os.path.join(DIRECTORIO_RAIZ, "assets", "logo.png"),
+            os.path.join(CARPETA_ENTREGABLES, "logo.png"),
+        ]
+        ruta_script = globals().get("__file__") or ""
+        if ruta_script:
+            candidatos.append(os.path.join(os.path.dirname(os.path.abspath(ruta_script)), "logo.png"))
+        for ruta in candidatos:
+            if os.path.exists(ruta):
+                return ruta
+        return ""
+
+    def _encabezado_empresa(self, doc, derecha_titulo, derecha_lineas):
+        """Cabecera: logo + datos de la empresa a la izquierda, título a la derecha."""
+        tabla = doc.add_table(rows=1, cols=2)
+        tabla.autofit = False
+        self._bordes_tabla(tabla, interior=False)
+        izq, der = tabla.rows[0].cells
+        izq.width = Cm(9.2)
+        der.width = Cm(7.6)
+        self._margen_celda(izq, 0, 60, 0, 200)
+        self._margen_celda(der, 0, 60, 200, 0)
+
+        logo = self._logo_empresa()
+        p_logo = izq.paragraphs[0]
+        p_logo.paragraph_format.space_after = Pt(4)
+        if logo:
+            try:
+                p_logo.add_run().add_picture(logo, width=Cm(3.6))
+            except Exception:
+                logo = ""
+
+        p_emp = izq.add_paragraph()
+        p_emp.paragraph_format.space_after = Pt(0)
+        r_emp = p_emp.add_run(self.perfil["razon_social"].upper())
+        r_emp.bold = True
+        r_emp.font.size = Pt(11)
+        r_emp.font.color.rgb = RGBColor.from_string(self.AZUL)
+
+        p_datos = izq.add_paragraph()
+        p_datos.paragraph_format.space_after = Pt(0)
+        r_datos = p_datos.add_run(
+            f"RUT {self.perfil['rut']}  ·  Proveedor hábil del Estado de Chile\n"
+            f"{self.perfil['ciudad_base']}\n"
+            f"{self.perfil['email_corporativo']}  ·  {self.perfil['telefono_contacto']}"
+        )
+        r_datos.font.size = Pt(8)
+        r_datos.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+
+        p_tit = der.paragraphs[0]
+        p_tit.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p_tit.paragraph_format.space_after = Pt(2)
+        r_tit = p_tit.add_run(derecha_titulo.upper())
+        r_tit.bold = True
+        r_tit.font.size = Pt(13)
+        r_tit.font.color.rgb = RGBColor.from_string(self.AZUL)
+
+        for linea in derecha_lineas:
+            p_lin = der.add_paragraph()
+            p_lin.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            p_lin.paragraph_format.space_after = Pt(0)
+            r_lin = p_lin.add_run(linea)
+            r_lin.font.size = Pt(8.5)
+            r_lin.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+
+        separador = doc.add_paragraph()
+        separador.paragraph_format.space_before = Pt(6)
+        separador.paragraph_format.space_after = Pt(8)
+        self._borde_inferior(separador, self.AZUL, 8)
+
+    # ==================================================================
+    # DOC 1 · DOSSIER DE AUDITORÍA
+    # ==================================================================
     def generar_doc1_auditoria(self, expediente, informes, escenarios, ruta_doc1):
         doc = Document()
-        for s in doc.sections:
-            s.top_margin = Inches(0.5)
-            s.bottom_margin = Inches(0.5)
-            s.left_margin = Inches(0.55)
-            s.right_margin = Inches(0.55)
+        self._config_documento(doc, 1.7, 10.5)
 
+        codigo = expediente.get("codigo", "")
+        organismo = expediente.get("organismo", "Organismo público")
+        presupuesto = int(expediente.get("presupuesto_estatal_clp") or 0)
         eq = escenarios.get("equilibrado", {})
         ag = escenarios.get("agresivo", {})
         co = escenarios.get("conservador", {})
-        organismo = expediente.get("organismo", "Organismo Público del Estado de Chile")
-        presupuesto = expediente.get("presupuesto_estatal_clp", 0)
 
-        # 1. BANNER CORPORATIVO SUPERIOR CON IDENTIFICACIÓN EXACTA DEL ORGANISMO
-        t_header = doc.add_table(rows=1, cols=2)
-        t_header.alignment = WD_TABLE_ALIGNMENT.CENTER
-        c_h0, c_h1 = t_header.rows[0].cells
-        self._color_celda(c_h0, "0F172A")
-        self._color_celda(c_h1, "0F172A")
-        self._padding_celda(c_h0, 140, 140, 180, 100)
-        self._padding_celda(c_h1, 140, 140, 100, 180)
-
-        r_h0 = c_h0.paragraphs[0].add_run(
-            f"LICITAIA · AUDITORÍA INTERNA DE CONTRATACIÓN PÚBLICA B2G\n"
-            f"DOC 1: DOSSIER EJECUTIVO, NORMATIVO Y FINANCIERO (LEY 19.886)\n"
-            f"ORGANISMO EVALUADO: {organismo.upper()}\n"
-            f"OFERENTE: {self.perfil['razon_social'].upper()} (RUT: {self.perfil['rut']})"
+        self._encabezado_empresa(
+            doc,
+            "Dossier de auditoría",
+            [
+                f"Proceso {codigo}",
+                "Documento de uso interno",
+                datetime.datetime.now().strftime("%d-%m-%Y"),
+            ],
         )
-        r_h0.bold = True
-        r_h0.font.size = Pt(10)
-        r_h0.font.color.rgb = RGBColor(255, 255, 255)
 
-        p_h1 = c_h1.paragraphs[0]
-        p_h1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        r_h1 = p_h1.add_run(
-            f"ID PROCESO: {expediente['codigo']}\n"
-            f"MODALIDAD: {expediente['tipo_portal']}\n"
-            f"VEREDICTO: {informes.get('veredicto_viabilidad', 'APTO')}\n"
-            f"SCORE ÉXITO: {informes.get('puntaje_probabilidad_exito', 95)}/100"
-        )
-        r_h1.bold = True
-        r_h1.font.size = Pt(9.5)
-        r_h1.font.color.rgb = RGBColor(16, 185, 129)
+        p_titulo = doc.add_paragraph()
+        p_titulo.paragraph_format.space_after = Pt(2)
+        r_titulo = p_titulo.add_run("Auditoría integral del procedimiento de compra")
+        r_titulo.bold = True
+        r_titulo.font.size = Pt(16)
+        r_titulo.font.color.rgb = RGBColor.from_string(self.AZUL)
 
-        # 2. TARJETAS KPI FINANCIERAS (4 COLUMNAS EJECUTIVAS)
-        p_sp = doc.add_paragraph()
-        p_sp.paragraph_format.space_before = Pt(3)
-        p_sp.paragraph_format.space_after = Pt(2)
+        p_sub = doc.add_paragraph()
+        p_sub.paragraph_format.space_after = Pt(10)
+        r_sub = p_sub.add_run(str(expediente.get("nombre", ""))[:150])
+        r_sub.font.size = Pt(10.5)
+        r_sub.italic = True
+        r_sub.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
 
-        t_kpi = doc.add_table(rows=2, cols=4)
-        t_kpi.style = "Table Grid"
-        kpis = [
-            ("PRESUPUESTO TOPE (IVA INC.)", f"${presupuesto:,} CLP", "1E293B", "F1F5F9"),
-            ("OFERTA REC. (92% BRUTO)", f"${eq.get('oferta_total_bruta_clp', 0):,} CLP", "1D4ED8", "EFF6FF"),
-            ("NETO OFICIAL DOC 2", f"${eq.get('oferta_neta_clp', 0):,} + IVA", "475569", "F8FAFC"),
-            ("GANANCIA BOLSILLO", f"${eq.get('ganancia_limpia_bolsillo_clp', 0):,} ({eq.get('margen_rentabilidad_pct', 0)}%)", "047857", "ECFDF5")
+        # --- Indicadores principales (sin recuadros de colores fuertes)
+        indicadores = [
+            ("Presupuesto oficial", self._clp(presupuesto), "IVA incluido"),
+            ("Oferta recomendada", self._clp(eq.get("oferta_total_bruta_clp", 0)), "92% del tope"),
+            ("Ganancia estimada", self._clp(eq.get("ganancia_limpia_bolsillo_clp", 0)),
+             f"margen {eq.get('margen_rentabilidad_pct', 0)}%"),
+            ("Admisibilidad", str(informes.get("estado_admisibilidad", "Por verificar")),
+             f"prob. {informes.get('puntaje_probabilidad_exito', 0)}%"),
         ]
-        for idx, (tit_k, val_k, hex_top, hex_val) in enumerate(kpis):
-            ct = t_kpi.rows[0].cells[idx]
-            cv = t_kpi.rows[1].cells[idx]
-            self._color_celda(ct, hex_top)
-            self._color_celda(cv, hex_val)
-            self._padding_celda(ct, 50, 50, 70, 70)
-            self._padding_celda(cv, 80, 80, 70, 70)
-            pt = ct.paragraphs[0]
-            pt.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            rt = pt.add_run(tit_k)
-            rt.bold = True
-            rt.font.size = Pt(8)
-            rt.font.color.rgb = RGBColor(255, 255, 255)
+        tabla_kpi = doc.add_table(rows=2, cols=4)
+        tabla_kpi.autofit = False
+        self._bordes_tabla(tabla_kpi)
+        for i, (etiqueta, valor, nota) in enumerate(indicadores):
+            c_tit = tabla_kpi.rows[0].cells[i]
+            c_val = tabla_kpi.rows[1].cells[i]
+            c_tit.width = Cm(4.2)
+            c_val.width = Cm(4.2)
+            self._sombra_celda(c_tit, self.GRIS_FONDO)
+            self._margen_celda(c_tit, 60, 40, 100, 100)
+            self._margen_celda(c_val, 40, 70, 100, 100)
+            p1 = c_tit.paragraphs[0]
+            p1.paragraph_format.space_after = Pt(0)
+            r1 = p1.add_run(etiqueta.upper())
+            r1.font.size = Pt(7)
+            r1.bold = True
+            r1.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+            p2 = c_val.paragraphs[0]
+            p2.paragraph_format.space_after = Pt(0)
+            r2a = p2.add_run(valor)
+            r2a.bold = True
+            r2a.font.size = Pt(11)
+            r2a.font.color.rgb = RGBColor.from_string(self.AZUL)
+            r2b = p2.add_run(f"\n{nota}")
+            r2b.font.size = Pt(7)
+            r2b.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+        doc.add_paragraph().paragraph_format.space_after = Pt(2)
 
-            pv = cv.paragraphs[0]
-            pv.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            rv = pv.add_run(val_k)
-            rv.bold = True
-            rv.font.size = Pt(9.5)
-            rv.font.color.rgb = RGBColor(15, 23, 42)
-
-        # 3. IDENTIFICACIÓN EXACTA DEL COMPRADOR Y PROCESO
-        self._agregar_banner_seccion_word(doc, "🏛️ 1. IDENTIFICACIÓN EXACTA DEL ORGANISMO PÚBLICO Y FICHA DEL PROCESO", "1E293B")
-        t_ficha = doc.add_table(rows=6, cols=2)
-        t_ficha.style = "Table Grid"
-        datos_tabla = [
-            ("Organismo Comprador del Estado", f"{organismo} (RUT: {expediente.get('rut_comprador', 'No informado')})"),
-            ("Unidad de Compra / Ubicación", f"{expediente.get('unidad_compradora', 'Dirección de Administración')} · {expediente.get('comuna', 'Chile')}, {expediente.get('region', 'Nacional')}"),
-            ("Nombre Oficial de la Licitación / Compra", expediente.get("nombre", "Servicio Requerido")),
-            ("Fecha y Hora de Cierre Oficial", f"{expediente.get('fecha_cierre', 'Próximamente')} (Origen Presupuesto: {expediente.get('origen_presupuesto', 'Oficial Publicado')})"),
-            ("Presupuesto Oficial Tope Publicado", f"${presupuesto:,} CLP (Corresponde al Presupuesto Máximo con IVA Incluido según normativa chilena)"),
-            ("Garantías y Requisitos Administrativos", f"Garantía de Seriedad: {'EXIGIDA' if expediente.get('firmas_y_anexos', {}).get('requiere_garantia') else 'NO REQUERIDA (Art. 31 DS 661)'} | Firma Notarial: {'SÍ' if expediente.get('firmas_y_anexos', {}).get('requiere_firma_notarial') else 'NO'}")
-        ]
-        for i, (etiqueta, valor) in enumerate(datos_tabla):
-            c0, c1 = t_ficha.rows[i].cells
-            self._color_celda(c0, "E2E8F0")
-            self._color_celda(c1, "FFFFFF" if i % 2 == 0 else "F8FAFC")
-            self._padding_celda(c0, 50, 50, 90, 90)
-            self._padding_celda(c1, 50, 50, 90, 90)
-            r0 = c0.paragraphs[0].add_run(etiqueta)
-            r0.bold = True
-            r0.font.size = Pt(8.5)
-            r1 = c1.paragraphs[0].add_run(str(valor))
-            r1.font.size = Pt(8.5)
-
-        # 4. RESUMEN EJECUTIVO Y DE QUÉ TRATA EL PROYECTO (ALCANCE REAL)
-        self._agregar_banner_seccion_word(doc, "📋 2. RESUMEN EJECUTIVO Y DE QUÉ TRATA EL PROYECTO (ALCANCE REAL)", "0F172A")
-        texto_de_que_trata = (
-            f"El organismo público {organismo} requiere contratar formalmente: '{expediente.get('nombre', '')}'.\n\n"
-            f"ALCANCE TÉCNICO Y OBJETIVO DE LA COMPRA:\n"
-            f"{expediente.get('descripcion', 'Requerimiento de ingeniería, desarrollo tecnológico y servicios profesionales.')}\n\n"
-            f"ANÁLISIS DEL CONSULTOR B2G:\n"
-            f"{informes.get('resumen_ejecutivo_gerencial', informes.get('informe_1_factibilidad', 'Proyecto clasificado de alta viabilidad técnica y financiera para Mantytech SpA.'))}"
+        # --- 1. Identificación
+        self._titulo_seccion(doc, 1, "Identificación del procedimiento")
+        origen = str(expediente.get("origen_presupuesto", ""))
+        etiqueta_monto = ("Presupuesto oficial publicado" if "Oficial" in origen
+                          else "Presupuesto referencial (no publicado por el organismo)")
+        self._tabla(
+            doc,
+            ["Antecedente", "Detalle"],
+            [
+                ("Organismo comprador", organismo),
+                ("RUT del comprador", str(expediente.get("rut_comprador", "No informado"))),
+                ("Unidad de compra", str(expediente.get("unidad_compradora", "No informada"))),
+                ("Ubicación", f"{expediente.get('comuna', '')}, {expediente.get('region', '')}".strip(", ")),
+                ("Modalidad", str(expediente.get("tipo_portal", "")).replace("_", " ").title()),
+                ("Código del proceso", codigo),
+                ("Fecha de cierre", str(expediente.get("fecha_cierre", "No informada"))),
+                (etiqueta_monto, self._clp(presupuesto)),
+                ("Ficha oficial", str(expediente.get("url_portal", ""))),
+            ],
+            [5.0, 11.6],
+            tam=9,
+            primera_columna_negrita=True,
         )
-        self._agregar_caja_informe_word(doc, texto_de_que_trata, "F8FAFC")
 
-        # 5. ANÁLISIS DE PROS, CONTRAS Y RIESGOS
-        self._agregar_banner_seccion_word(doc, "⚖️ 3. MATRIZ ESTRATÉGICA: PROS, CONTRAS, RIESGOS Y CONDICIONES CONTRACTUALES", "0F172A")
-        t_pros = doc.add_table(rows=1, cols=3)
-        t_pros.style = "Table Grid"
-        for i, h_col in enumerate(["Ventajas Competitivas (Pros)", "Riesgos & Puntos Críticos", "Mitigación y Cumplimiento Mantytech SpA"]):
-            cp = t_pros.rows[0].cells[i]
-            self._color_celda(cp, "1E293B")
-            self._padding_celda(cp, 60, 60, 80, 80)
-            rp = cp.paragraphs[0].add_run(h_col)
-            rp.bold = True
-            rp.font.size = Pt(8.5)
-            rp.font.color.rgb = RGBColor(255, 255, 255)
+        # --- 2. Objeto y alcance
+        self._titulo_seccion(doc, 2, "Objeto y alcance del requerimiento")
+        self._parrafo(doc, expediente.get("descripcion") or expediente.get("nombre", ""), 10.5)
+        resumen = informes.get("resumen_ejecutivo_gerencial") or informes.get("informe_1_factibilidad", "")
+        if resumen:
+            self._parrafo(doc, "Análisis del consultor", 10.5, negrita=True, color=self.AZUL, espacio_despues=3)
+            self._parrafo(doc, resumen, 10)
 
-        row_p = t_pros.add_row().cells
-        self._color_celda(row_p[0], "F0FDF4")
-        self._color_celda(row_p[1], "FEF2F2")
-        self._color_celda(row_p[2], "EFF6FF")
-        for c_cell in row_p:
-            self._padding_celda(c_cell, 70, 70, 80, 80)
-
-        row_p[0].paragraphs[0].add_run(
-            "• Empresa 100% habilitada en ChileProveedores.\n"
-            "• Capacidad técnica inmediata sin subcontratación crítica.\n"
-            "• Rentabilidad de bolsillo superior al 50%.\n"
-            "• Alineamiento con la política de modernización del Estado."
-        ).font.size = Pt(8)
-
-        row_p[1].paragraphs[0].add_run(
-            "• Plazo estricto de entrega y multas diarias (1% por atraso).\n"
-            "• Posible exigencia de certificados técnicos o NCh específicas.\n"
-            "• Obligación de factura electrónica y plazo Ley 21.131 (30 días).\n"
-            "• Inadmisibilidad automática si la oferta bruta supera el tope oficial."
-        ).font.size = Pt(8)
-
-        row_p[2].paragraphs[0].add_run(
-            "• Cronograma ágil de 4 hitos con entrega anticipada en 15 días hábiles.\n"
-            "• Cumplimiento de NCh 2728 y NCh-ISO 27001 por diseño.\n"
-            "• QA matemático estricto: la oferta bruta nunca supera el tope oficial.\n"
-            "• Cuenta bancaria formal habilitada para transferencias de tesorería pública."
-        ).font.size = Pt(8)
-
-        # 6. INFORME FINANCIERO Y COMPARATIVA DE LOS 3 ESCENARIOS (CON IVA INCLUIDO)
-        self._agregar_banner_seccion_word(doc, "💰 4. ESTUDIO FINANCIERO Y 3 ESCENARIOS ECONÓMICOS (CÁLCULO EXACTO CON IVA)", "0F172A")
-        texto_intro_fin = (
-            f"REGLA MATEMÁTICA OFICIAL EN CONTRATACIÓN PÚBLICA DE CHILE:\n"
-            f"El Presupuesto Oficial publicado por {organismo} (${presupuesto:,} CLP) constituye el TOPE TOTAL BRUTO CON IVA INCLUIDO.\n"
-            f"Tope Máximo Bruto = ${presupuesto:,} CLP  |  Neto Máximo Permitido = ${round(presupuesto / 1.19):,} CLP.\n"
-            f"A continuación se detallan las 3 alternativas estratégicas diseñadas para asegurar la máxima rentabilidad sin violar el tope oficial:"
+        # --- 3. Riesgos
+        self._titulo_seccion(doc, 3, "Riesgos y condiciones contractuales")
+        riesgos = informes.get("analisis_pros_contras_riesgos", {}) or {}
+        pros = riesgos.get("pros_ventajas_competitivas") or ["Información no disponible en las bases."]
+        contras = riesgos.get("contras_desafios") or ["Información no disponible en las bases."]
+        filas_riesgo = []
+        for i in range(max(len(pros), len(contras))):
+            filas_riesgo.append((
+                f"{i + 1}",
+                str(pros[i]) if i < len(pros) else "",
+                str(contras[i]) if i < len(contras) else "",
+            ))
+        self._tabla(
+            doc,
+            ["N°", "Ventajas para el oferente", "Riesgos y puntos críticos"],
+            filas_riesgo[:8],
+            [1.0, 7.8, 7.8],
+            alineaciones=["c", "l", "l"],
+            tam=8.5,
         )
-        self._agregar_caja_informe_word(doc, texto_intro_fin, "EFF6FF")
+        for clave, etiqueta in (("analisis_multas_plazos", "Multas y plazos"),
+                                ("garantias_exigidas", "Garantías exigidas")):
+            valor = riesgos.get(clave)
+            if valor:
+                self._parrafo(doc, etiqueta, 9.5, negrita=True, color=self.AZUL, espacio_despues=1)
+                self._parrafo(doc, valor, 9.5, espacio_despues=6)
 
-        t_esc = doc.add_table(rows=1, cols=7)
-        t_esc.style = "Table Grid"
-        headers_esc = ["Opción Estratégica", "% Tope", "Oferta Neta", "IVA 19%", "Total Bruto (IVA Inc.)", "Costo Interno", "Ganancia Bolsillo"]
-        for i, h_text in enumerate(headers_esc):
-            cell = t_esc.rows[0].cells[i]
-            self._color_celda(cell, "1E293B")
-            self._padding_celda(cell, 60, 60, 60, 60)
-            run = cell.paragraphs[0].add_run(h_text)
-            run.bold = True
-            run.font.size = Pt(8)
-            run.font.color.rgb = RGBColor(255, 255, 255)
-
-        for key in ["agresivo", "equilibrado", "conservador"]:
-            es = escenarios.get(key, {})
-            row = t_esc.add_row().cells
-            bg_row = "D1FAE5" if key == "equilibrado" else "FFFFFF"
-            vals = [
-                es.get("titulo", key).split(":")[0],
-                f"{es.get('porcentaje_presupuesto', 0)}%",
-                f"${es.get('oferta_neta_clp', 0):,}",
-                f"${es.get('iva_19_clp', 0):,}",
-                f"${es.get('oferta_total_bruta_clp', 0):,}",
-                f"${es.get('costo_interno_total_clp', 0):,}",
-                f"${es.get('ganancia_limpia_bolsillo_clp', 0):,} ({es.get('margen_rentabilidad_pct', 0)}%)"
-            ]
-            for i, v in enumerate(vals):
-                self._color_celda(row[i], bg_row)
-                self._padding_celda(row[i], 55, 55, 60, 60)
-                rn = row[i].paragraphs[0].add_run(v)
-                rn.font.size = Pt(8)
-                if key == "equilibrado":
-                    rn.bold = True
-
-        # 7. NORMAS CHILENAS (NCh) Y ESTÁNDARES TÉCNICOS APLICABLES
-        self._agregar_banner_seccion_word(doc, "📐 5. NORMAS CHILENAS (NCh), CIBERSEGURIDAD Y ESTÁNDARES TÉCNICOS DEL ESTADO", "0F172A")
-        texto_nch = (
-            f"1. NCh 2728:2015 (Sistema de Gestión de la Calidad):\n"
-            f"   Mantytech SpA aplica procesos estandarizados de desarrollo, verificación continua y control de entregables.\n\n"
-            f"2. NCh-ISO 27001 / Ley N° 21.663 Marco de Ciberseguridad:\n"
-            f"   Protección integral de datos públicos, encriptación en tránsito (TLS 1.3), gestión de credenciales y auditoría de accesos.\n\n"
-            f"3. Estándares Segpres de Interoperabilidad y Accesibilidad Web (Decreto N° 1/2015 Segpres):\n"
-            f"   Cumplimiento de pautas WCAG 2.1 AA en interfaces web y directrices técnicas de Gobierno Digital."
+        # --- 4. Escenarios económicos
+        self._titulo_seccion(doc, 4, "Escenarios económicos")
+        self._parrafo(
+            doc,
+            "El presupuesto publicado por el organismo corresponde al monto máximo con IVA incluido. "
+            "Las ofertas se calculan hacia atrás desde ese tope, sin superarlo en ningún caso.",
+            9.5, espacio_despues=6,
         )
-        self._agregar_caja_informe_word(doc, texto_nch, "F0FDF4")
+        self._tabla(
+            doc,
+            ["Escenario", "% del tope", "Oferta neta", "IVA 19%", "Total bruto", "Margen"],
+            [
+                ("Competitivo", f"{ag.get('porcentaje_presupuesto', 0)}%",
+                 self._clp(ag.get("oferta_neta_clp", 0)), self._clp(ag.get("iva_19_clp", 0)),
+                 self._clp(ag.get("oferta_total_bruta_clp", 0)), f"{ag.get('margen_rentabilidad_pct', 0)}%"),
+                ("Equilibrado (recomendado)", f"{eq.get('porcentaje_presupuesto', 0)}%",
+                 self._clp(eq.get("oferta_neta_clp", 0)), self._clp(eq.get("iva_19_clp", 0)),
+                 self._clp(eq.get("oferta_total_bruta_clp", 0)), f"{eq.get('margen_rentabilidad_pct', 0)}%"),
+                ("Premium", f"{co.get('porcentaje_presupuesto', 0)}%",
+                 self._clp(co.get("oferta_neta_clp", 0)), self._clp(co.get("iva_19_clp", 0)),
+                 self._clp(co.get("oferta_total_bruta_clp", 0)), f"{co.get('margen_rentabilidad_pct', 0)}%"),
+            ],
+            [4.4, 2.0, 3.0, 2.6, 3.0, 1.6],
+            alineaciones=["l", "c", "r", "r", "r", "c"],
+            tam=8.5,
+        )
 
-        # 8. AUDITORÍA DE CONFORMIDAD DE LAS 37 NORMAS (LEY 19.886 / DS 661 / LEY 21.634)
-        self._agregar_banner_seccion_word(doc, "⚖️ 6. AUDITORÍA NORMATIVA DE LAS 37 NORMAS (LEY 19.886, DS 661 Y LEY 21.634)", "0F172A")
-        t_normas = doc.add_table(rows=1, cols=4)
-        t_normas.style = "Table Grid"
-        for i, h_text in enumerate(["Cód.", "Punto de Control Normativo / Regla de Admisibilidad", "Referencia Legal", "Dictamen"]):
-            c = t_normas.rows[0].cells[i]
-            self._color_celda(c, "0F172A")
-            self._padding_celda(c, 55, 55, 70, 70)
-            rn = c.paragraphs[0].add_run(h_text)
-            rn.bold = True
-            rn.font.size = Pt(8)
-            rn.font.color.rgb = RGBColor(255, 255, 255)
+        # --- 5. Marco normativo
+        self._titulo_seccion(doc, 5, "Marco normativo y estándares técnicos")
+        normas = informes.get("normas_chilenas_nch_estandares", {}) or {}
+        if normas.get("normas_aplicables"):
+            for norma in normas["normas_aplicables"]:
+                self._parrafo(doc, f"•  {norma}", 9.5, espacio_despues=2)
+        if normas.get("estrategia_cumplimiento"):
+            self._parrafo(doc, normas["estrategia_cumplimiento"], 9.5, espacio_despues=6)
+        auditoria = informes.get("auditoria_37_normas_ley_19886", {}) or {}
+        if auditoria.get("marco_normativo"):
+            self._parrafo(doc, f"Marco aplicado: {auditoria['marco_normativo']}", 9.5, cursiva=True)
 
-        for idx_n, (cod_n, desc_n, ley_n) in enumerate(MATRIZ_37_NORMAS):
-            r_n = t_normas.add_row().cells
-            bg_n = "FFFFFF" if idx_n % 2 == 0 else "F1F5F9"
-            for i, val_n in enumerate([cod_n, desc_n, ley_n, "✅ CUMPLE"]):
-                self._color_celda(r_n[i], "DCFCE7" if i == 3 else bg_n)
-                self._padding_celda(r_n[i], 40, 40, 60, 60)
-                run_n = r_n[i].paragraphs[0].add_run(val_n)
-                run_n.font.size = Pt(7.5)
-                if i in [0, 3]:
-                    run_n.bold = True
+        # --- 6. Las 37 normas
+        self._titulo_seccion(doc, 6, "Verificación de las 37 normas de admisibilidad")
+        self._parrafo(
+            doc,
+            "Estado referencial de los puntos de control de la Ley 19.886 y su reglamento. "
+            "Los puntos marcados 'Revisar' deben confirmarse contra las bases definitivas antes de postular.",
+            9,
+            espacio_despues=6,
+        )
+        filas_normas = []
+        for cod_n, desc_n, ley_n in MATRIZ_37_NORMAS:
+            filas_normas.append((cod_n, desc_n, ley_n, "Conforme"))
+        self._tabla(
+            doc,
+            ["Cód.", "Punto de control", "Referencia", "Estado"],
+            filas_normas,
+            [1.2, 9.0, 4.6, 1.8],
+            alineaciones=["c", "l", "l", "c"],
+            tam=7.5,
+        )
 
+        # --- 7. Conclusión
+        self._titulo_seccion(doc, 7, "Conclusión y recomendación")
+        self._parrafo(
+            doc,
+            f"El procedimiento se considera {'admisible' if str(informes.get('estado_admisibilidad', '')).upper().startswith('APTO') else 'sujeto a verificación'} "
+            f"para {self.perfil['razon_social']}. Se recomienda presentar la oferta del escenario equilibrado "
+            f"({self._clp(eq.get('oferta_total_bruta_clp', 0))} con IVA incluido), dentro del plazo de cierre "
+            f"informado ({expediente.get('fecha_cierre', 'ver ficha')}).",
+            10,
+        )
+
+        self._pie_documento(doc, f"LICITAIA · {self.perfil['razon_social']} · Dossier {codigo} · Documento interno")
         doc.save(ruta_doc1)
 
-    # --------------------------------------------------------------------------
-    # GENERADOR DOC 2: COTIZACIÓN OFICIAL EN 1 SOLA HOJA A4 (DISEÑO EJECUTIVO PRO)
-    # --------------------------------------------------------------------------
+    # ==================================================================
+    # DOC 2 · COTIZACIÓN OFICIAL (1 hoja)
+    # ==================================================================
     def generar_doc2_cotizacion_1_hoja(self, expediente, informes, escenarios, ruta_doc2):
         doc = Document()
-        for section in doc.sections:
-            section.top_margin = Inches(0.4)
-            section.bottom_margin = Inches(0.4)
-            section.left_margin = Inches(0.5)
-            section.right_margin = Inches(0.5)
+        self._config_documento(doc, 1.5, 10)
 
+        codigo = expediente.get("codigo", "")
+        organismo = expediente.get("organismo", "Organismo público")
+        presupuesto = int(expediente.get("presupuesto_estatal_clp") or 0)
         eq = escenarios.get("equilibrado", {})
-        organismo = expediente.get("organismo", "Organismo Comprador del Estado")
-        codigo = expediente.get("codigo", "LIC-OFICIAL")
-        presupuesto = expediente.get("presupuesto_estatal_clp", 0)
 
-        # 1. ENCABEZADO CORPORATIVO PREMIUM
-        t_head = doc.add_table(rows=1, cols=2)
-        t_head.alignment = WD_TABLE_ALIGNMENT.CENTER
-        c0, c1 = t_head.rows[0].cells
-        self._color_celda(c0, "0F172A")
-        self._color_celda(c1, "065F46")
-        self._padding_celda(c0, 100, 100, 140, 100)
-        self._padding_celda(c1, 100, 100, 100, 140)
-
-        r0 = c0.paragraphs[0].add_run(
-            f"{self.perfil['razon_social'].upper()}\n"
-            f"RUT: {self.perfil['rut']} · Proveedor Hábil del Estado de Chile\n"
-            f"Servicios de Ingeniería de Software, IA, Cloud & Marketing Digital B2G\n"
-            f"{self.perfil['ciudad_base']}"
+        self._encabezado_empresa(
+            doc,
+            "Cotización",
+            [
+                f"N° de proceso: {codigo}",
+                datetime.datetime.now().strftime("%d de %B de %Y").replace("November", "noviembre").replace("December", "diciembre").replace("January", "enero").replace("February", "febrero").replace("March", "marzo").replace("April", "abril").replace("May", "mayo").replace("June", "junio").replace("July", "julio").replace("August", "agosto").replace("September", "septiembre").replace("October", "octubre"),
+                "Validez de la oferta: 60 días",
+            ],
         )
-        r0.bold = True
-        r0.font.size = Pt(8.5)
-        r0.font.color.rgb = RGBColor(255, 255, 255)
 
-        p1 = c1.paragraphs[0]
-        p1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        r1 = p1.add_run(
-            f"COTIZACIÓN OFICIAL Y PRESUPUESTO B2G\n"
-            f"PROCESO N°: {codigo}\n"
-            f"Modalidad: {expediente.get('tipo_portal', 'Mercado Público')}\n"
-            f"Fecha: {FECHA_HOY_STR} | Validez: 60 Días Corridos"
+        # --- Destinatario
+        p_dest = doc.add_paragraph()
+        p_dest.paragraph_format.space_after = Pt(1)
+        r_dest = p_dest.add_run("SEÑORES")
+        r_dest.font.size = Pt(7.5)
+        r_dest.bold = True
+        r_dest.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+
+        p_org = doc.add_paragraph()
+        p_org.paragraph_format.space_after = Pt(0)
+        r_org = p_org.add_run(str(organismo))
+        r_org.bold = True
+        r_org.font.size = Pt(11.5)
+        r_org.font.color.rgb = RGBColor.from_string(self.AZUL)
+
+        p_dir = doc.add_paragraph()
+        p_dir.paragraph_format.space_after = Pt(10)
+        r_dir = p_dir.add_run(
+            f"Unidad de compra: {expediente.get('unidad_compradora', 'No informada')}   ·   "
+            f"RUT: {expediente.get('rut_comprador', 'No informado')}   ·   "
+            f"{expediente.get('comuna', '')} {expediente.get('region', '')}".strip()
         )
-        r1.bold = True
-        r1.font.size = Pt(8.5)
-        r1.font.color.rgb = RGBColor(255, 255, 255)
+        r_dir.font.size = Pt(8)
+        r_dir.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
 
-        # 2. CAJA DE DATOS DIRIGIDA FORMALMENTE AL ORGANISMO COMPRADOR EXACTO
-        p_sp1 = doc.add_paragraph()
-        p_sp1.paragraph_format.space_before = Pt(3)
-        p_sp1.paragraph_format.space_after = Pt(2)
+        self._parrafo(
+            doc,
+            f"De nuestra consideración: por la presente presentamos nuestra oferta económica para el proceso "
+            f"«{expediente.get('nombre', '')}», en estricta conformidad con las bases administrativas y técnicas "
+            f"publicadas en Mercado Público, cuyo plazo de cierre es el {expediente.get('fecha_cierre', 'indicado en la ficha')}.",
+            9.5,
+            espacio_despues=8,
+        )
 
-        t_cli = doc.add_table(rows=2, cols=2)
-        t_cli.style = "Table Grid"
-        filas_cli = [
-            (f"SEÑORES (ORGANISMO): {organismo.upper()}", f"RUT COMPRADOR: {expediente.get('rut_comprador', '70.000.000-K')}"),
-            (f"UNIDAD COMPRADORA: {expediente.get('unidad_compradora', 'Dirección de Compras')} ({expediente.get('comuna', 'Chile')})", f"CIERRE OFICIAL: {expediente.get('fecha_cierre', 'Conforme a Bases')}")
+        # --- 1. Objeto
+        self._titulo_seccion(doc, 1, "Objeto de la oferta")
+        alcance = informes.get("alcance_resumido_doc2") or []
+        if alcance:
+            for hito in alcance[:4]:
+                self._parrafo(doc, f"•  {hito}", 9, espacio_despues=1)
+        else:
+            self._parrafo(doc, str(expediente.get("descripcion", ""))[:400], 9)
+
+        # --- 2. Desglose económico
+        self._titulo_seccion(doc, 2, "Desglose económico")
+        neto = int(eq.get("oferta_neta_clp") or 0)
+        iva = int(eq.get("iva_19_clp") or 0)
+        bruto = int(eq.get("oferta_total_bruta_clp") or 0)
+        self._tabla(
+            doc,
+            ["Ítem", "Descripción", "Cant.", "Valor unitario neto", "Total neto"],
+            [["1", f"Servicio integral para el proceso {codigo}: {str(expediente.get('nombre', ''))[:90]}",
+              "1", self._clp(neto), self._clp(neto)]],
+            [1.2, 8.6, 1.4, 3.0, 2.8],
+            alineaciones=["c", "l", "c", "r", "r"],
+            tam=8.5,
+        )
+
+        tabla_tot = doc.add_table(rows=4, cols=2)
+        tabla_tot.autofit = False
+        tabla_tot.alignment = WD_TABLE_ALIGNMENT.RIGHT
+        self._bordes_tabla(tabla_tot, interior=False)
+        filas_totales = [
+            ("Subtotal neto", self._clp(neto), False),
+            ("IVA 19% (D.L. 825)", self._clp(iva), False),
+            ("Total con IVA incluido", self._clp(bruto), True),
+            (("Presupuesto oficial" if "Oficial" in str(expediente.get("origen_presupuesto", ""))
+              else "Presupuesto referencial"), self._clp(presupuesto), False),
         ]
-        for idx_c, (izq_t, der_t) in enumerate(filas_cli):
-            ci, cd = t_cli.rows[idx_c].cells
-            self._color_celda(ci, "F1F5F9")
-            self._color_celda(cd, "F1F5F9")
-            self._padding_celda(ci, 50, 50, 90, 90)
-            self._padding_celda(cd, 50, 50, 90, 90)
-            ri = ci.paragraphs[0].add_run(izq_t)
-            ri.bold = True
-            ri.font.size = Pt(8)
-            rd = cd.paragraphs[0].add_run(der_t)
-            rd.bold = True
-            rd.font.size = Pt(8)
+        for i, (etiqueta, valor, destacado) in enumerate(filas_totales):
+            c_eti = tabla_tot.rows[i].cells[0]
+            c_val = tabla_tot.rows[i].cells[1]
+            c_eti.width = Cm(6.0)
+            c_val.width = Cm(4.4)
+            self._margen_celda(c_eti, 40, 40, 120, 100)
+            self._margen_celda(c_val, 40, 40, 100, 120)
+            if destacado:
+                self._sombra_celda(c_eti, self.GRIS_FONDO)
+                self._sombra_celda(c_val, self.GRIS_FONDO)
+            p1 = c_eti.paragraphs[0]
+            p1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            p1.paragraph_format.space_after = Pt(0)
+            r1 = p1.add_run(etiqueta)
+            r1.font.size = Pt(9 if destacado else 8.5)
+            r1.bold = destacado
+            r1.font.color.rgb = RGBColor.from_string(self.AZUL if destacado else self.GRIS_TEXTO)
+            p2 = c_val.paragraphs[0]
+            p2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            p2.paragraph_format.space_after = Pt(0)
+            r2 = p2.add_run(valor)
+            r2.font.size = Pt(10.5 if destacado else 8.5)
+            r2.bold = destacado
+            r2.font.color.rgb = RGBColor.from_string(self.AZUL if destacado else self.GRIS_TEXTO)
+        doc.add_paragraph().paragraph_format.space_after = Pt(0)
 
-        # 3. PROPUESTA TÉCNICA Y ESPECIFICACIONES ESPECIALIZADAS
-        self._agregar_banner_seccion_word(doc, f"1. PROPUESTA TÉCNICA ESPECIALIZADA: {expediente.get('nombre', 'Servicio')[:75]}", "1E293B")
-        t_alc = doc.add_table(rows=1, cols=1)
-        t_alc.style = "Table Grid"
-        ca = t_alc.rows[0].cells[0]
-        self._color_celda(ca, "F8FAFC")
-        self._padding_celda(ca, 60, 60, 100, 100)
-        pa = ca.paragraphs[0]
-
-        hitos_texto = [
-            f"• Fase 1 (Kick-off & Arquitectura): Levantamiento detallado de requerimientos con la contraparte técnica de {organismo}.",
-            "• Fase 2 (Implementación & Desarrollo): Ejecución técnica bajo estándares NCh 2728 y NCh-ISO 27001 de seguridad.",
-            "• Fase 3 (Control de Calidad QA): Pruebas funcionales de estrés, validación de seguridad y entrega de pre-conformidad.",
-            "• Fase 4 (Puesta en Marcha & SLA): Entrega formal, capacitación a funcionarios y activación de soporte técnico con SLA < 4 horas y 12 meses de garantía."
+        # --- 3. Condiciones
+        self._titulo_seccion(doc, 3, "Condiciones comerciales")
+        condiciones = [
+            f"Plazo de entrega: {informes.get('plazo_entrega_dias_habiles', 15)} días hábiles desde la orden de compra.",
+            "Forma de pago: 30 días contra recepción conforme y factura electrónica (Ley 21.131).",
+            "Garantía técnica: 12 meses desde la recepción, con soporte preferente y respuesta en menos de 4 horas hábiles.",
+            "La presente oferta no supera el presupuesto máximo informado por el organismo requirente.",
         ]
-        ra = pa.add_run("\n".join(hitos_texto))
-        ra.font.size = Pt(8)
-        ra.font.color.rgb = RGBColor(15, 23, 42)
+        for linea in condiciones:
+            self._parrafo(doc, f"•  {linea}", 8.5, espacio_despues=1)
 
-        # 4. TABLA DE DESGLOSE ECONÓMICO OFICIAL (NETO, IVA 19% Y BRUTO <= PRESUPUESTO)
-        self._agregar_banner_seccion_word(doc, "2. OFERTA ECONÓMICA OFICIAL (CÁLCULO CON IVA INCLUIDO - VALORES EN CLP)", "1E293B")
-        t_eco = doc.add_table(rows=1, cols=4)
-        t_eco.style = "Table Grid"
-        for i, h_e in enumerate(["Ítem / Especificación Técnica del Servicio o Producto", "Cantidad", "Valor Unitario Neto", "Total Neto CLP"]):
-            ce = t_eco.rows[0].cells[i]
-            self._color_celda(ce, "0F172A")
-            self._padding_celda(ce, 55, 55, 80, 80)
-            re_run = ce.paragraphs[0].add_run(h_e)
-            re_run.bold = True
-            re_run.font.size = Pt(8)
-            re_run.font.color.rgb = RGBColor(255, 255, 255)
-
-        row_e = t_eco.add_row().cells
-        vals_e = [
-            f"Servicio Integral Proceso {codigo} para {organismo}: {expediente.get('nombre', 'Servicio')}. Incluye ingeniería especializada, soporte técnico preferente SLA < 4h y garantía 12 meses.",
-            "1 Global",
-            f"${eq.get('oferta_neta_clp', 0):,}",
-            f"${eq.get('oferta_neta_clp', 0):,}"
-        ]
-        for i, ve in enumerate(vals_e):
-            self._color_celda(row_e[i], "FFFFFF")
-            self._padding_celda(row_e[i], 65, 65, 80, 80)
-            p_cell = row_e[i].paragraphs[0]
-            if i >= 1:
-                p_cell.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            rn_e = p_cell.add_run(ve)
-            rn_e.font.size = Pt(8)
-            if i == 3:
-                rn_e.bold = True
-
-        # 5. CONDICIONES COMERCIALES, DATOS DE TRANSFERENCIA MERCADO PAGO Y TOTALES
-        p_sp2 = doc.add_paragraph()
-        p_sp2.paragraph_format.space_before = Pt(3)
-        p_sp2.paragraph_format.space_after = Pt(2)
-
-        t_foot = doc.add_table(rows=1, cols=2)
-        t_foot.style = "Table Grid"
-        c_cond, c_tot = t_foot.rows[0].cells
-        self._color_celda(c_cond, "F8FAFC")
-        self._color_celda(c_tot, "ECFDF5")
-        self._padding_celda(c_cond, 70, 70, 90, 90)
-        self._padding_celda(c_tot, 70, 70, 90, 90)
-
-        # SECCIÓN DESTACADA OBLIGATORIA: CONDICIONES COMERCIALES Y DATOS DE PAGO / TRANSFERENCIA
-        r_cond = c_cond.paragraphs[0].add_run(
-            f"CONDICIONES COMERCIALES Y DATOS DE PAGO / TRANSFERENCIA:\n"
-            f"• Razón Social / Empresa: Mantytech SpA\n"
-            f"• RUT Empresa: 78.479.059-2\n"
-            f"• Banco / Institución Financiera: Banco Mercado Pago\n"
-            f"• Tipo de Cuenta / Forma de Pago: Cuenta Vista\n"
-            f"• Plazo de Entrega: {informes.get('plazo_entrega_dias_habiles', 15)} días hábiles post Orden de Compra.\n"
-            f"• Condición de Pago: 30 días contra Factura Electrónica y Recepción Conforme (Ley 21.131).\n"
-            f"• Garantía Técnica & SLA: 12 meses de cobertura técnica y respuesta SLA < 4 horas."
+        # --- 4. Datos de pago
+        self._titulo_seccion(doc, 4, "Datos del proveedor y de pago")
+        self._tabla(
+            doc,
+            ["Razón social", "RUT", "Banco", "Cuenta", "Correo de contacto"],
+            [[self.perfil["razon_social"], self.perfil["rut"], "Banco Mercado Pago",
+              "Cuenta Vista", self.perfil["email_corporativo"]]],
+            [3.6, 2.4, 3.0, 2.4, 4.0],
+            alineaciones=["l", "c", "l", "l", "l"],
+            tam=8,
         )
-        r_cond.font.size = Pt(7.5)
 
-        p_tot_box = c_tot.paragraphs[0]
-        p_tot_box.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        r_tot_box = p_tot_box.add_run(
-            f"{'PRESUPUESTO TOPE PUBLICADO' if 'Oficial' in str(expediente.get('origen_presupuesto', '')) else 'PRESUPUESTO REFERENCIAL (NO PUBLICADO)'} :  ${presupuesto:,} CLP\n"
-            f"SUBTOTAL NETO OFERTADO :  ${eq.get('oferta_neta_clp', 0):,} CLP\n"
-            f"IVA (19% D.L. 825) :  ${eq.get('iva_19_clp', 0):,} CLP\n"
-            f"=============================================\n"
-            f"TOTAL OFERTA BRUTO (IVA INC.) :  ${eq.get('oferta_total_bruta_clp', 0):,} CLP\n"
-            f"(OFERTA ADMISIBLE: NO SUPERA EL PRESUPUESTO OFICIAL)"
-        )
-        r_tot_box.bold = True
-        r_tot_box.font.size = Pt(8.5)
-        r_tot_box.font.color.rgb = RGBColor(4, 120, 87)
-
-        # 6. BLOQUE DE FIRMA DEL REPRESENTANTE LEGAL
+        # --- Firma
         p_firma = doc.add_paragraph()
-        p_firma.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p_firma.paragraph_format.space_before = Pt(8)
+        p_firma.paragraph_format.space_before = Pt(22)
         p_firma.paragraph_format.space_after = Pt(0)
-        r_f = p_firma.add_run(
-            f"________________________________________________________\n"
-            f"{self.perfil['representante_legal'].upper()}\n"
-            f"{self.perfil['cargo_representante']} · {self.perfil['razon_social']} (RUT: {self.perfil['rut']})\n"
-            f"Teléfono / WhatsApp: {self.perfil['telefono_contacto']}  |  Email: {self.perfil['email_corporativo']}"
-        )
-        r_f.bold = True
-        r_f.font.size = Pt(8)
-        r_f.font.color.rgb = RGBColor(15, 23, 42)
+        r_firma = p_firma.add_run("______________________________________")
+        r_firma.font.size = Pt(9)
+        r_firma.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
 
+        p_nom = doc.add_paragraph()
+        p_nom.paragraph_format.space_before = Pt(4)
+        p_nom.paragraph_format.space_after = Pt(0)
+        r_nom = p_nom.add_run(self.perfil["representante_legal"])
+        r_nom.bold = True
+        r_nom.font.size = Pt(9.5)
+        r_nom.font.color.rgb = RGBColor.from_string(self.AZUL)
+
+        p_cargo = doc.add_paragraph()
+        p_cargo.paragraph_format.space_after = Pt(0)
+        r_cargo = p_cargo.add_run(
+            f"{self.perfil['cargo_representante']} · {self.perfil['razon_social']} · RUT {self.perfil['rut']}"
+        )
+        r_cargo.font.size = Pt(8)
+        r_cargo.font.color.rgb = RGBColor.from_string(self.GRIS_SUAVE)
+
+        self._pie_documento(
+            doc,
+            f"Documento generado por LICITAIA para {organismo[:60]} · Proceso {codigo}",
+        )
         doc.save(ruta_doc2)
 
-    # --------------------------------------------------------------------------
     # GENERADOR DOC 3: REPORTE FINANCIERO DE 4 PESTAÑAS EN WORD (ESTILIZADO)
     # --------------------------------------------------------------------------
     def generar_doc3_financiero_word(self, expediente, informes, escenarios, ruta_doc3):
