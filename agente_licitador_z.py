@@ -4434,6 +4434,11 @@ def mostrar_estado():
     print(f"  Modelo Gemini       : {MODELO_GEMINI}"
           f" ({'con API key' if API_KEY_GEMINI else 'SIN API KEY'})")
     print(f"  Horario de escaneo  : {describir_horario()}")
+    if WHATSAPP_API_URL or WHATSAPP_WEBHOOK_URL:
+        print(f"  WhatsApp            : activo (instancia {WHATSAPP_INSTANCIA or '-'}) "
+              f"-> {', '.join(WHATSAPP_CLIENTE) or 'sin destino'}")
+    else:
+        print("  WhatsApp            : SIN configurar (falta WHATSAPP_API_URL de Evolution API)")
     print(f"  Ya entregados       : {len(historial)}")
     print(f"  Pendientes          : {len(cola)}")
     try:
@@ -4465,12 +4470,45 @@ def _ayuda():
   python agente_licitador_z.py --horario           Horario de escaneo y próxima corrida
   python agente_licitador_z.py --auto              Modo tarea programada (respeta el horario)
   python agente_licitador_z.py --barrido-final     Barrido profundo ahora (hoy + ayer)
+  python agente_licitador_z.py --probar-whatsapp [NUM]  Manda un WhatsApp de prueba
   python agente_licitador_z.py --historial         Lista los ya entregados en Drive
   python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
   python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
   python agente_licitador_z.py --olvidar CODIGO    Solo lo saca de las listas (sin procesar)
 ==============================================================================
 """)
+
+
+def probar_whatsapp(destino=None):
+    """Manda un WhatsApp de prueba.  Uso: --probar-whatsapp +56912345678"""
+    destino = (destino or "").strip() or (WHATSAPP_CLIENTE[0] if WHATSAPP_CLIENTE else WHATSAPP_DESTINO)
+    print("")
+    print("📲 PRUEBA DE WHATSAPP")
+    print(f"   Destino   : {destino}")
+    print(f"   API       : {WHATSAPP_API_URL or '(sin configurar)'}")
+    print(f"   Instancia : {WHATSAPP_INSTANCIA or '(sin configurar)'}")
+    print(f"   API key   : {'sí' if WHATSAPP_APIKEY else 'NO'}")
+    if not WHATSAPP_API_URL and not WHATSAPP_WEBHOOK_URL:
+        print("")
+        print("   ❌ Falta WHATSAPP_API_URL (la dirección de tu Evolution API).")
+        print("      Ejemplo para Coolify -> Environment:")
+        print("         WHATSAPP_API_URL=https://evo.tudominio.cl")
+        print("         WHATSAPP_APIKEY=tu_clave")
+        print("      Después vuelve a desplegar y repite la prueba.")
+        return 1
+    agente5 = Agente5Entregador({"email_notificaciones": CORREO_DESTINO})
+    texto = ("✅ *LICITAIA* · prueba de conexión\n"
+             "Si recibes este mensaje, las notificaciones ya están funcionando.")
+    enviados = agente5._enviar_whatsapp([destino], texto)
+    print("")
+    if enviados:
+        print(f"   ✅ Enviado a {destino}. Revisa tu WhatsApp.")
+        return 0
+    print("   ❌ No se pudo enviar. Revisa los 3 puntos:")
+    print("      1. que WHATSAPP_API_URL sea accesible desde el contenedor")
+    print("      2. que WHATSAPP_APIKEY coincida con AUTHENTICATION_API_KEY de Evolution")
+    print("      3. que la instancia esté CONECTADA (QR escaneado, estado 'open')")
+    return 1
 
 
 if __name__ == "__main__":
@@ -4483,6 +4521,8 @@ if __name__ == "__main__":
         mostrar_estado()
     elif argumentos[0] in ("--horario", "horario"):
         mostrar_horario()
+    elif argumentos[0] in ("--probar-whatsapp", "probar-whatsapp"):
+        sys.exit(probar_whatsapp(argumentos[1] if len(argumentos) > 1 else None))
     elif argumentos[0] in ("--auto", "auto"):
         ejecutar_pipeline_6_agentes(None, auto=True)
     elif argumentos[0] in ("--barrido-final", "barrido-final"):
