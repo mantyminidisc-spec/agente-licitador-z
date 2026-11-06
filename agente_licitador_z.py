@@ -172,6 +172,17 @@ ARCHIVO_CATALOGO_MAESTRO = os.path.join(CARPETA_ENTREGABLES, f"00_CRM_MAESTRO_LI
 
 # --- Parámetros de operación ------------------------------------------------
 PAUSA_ENTRE_PROYECTOS = int(os.getenv("PAUSA_ENTRE_PROYECTOS", "15"))
+
+# --- Horario de escaneo (SIEMPRE en hora de Chile) ---------------------------
+# La tarea de Coolify corre cada hora con "--auto" y el agente decide si le toca.
+# Así no importa si el servidor está en UTC: el agente mira la hora de Chile.
+HORARIO_ESCANEO = sorted({
+    int(h) for h in os.getenv("HORARIO_ESCANEO", "9,11,13,15,17,19").replace(";", ",").split(",")
+    if h.strip().isdigit() and 0 <= int(h) <= 23
+})
+# El último escaneo del día hace barrido profundo (hoy + ayer, más cupo)
+LIMITE_BARRIDO_FINAL = int(os.getenv("LIMITE_BARRIDO_FINAL", "8"))
+MAX_CA_BARRIDO_FINAL = int(os.getenv("MAX_CA_BARRIDO_FINAL", "15"))
 REINTENTOS_DRIVE = int(os.getenv("REINTENTOS_DRIVE", "3"))
 DRIVE_MAX_BYTES = int(os.getenv("DRIVE_MAX_BYTES", str(20 * 1024 * 1024)))  # por envío
 # Cuántos archivos van en un solo envío. Alto a propósito: cada envío extra
@@ -332,6 +343,57 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
         if n < intentos:
             time.sleep(min(3 * n, 15))
     return None, ultimo
+
+
+# ==============================================================================
+# HORARIO DE ESCANEO (hora de Chile, sin depender de la zona del servidor)
+# ==============================================================================
+def _ahora_chile():
+    """Hora actual en Chile. Si falta la base de zonas, usa la hora local."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo("America/Santiago"))
+    except Exception:
+        return datetime.datetime.now()
+
+
+def _hora_de_escanear(ahora=None):
+    ahora = ahora or _ahora_chile()
+    return ahora.hour in HORARIO_ESCANEO
+
+
+def _es_hora_barrido_final(ahora=None):
+    ahora = ahora or _ahora_chile()
+    return bool(HORARIO_ESCANEO) and ahora.hour >= max(HORARIO_ESCANEO)
+
+
+def describir_horario():
+    if not HORARIO_ESCANEO:
+        return "sin horario definido (corre en cualquier momento)"
+    horas = ", ".join(f"{h:02d}:00" for h in HORARIO_ESCANEO)
+    return (f"{horas} · el de las {max(HORARIO_ESCANEO):02d}:00 es el BARRIDO FINAL "
+            f"(revisa hoy y ayer, con más cupo)")
+
+
+def mostrar_horario():
+    ahora = _ahora_chile()
+    print("")
+    print("🕒 HORARIO DE ESCANEO (hora de Chile)")
+    print(f"   {describir_horario()}")
+    print(f"   Ahora son las {ahora:%H:%M} del {ahora:%d-%m-%Y}")
+    if HORARIO_ESCANEO:
+        proxima = next((h for h in HORARIO_ESCANEO if h > ahora.hour), None)
+        if proxima is None:
+            proxima = HORARIO_ESCANEO[0]
+            cuando = "mañana"
+        else:
+            cuando = "hoy"
+        print(f"   Próxima corrida automática: {proxima:02d}:00 ({cuando})")
+    if _hora_de_escanear(ahora):
+        print("   ✔ Ahora SÍ corresponde escanear")
+    else:
+        print("   ⏸ Ahora NO corresponde (con --auto se saltaría; a mano corre igual)")
+    print("")
 
 class Agente0Contexto:
     def __init__(self):
@@ -709,10 +771,16 @@ Responde ÚNICAMENTE en formato JSON:
         print(f"      ✓ {len(hallazgos_ca)} Compras Ágiles vigentes detectadas e incorporadas.")
         return hallazgos_ca
 
-    def ejecutar_barrido(self):
-        limite_total = self.perfil.get("limite_lote_ciclo", 3)
+    def ejecutar_barrido(self, barrido_final=False):
+        ahora = _ahora_chile()
+        limite_total = (LIMITE_BARRIDO_FINAL if barrido_final
+                        else self.perfil.get("limite_lote_ciclo", 3))
         plan = self.perfil.get("plan_activo", "PLAN_FULL_EMPRESARIAL")
-        fecha_api = datetime.datetime.now().strftime("%d%m%Y")
+        fecha_api = ahora.strftime("%d%m%Y")
+        fechas_api = [fecha_api]
+        if barrido_final:
+            fechas_api.append((ahora - datetime.timedelta(days=1)).strftime("%d%m%Y"))
+            print(f"   🔎 [BARRIDO FINAL] revisando hoy ({fechas_api[0]}) y ayer ({fechas_api[1]})")
 
         print("\n================================================================================")
         print(f"🔍 [AGENTE 1] BARRIDO DUAL: COMPRA ÁGIL V2 + LICITACIONES PÚBLICAS ({fecha_api})")
@@ -721,70 +789,80 @@ Responde ÚNICAMENTE en formato JSON:
         candidatos = []
 
         # 1. Escanear SIEMPRE primero Compra Ágil (API v2 Oficial)
-        cupo_ca = limite_total if plan == "PLAN_1" else max(1, limite_total - 1)
+        if barrido_final:
+            cupo_ca = MAX_CA_BARRIDO_FINAL
+        else:
+            cupo_ca = limite_total if plan == "PLAN_1" else max(1, limite_total - 1)
         candidatos_ca = self._buscar_en_api_v2_compra_agil(max_ca=cupo_ca)
         candidatos.extend(candidatos_ca)
 
-        # 2. Si el plan es PLAN_2 o PLAN_3 y aún quedan cupos en el micro-lote de 3, completar con Licitaciones Públicas
-        if plan != "PLAN_1" and len(candidatos) < limite_total:
+        # 2. Completar con Licitaciones Públicas (API v1).
+        #    En el barrido final se revisan HOY y AYER, para no perder nada.
+        if len(candidatos) < limite_total:
             print("   -> [1B] Escaneando Portal LICITACIONES PÚBLICAS (API v1 Oficial)...")
-            url_listado = f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?fecha={fecha_api}&ticket={TICKET_MERCADO_PUBLICO}"
-            try:
-                resp = requests.get(url_listado, timeout=30)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    listado = data.get("Listado", [])
-                    print(f"      ✓ {len(listado)} Licitaciones Públicas publicadas en la jornada.")
+            listado = []
+            for _fecha in fechas_api:
+                url_listado = ("https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"
+                               f"?fecha={_fecha}&ticket={TICKET_MERCADO_PUBLICO}")
+                try:
+                    resp = requests.get(url_listado, timeout=30)
+                    if resp.status_code == 200:
+                        _js = resp.json() or {}
+                        _lista = _js.get("Listado") or []
+                        listado.extend(_lista)
+                        print(f"      ✓ {len(_lista)} proceso(s) publicados el {_fecha}")
+                    else:
+                        print(f"      [!] API v1 para {_fecha}: HTTP {resp.status_code}")
+                except Exception as e:
+                    print(f"   [!] Error consultando Licitaciones del {_fecha}: {e}")
 
-                    for item in listado:
-                        codigo = str(item.get("CodigoExterno", "")).strip()
-                        nombre = str(item.get("Nombre", "")).strip()
-                        if not codigo or codigo in self.historial or any(c["codigo"] == codigo for c in candidatos):
-                            continue
+            # CodigoEstado 5 = Publicada (recibiendo ofertas). Se descartan los
+            # cerrados/desiertos/adjudicados para no gastar IA en procesos muertos.
+            abiertos = [it for it in listado if str(it.get("CodigoEstado", "5")) == "5"]
+            print(f"      ✓ {len(abiertos)} de {len(listado)} siguen abiertos (estado Publicada).")
 
-                        codigo_up = codigo.upper()
-                        # En el listado v1 aparecen compras ágiles con sufijo -CO26
-                        # (no solo -COT), y antes se clasificaban como licitación.
-                        es_ca = ("COT" in codigo_up) or ("-CO" in codigo_up)
-                        tipo_portal = "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA"
+            for item in abiertos:
+                codigo = str(item.get("CodigoExterno", "")).strip()
+                nombre = str(item.get("Nombre", "")).strip()
+                if not codigo or codigo in self.historial or any(c["codigo"] == codigo for c in candidatos):
+                    continue
 
-                        # 1. Filtro Quirúrgico sintáctico con Regex (\b...\b)
-                        aprobado, motivo = self.cumple_filtro_quirurgico(nombre)
-                        if not aprobado:
-                            continue
+                codigo_up = codigo.upper()
+                # En el listado aparecen compras ágiles con sufijo -CO26 (no solo -COT)
+                es_ca = ("COT" in codigo_up) or ("-CO" in codigo_up)
+                tipo_portal = "COMPRA_AGIL" if es_ca else "LICITACION_PUBLICA"
 
-                        # 2. Pre-Filtro Semántico con IA (Gemini): valida pertenencia 100% al giro TI/Digital
-                        # El listado v1 casi nunca trae "Descripcion": sin este respaldo,
-                        # el pre-filtro de IA evaluaba un texto vacío.
-                        desc_item = str(item.get("Descripcion") or item.get("Nombre") or nombre or "")
-                        aprobado_ia, motivo_ia = self._prefiltro_semantico_gemini(
-                            codigo=codigo,
-                            titulo=nombre,
-                            descripcion=desc_item,
-                            tipo_portal=tipo_portal
-                        )
-                        if not aprobado_ia:
-                            continue
+                aprobado, motivo = self.cumple_filtro_quirurgico(nombre)
+                if not aprobado:
+                    continue
 
-                        # 3. Extracción específica y real del Organismo Comprador
-                        organismo_real = self._extraer_organismo_comprador(item, codigo=codigo, tipo_portal=tipo_portal)
+                # El listado v1 casi nunca trae "Descripcion": sin este respaldo,
+                # el pre-filtro de IA evaluaba un texto vacío.
+                desc_item = str(item.get("Descripcion") or item.get("Nombre") or nombre or "")
+                aprobado_ia, motivo_ia = self._prefiltro_semantico_gemini(
+                    codigo=codigo,
+                    titulo=nombre,
+                    descripcion=desc_item,
+                    tipo_portal=tipo_portal,
+                )
+                if not aprobado_ia:
+                    continue
 
-                        print(f"      🎯 [MATCH LICITACIÓN] {codigo} ({tipo_portal}) -> Keyword: '{motivo}' | Org: {organismo_real}")
-                        candidatos.append({
-                            "codigo": codigo,
-                            "nombre": nombre,
-                            "organismo_comprador": organismo_real,
-                            "organismo": organismo_real,
-                            "tipo_portal": tipo_portal,
-                            "keyword_match": motivo,
-                            "fecha_cierre": item.get("FechaCierre", "No informada"),
-                            "estado": item.get("CodigoEstado", ""),
-                            "resumen_item": item
-                        })
-                        if len(candidatos) >= limite_total:
-                            break
-            except Exception as e:
-                print(f"   [!] Error consultando Licitaciones Públicas: {e}")
+                organismo_real = self._extraer_organismo_comprador(item, codigo=codigo, tipo_portal=tipo_portal)
+                print(f"      🎯 [MATCH LICITACIÓN] {codigo} ({tipo_portal}) -> Keyword: '{motivo}' | Org: {organismo_real}")
+                candidatos.append({
+                    "codigo": codigo,
+                    "nombre": nombre,
+                    "organismo_comprador": organismo_real,
+                    "organismo": organismo_real,
+                    "tipo_portal": tipo_portal,
+                    "keyword_match": motivo,
+                    "fecha_cierre": item.get("FechaCierre", "No informada"),
+                    "estado": item.get("CodigoEstado", ""),
+                    "resumen_item": item,
+                })
+                if len(candidatos) >= limite_total:
+                    break
 
         print(f"   -> Lote final seleccionado para auditoría: {len(candidatos)} proyecto(s).")
         return candidatos
@@ -4096,13 +4174,24 @@ def _guardar_cola_pendiente(cola):
         print(f"   [!] No se pudo guardar la cola de pendientes: {e}")
 
 
-def ejecutar_pipeline_6_agentes(codigo_especifico=None):
+def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_final=None):
+    if auto and not _hora_de_escanear():
+        ahora = _ahora_chile()
+        print(f"\n⏸ [AUTO] Son las {ahora:%H:%M} del {ahora:%d-%m-%Y}: no corresponde escanear.")
+        print(f"   Horario: {describir_horario()}")
+        print("   Para forzar ahora: python agente_licitador_z.py --barrido-final")
+        return
+    if barrido_final is None:
+        barrido_final = _es_hora_barrido_final()
+
     print("""
     ╔══════════════════════════════════════════════════════════════════════════╗
     ║   LICITAIA - MOTOR B2G DE 6 AGENTES (VERSIÓN 5.4 · CORREGIDA)        ║
     ║   Orden estricto CA -> Licitaciones + Cola persistente + Drive honesto   ║
     ╚══════════════════════════════════════════════════════════════════════════╝
     """)
+    print(f"   Modo     : {'BARRIDO FINAL DEL DÍA' if barrido_final else 'escaneo normal'}")
+    print(f"   Horario  : {describir_horario()}")
 
     agente0 = Agente0Contexto()
     perfil = agente0.inicializar_entorno()
@@ -4130,7 +4219,7 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None):
             "fecha_cierre": "Ver Ficha",
         }]
     else:
-        candidatos = agente1.ejecutar_barrido()
+        candidatos = agente1.ejecutar_barrido(barrido_final=barrido_final)
 
     # 1) Recuperar lo que quedó pendiente de corridas anteriores
     cola = _leer_cola_pendiente()
@@ -4333,6 +4422,7 @@ def mostrar_estado():
     print(f"  Ticket Mercado Pub. : {'configurado' if TICKET_MERCADO_PUBLICO else 'FALTA'}")
     print(f"  Modelo Gemini       : {MODELO_GEMINI}"
           f" ({'con API key' if API_KEY_GEMINI else 'SIN API KEY'})")
+    print(f"  Horario de escaneo  : {describir_horario()}")
     print(f"  Ya entregados       : {len(historial)}")
     print(f"  Pendientes          : {len(cola)}")
     try:
@@ -4361,6 +4451,9 @@ def _ayuda():
   python agente_licitador_z.py                     Corrida normal (busca nuevos)
   python agente_licitador_z.py 4160-28-LE26        Procesa ESE proyecto (ignora historial)
   python agente_licitador_z.py --estado            Resumen: procesados, pendientes, disco
+  python agente_licitador_z.py --horario           Horario de escaneo y próxima corrida
+  python agente_licitador_z.py --auto              Modo tarea programada (respeta el horario)
+  python agente_licitador_z.py --barrido-final     Barrido profundo ahora (hoy + ayer)
   python agente_licitador_z.py --historial         Lista los ya entregados en Drive
   python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
   python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
@@ -4377,6 +4470,12 @@ if __name__ == "__main__":
         _ayuda()
     elif argumentos[0] in ("--estado", "estado"):
         mostrar_estado()
+    elif argumentos[0] in ("--horario", "horario"):
+        mostrar_horario()
+    elif argumentos[0] in ("--auto", "auto"):
+        ejecutar_pipeline_6_agentes(None, auto=True)
+    elif argumentos[0] in ("--barrido-final", "barrido-final"):
+        ejecutar_pipeline_6_agentes(None, barrido_final=True)
     elif argumentos[0] in ("--historial", "historial"):
         mostrar_historial()
     elif argumentos[0] in ("--pendientes", "pendientes"):
