@@ -17,7 +17,7 @@ def _es_bloqueo_waf_403(texto: str) -> bool:
 # -*- coding: utf-8 -*-
 """
 ================================================================================
-GOVILICIT.IA - AGENTE LICITADOR AUTÓNOMO B2G (VERSIÓN 5.3 PREMIUM - 6 AGENTES)
+LICITAIA - AGENTE LICITADOR AUTÓNOMO B2G (VERSIÓN 5.3 PREMIUM - 6 AGENTES)
 Mantytech SpA / CauqueIA - Lead Specialist: Daniel Andrés Salazar Gavilán
 ================================================================================
 ARQUITECTURA ÍNTEGRA DE 6 AGENTES (100% COMPLETA Y MEJORADA):
@@ -139,7 +139,7 @@ URL_APPS_SCRIPT = os.getenv(
 ).strip()
 
 CORREO_DESTINO = os.getenv("CORREO_DESTINO", "booknegocios2015@gmail.com")
-WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56987567519")
+WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56950901627")
 # En un contenedor "localhost" es el propio contenedor: hay que apuntar a la
 # URL real de la Evolution API (o dejarlo vacío para desactivar WhatsApp).
 WHATSAPP_API_LOCAL = os.getenv("WHATSAPP_API_URL", "").strip()
@@ -149,10 +149,12 @@ WHATSAPP_API_LOCAL = os.getenv("WHATSAPP_API_URL", "").strip()
 # 1) Un solo número (el tuyo, con ganancias): WHATSAPP_INTERNO
 # 2) Números del cliente (sin ganancias):      WHATSAPP_CLIENTE
 # Se aceptan varios separados por coma:  +56911111111,+56922222222
-WHATSAPP_INSTANCIA = os.getenv("WHATSAPP_INSTANCIA", "").strip()
+WHATSAPP_INSTANCIA = os.getenv("WHATSAPP_INSTANCIA", "LICITAIA").strip()
 WHATSAPP_APIKEY = os.getenv("WHATSAPP_APIKEY", "").strip()
 WHATSAPP_WEBHOOK_URL = os.getenv("WHATSAPP_WEBHOOK_URL", "").strip()
-WHATSAPP_CLIENTE = [n.strip() for n in os.getenv("WHATSAPP_CLIENTE", "").split(",") if n.strip()]
+# Número al que llega el aviso del cliente (por defecto, el que indicaste).
+WHATSAPP_CLIENTE = [n.strip() for n in os.getenv("WHATSAPP_CLIENTE", "+56950901627").split(",") if n.strip()]
+# Números internos (con ganancias). Vacío = no manda el resumen, solo el aviso por proyecto.
 WHATSAPP_INTERNO = [n.strip() for n in os.getenv("WHATSAPP_INTERNO", "").split(",") if n.strip()]
 WHATSAPP_AVISO_CLIENTE = os.getenv("WHATSAPP_AVISO_CLIENTE", "1").strip() != "0"
 
@@ -204,7 +206,7 @@ HEADERS_WEB = {
 HEADERS_API_COMPRA_AGIL = {
     "ticket": TICKET_MERCADO_PUBLICO,
     "Accept": "application/json",
-    "User-Agent": "GoviLicit-B2G-Engine/5.4 (Mantytech SpA)",
+    "User-Agent": "LICITAIA-B2G-Engine/5.4 (Mantytech SpA)",
 }
 
 # ==============================================================================
@@ -2618,7 +2620,7 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
                 "Norma Técnica de Interoperabilidad y Ciberseguridad Ley 21.663"
             ],
             "alerta_ejecutiva_whatsapp": (
-                f"🤖 *GoviLicit B2G Senior*\n"
+                f"🤖 *LICITAIA · Auditor B2G*\n"
                 f"ID: {codigo}\n"
                 f"🏛️ *Comprador:* {organismo[:32]}\n"
                 f"✅ *Admisibilidad:* APTO (Ley 19.886 / DS 661)\n"
@@ -2821,7 +2823,7 @@ class Agente5Entregador:
         self._padding_celda(c_h1, 140, 140, 100, 180)
 
         r_h0 = c_h0.paragraphs[0].add_run(
-            f"GOVILICIT.IA · AUDITORÍA INTERNA DE CONTRATACIÓN PÚBLICA B2G\n"
+            f"LICITAIA · AUDITORÍA INTERNA DE CONTRATACIÓN PÚBLICA B2G\n"
             f"DOC 1: DOSSIER EJECUTIVO, NORMATIVO Y FINANCIERO (LEY 19.886)\n"
             f"ORGANISMO EVALUADO: {organismo.upper()}\n"
             f"OFERENTE: {self.perfil['razon_social'].upper()} (RUT: {self.perfil['rut']})"
@@ -3340,7 +3342,7 @@ class Agente5Entregador:
         ws1.views.sheetView[0].showGridLines = True
 
         ws1.merge_cells("A1:I1")
-        ws1["A1"] = f"GOVILICIT.IA · DASHBOARD FINANCIERO DE LICITACIÓN: {expediente['codigo']} ({expediente['tipo_portal']})"
+        ws1["A1"] = f"LICITAIA · DASHBOARD FINANCIERO DE LICITACIÓN: {expediente['codigo']} ({expediente['tipo_portal']})"
         ws1["A1"].fill = fill_navy
         ws1["A1"].font = Font(name="Calibri", size=13, color="FFFFFF", bold=True)
         ws1["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -3520,7 +3522,7 @@ class Agente5Entregador:
 
             # Fila 1: Banner Principal del Tablero CRM
             ws.merge_cells("A1:Q1")
-            ws["A1"] = "🚀 GOVILICIT.IA · TABLERO CRM DE CONTROL DE LICITACIONES Y COMPRAS ÁGILES — MANTYTECH SPA"
+            ws["A1"] = "🚀 LICITAIA · TABLERO CRM DE CONTROL DE LICITACIONES Y COMPRAS ÁGILES — MANTYTECH SPA"
             ws["A1"].fill = fill_banner
             ws["A1"].font = Font(name="Calibri", size=13, color="FFFFFF", bold=True)
             ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -3731,7 +3733,7 @@ class Agente5Entregador:
         return f"""
         <div style="font-family: Arial, sans-serif; max-width: 680px; margin: auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
           <div style="background: #0f172a; color: #ffffff; padding: 22px;">
-            <h2 style="margin: 0; color: #10b981;">🚀 GoviLicit.IA · Oportunidad Auditada y Cotizada</h2>
+            <h2 style="margin: 0; color: #10b981;">🚀 LICITAIA · Oportunidad Auditada y Cotizada</h2>
             <p style="margin: 6px 0 0; font-size: 14px; color: #e2e8f0;">Código: <b>{codigo}</b> · Portal: <b>{expediente['tipo_portal']}</b></p>
           </div>
           <div style="padding: 22px; background: #ffffff; color: #1e293b;">
@@ -3831,7 +3833,7 @@ class Agente5Entregador:
                 # El correo sale SOLO con el primer envío. Los demás van sin datos
                 # de correo para no duplicarlo.
                 "asunto_email": (
-                    f"✅ [GoviLicit.IA] {codigo} ({expediente['tipo_portal']}) | "
+                    f"✅ [LICITAIA] {codigo} ({expediente['tipo_portal']}) | "
                     f"Ganancia: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP"
                 ) if es_primero else "",
                 "html_resumen": html_correo if es_primero else "",
@@ -3964,7 +3966,7 @@ class Agente5Entregador:
         if not resultados_lote:
             return
         lineas = [
-            f"🤖 *GOVILICIT.IA · {len(resultados_lote)} OPORTUNIDAD(ES) NUEVA(S)*",
+            f"🤖 *LICITAIA · {len(resultados_lote)} OPORTUNIDAD(ES) NUEVA(S)*",
             f"📅 {FECHA_HOY_STR}",
             "----------------------------------------",
         ]
@@ -4097,7 +4099,7 @@ def _guardar_cola_pendiente(cola):
 def ejecutar_pipeline_6_agentes(codigo_especifico=None):
     print("""
     ╔══════════════════════════════════════════════════════════════════════════╗
-    ║   GOVILICIT.IA - MOTOR B2G DE 6 AGENTES (VERSIÓN 5.4 · CORREGIDA)        ║
+    ║   LICITAIA - MOTOR B2G DE 6 AGENTES (VERSIÓN 5.4 · CORREGIDA)        ║
     ║   Orden estricto CA -> Licitaciones + Cola persistente + Drive honesto   ║
     ╚══════════════════════════════════════════════════════════════════════════╝
     """)
@@ -4354,7 +4356,7 @@ def mostrar_estado():
 def _ayuda():
     print("""
 ==============================================================================
- GOVILICIT.IA / LICITAIA - Comandos disponibles
+ LICITAIA / LICITAIA - Comandos disponibles
 ==============================================================================
   python agente_licitador_z.py                     Corrida normal (busca nuevos)
   python agente_licitador_z.py 4160-28-LE26        Procesa ESE proyecto (ignora historial)
