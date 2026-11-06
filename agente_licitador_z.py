@@ -144,6 +144,18 @@ WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56987567519")
 # URL real de la Evolution API (o dejarlo vacío para desactivar WhatsApp).
 WHATSAPP_API_LOCAL = os.getenv("WHATSAPP_API_URL", "").strip()
 
+# --- WhatsApp (Evolution API o webhook genérico) -----------------------------
+# Con Evolution API se necesitan 3 datos: URL base, nombre de la instancia y apikey.
+# 1) Un solo número (el tuyo, con ganancias): WHATSAPP_INTERNO
+# 2) Números del cliente (sin ganancias):      WHATSAPP_CLIENTE
+# Se aceptan varios separados por coma:  +56911111111,+56922222222
+WHATSAPP_INSTANCIA = os.getenv("WHATSAPP_INSTANCIA", "").strip()
+WHATSAPP_APIKEY = os.getenv("WHATSAPP_APIKEY", "").strip()
+WHATSAPP_WEBHOOK_URL = os.getenv("WHATSAPP_WEBHOOK_URL", "").strip()
+WHATSAPP_CLIENTE = [n.strip() for n in os.getenv("WHATSAPP_CLIENTE", "").split(",") if n.strip()]
+WHATSAPP_INTERNO = [n.strip() for n in os.getenv("WHATSAPP_INTERNO", "").split(",") if n.strip()]
+WHATSAPP_AVISO_CLIENTE = os.getenv("WHATSAPP_AVISO_CLIENTE", "1").strip() != "0"
+
 # --- Rutas de datos persistentes -------------------------------------------
 # En Coolify el filesystem del contenedor es efímero: esto DEBE apuntar a un
 # volumen persistente (ej: LICITAIA_DATA_DIR=/data).
@@ -159,7 +171,11 @@ ARCHIVO_CATALOGO_MAESTRO = os.path.join(CARPETA_ENTREGABLES, f"00_CRM_MAESTRO_LI
 # --- Parámetros de operación ------------------------------------------------
 PAUSA_ENTRE_PROYECTOS = int(os.getenv("PAUSA_ENTRE_PROYECTOS", "15"))
 REINTENTOS_DRIVE = int(os.getenv("REINTENTOS_DRIVE", "3"))
-DRIVE_MAX_BYTES = int(os.getenv("DRIVE_MAX_BYTES", str(6 * 1024 * 1024)))  # por envío
+DRIVE_MAX_BYTES = int(os.getenv("DRIVE_MAX_BYTES", str(20 * 1024 * 1024)))  # por envío
+# Cuántos archivos van en un solo envío. Alto a propósito: cada envío extra
+# significa un CORREO extra (el Apps Script manda uno por petición), y eso
+# producía los correos duplicados.
+DRIVE_MAX_ARCHIVOS = int(os.getenv("DRIVE_MAX_ARCHIVOS", "40"))
 MAX_BYTES_DESCARGA = int(os.getenv("MAX_BYTES_DESCARGA", str(80 * 1024 * 1024)))
 GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 
@@ -3659,10 +3675,19 @@ class Agente5Entregador:
         """
         ultimo = "sin intentos"
         for intento in range(1, REINTENTOS_DRIVE + 1):
+            # Si el primer intento pudo haber llegado igual (timeout, respuesta
+            # rara), el reintento va SIN datos de correo: así no se duplica el email.
+            cuerpo_payload = payload
+            if intento > 1 and isinstance(payload, dict):
+                cuerpo_payload = dict(payload)
+                cuerpo_payload["html_resumen"] = ""
+                cuerpo_payload["asunto_email"] = ""
+                cuerpo_payload["enviar_correo"] = False
+                print("      (reintento sin correo, para no duplicarlo)")
             try:
                 resp = requests.post(
                     URL_APPS_SCRIPT,
-                    data=json.dumps(payload, ensure_ascii=False),
+                    data=json.dumps(cuerpo_payload, ensure_ascii=False),
                     headers={"Content-Type": "text/plain;charset=utf-8"},
                     timeout=timeout,
                     allow_redirects=True,
@@ -3779,11 +3804,13 @@ class Agente5Entregador:
             print("   [!] No hay archivos para subir en esta carpeta.")
             return {"subido_drive": False, "url_carpeta_drive": ""}
 
-        # Lotes por peso (base64 infla ~33%) y por número de archivos
+        # Lotes: por defecto TODO el proyecto en UN solo envío (un solo correo).
+        # Solo se divide si de verdad es enorme, porque el Apps Script manda un
+        # correo por cada petición que recibe (de ahí los correos duplicados).
         lotes, actual, peso = [], [], 0
         for ruta, tam in archivos:
             peso_b64 = int(tam * 4 / 3)
-            if actual and (peso + peso_b64 > DRIVE_MAX_BYTES or len(actual) >= 6):
+            if actual and (peso + peso_b64 > DRIVE_MAX_BYTES or len(actual) >= DRIVE_MAX_ARCHIVOS):
                 lotes.append(actual)
                 actual, peso = [], 0
             actual.append((ruta, tam))
@@ -3792,17 +3819,24 @@ class Agente5Entregador:
             lotes.append(actual)
 
         html_correo = self._html_correo_ejecutivo(expediente, informes, escenarios)
-        print(f"   ☁️ [Agente 5] Subiendo {len(archivos)} archivo(s) en {len(lotes)} lote(s) a Google Drive...")
+        id_envio = f"{codigo}-{datetime.datetime.now().strftime('%Y%m%d%H%M')}"
+        print(f"   ☁️ [Agente 5] Subiendo {len(archivos)} archivo(s) en {len(lotes)} envío(s) a Google Drive...")
 
         todo_ok, url_drive, fallos = True, "", []
         for idx, lote in enumerate(lotes, 1):
+            es_primero = (idx == 1)
             payload = {
                 "empresa": "Mantytech_SpA",
                 "email_destino": self.perfil["email_notificaciones"],
-                "asunto_email": (f"✅ [GoviLicit.IA] {codigo} ({expediente['tipo_portal']}) | "
-                                 f"Ganancia: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP"),
-                "html_resumen": html_correo,
-                "enviar_correo": (idx == 1),
+                # El correo sale SOLO con el primer envío. Los demás van sin datos
+                # de correo para no duplicarlo.
+                "asunto_email": (
+                    f"✅ [GoviLicit.IA] {codigo} ({expediente['tipo_portal']}) | "
+                    f"Ganancia: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP"
+                ) if es_primero else "",
+                "html_resumen": html_correo if es_primero else "",
+                "enviar_correo": es_primero,
+                "id_envio": id_envio,
                 "subcarpeta_portal": subcarpeta,
                 "codigo_id": codigo,
                 "lote": f"{idx}/{len(lotes)}",
@@ -3822,11 +3856,11 @@ class Agente5Entregador:
             ok, carpeta_url, detalle = self._enviar_lote_apps_script(payload)
             if ok:
                 url_drive = carpeta_url or url_drive
-                print(f"   ✅ Lote {idx}/{len(lotes)} entregado -> {carpeta_url}")
+                print(f"   ✅ Envío {idx}/{len(lotes)} entregado -> {carpeta_url}")
             else:
                 todo_ok = False
                 fallos.append(f"lote {idx}: {detalle}")
-                print(f"   ❌ Lote {idx}/{len(lotes)} NO entregado -> {detalle}")
+                print(f"   ❌ Envío {idx}/{len(lotes)} NO entregado -> {detalle}")
 
         self._subir_crm_maestro()
 
@@ -3838,54 +3872,128 @@ class Agente5Entregador:
         print("   ❌ [DRIVE INCOMPLETO] El proyecto NO se marcará como procesado y quedará en cola.")
         return {"subido_drive": False, "url_carpeta_drive": url_drive, "detalle": " | ".join(fallos)}
 
+    # ------------------------------------------------------------------
+    # WHATSAPP: aviso al cliente + resumen interno
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _clp(valor):
+        """Formato chileno: $25.000.000 (punto de miles, no coma)."""
+        try:
+            return "$" + f"{int(valor):,}".replace(",", ".")
+        except Exception:
+            return "$0"
+
+    def _enviar_whatsapp(self, destinos, texto):
+        """Manda el mismo texto a uno o varios números. Devuelve cuántos salieron.
+
+        Soporta Evolution API (WHATSAPP_API_URL + WHATSAPP_INSTANCIA + WHATSAPP_APIKEY)
+        o un webhook genérico (WHATSAPP_WEBHOOK_URL) que reciba {"number", "text"}.
+        """
+        destinos = [str(d).strip() for d in (destinos or []) if str(d).strip()]
+        if not destinos:
+            return 0
+        if len(texto) > 3800:
+            texto = texto[:3800] + "\n…(mensaje recortado)"
+        enviados = 0
+        base = (WHATSAPP_API_URL or WHATSAPP_API_LOCAL or "").rstrip("/")
+        if base:
+            url = f"{base}/message/sendText/{WHATSAPP_INSTANCIA}" if WHATSAPP_INSTANCIA else base
+            for numero in destinos:
+                for intento in (1, 2):
+                    try:
+                        r = requests.post(
+                            url,
+                            json={"number": numero, "text": texto},
+                            headers={"apikey": WHATSAPP_APIKEY,
+                                     "Content-Type": "application/json"},
+                            timeout=20,
+                        )
+                        if r.status_code in (200, 201):
+                            print(f"   📲 [WhatsApp] enviado a {numero}")
+                            enviados += 1
+                            break
+                        print(f"   [!] WhatsApp a {numero}: HTTP {r.status_code} {str(r.text)[:110]}")
+                    except Exception as e:
+                        print(f"   [!] WhatsApp a {numero}: {e}")
+                    time.sleep(3)
+            return enviados
+        if WHATSAPP_WEBHOOK_URL:
+            for numero in destinos:
+                try:
+                    requests.post(
+                        WHATSAPP_WEBHOOK_URL,
+                        json={"number": numero, "text": texto, "destino": numero},
+                        timeout=20,
+                    )
+                    print(f"   📲 [WhatsApp webhook] enviado a {numero}")
+                    enviados += 1
+                except Exception as e:
+                    print(f"   [!] WhatsApp webhook: {e}")
+            return enviados
+        return 0
+
+    def _mensaje_cliente_whatsapp(self, expediente, escenarios, estado_nube=None):
+        """Aviso para el CLIENTE: sin márgenes ni datos financieros internos."""
+        tipo = "Compra Ágil" if expediente.get("tipo_portal") == "COMPRA_AGIL" else "Licitación pública"
+        presupuesto = int(expediente.get("presupuesto_estatal_clp") or 0)
+        lineas = [
+            "🚀 *Nueva oportunidad de compra pública*",
+            f"📌 {tipo} · {expediente.get('codigo', '')}",
+            f"🏛️ {str(expediente.get('organismo', ''))[:90]}",
+            f"📝 {str(expediente.get('nombre', ''))[:110]}",
+            f"💰 Presupuesto: {self._clp(presupuesto)} CLP",
+            f"⏳ Cierre: {expediente.get('fecha_cierre', 'ver ficha')}",
+        ]
+        if estado_nube and estado_nube.get("url_carpeta_drive"):
+            lineas.append(f"📂 Carpeta: {estado_nube['url_carpeta_drive']}")
+        if expediente.get("url_portal"):
+            lineas.append(f"🔗 {expediente['url_portal']}")
+        return "\n".join(lineas)
+
+    def notificar_cliente_whatsapp(self, expediente, escenarios, estado_nube=None):
+        """Envía el aviso al cliente si está configurado (WHATSAPP_CLIENTE)."""
+        if not WHATSAPP_AVISO_CLIENTE or not WHATSAPP_CLIENTE:
+            return
+        self._enviar_whatsapp(
+            WHATSAPP_CLIENTE,
+            self._mensaje_cliente_whatsapp(expediente, escenarios, estado_nube),
+        )
+
     def enviar_resumen_whatsapp_lote(self, resultados_lote):
+        """Resumen del lote CON ganancias: solo para los números internos."""
         if not resultados_lote:
             return
-
         lineas = [
-            f"🤖 *GOVILICIT.IA · REPORTE DE {len(resultados_lote)} NUEVAS OPORTUNIDADES*",
-            f"📅 Fecha: {FECHA_HOY_STR}",
-            "----------------------------------------"
+            f"🤖 *GOVILICIT.IA · {len(resultados_lote)} OPORTUNIDAD(ES) NUEVA(S)*",
+            f"📅 {FECHA_HOY_STR}",
+            "----------------------------------------",
         ]
         for idx, item in enumerate(resultados_lote, 1):
             exp = item["expediente"]
             eq = item["escenarios"]["equilibrado"]
             lineas.append(
                 f"*{idx}. [{exp['codigo']}] ({exp['tipo_portal']})*\n"
-                f"📌 {exp['nombre'][:55]}\n"
-                f"🏛️ Comprador: {exp['organismo'][:45]}\n"
-                f"💰 Presupuesto Estado: *${exp['presupuesto_estatal_clp']:,} CLP*\n"
-                f"📄 Oferta DOC 2 (92%): *${eq['oferta_neta_clp']:,} CLP + IVA*\n"
-                f"💵 Ganancia Limpia: *${eq['ganancia_limpia_bolsillo_clp']:,} CLP ({eq['margen_rentabilidad_pct']}%)*\n"
-                f"🔗 Portal MP: {exp['url_portal']}"
+                f"📌 {str(exp['nombre'])[:55]}\n"
+                f"🏛️ {str(exp['organismo'])[:45]}\n"
+                f"💰 Presupuesto: *{self._clp(exp['presupuesto_estatal_clp'])} CLP*\n"
+                f"📄 Oferta (92%): *{self._clp(eq['oferta_neta_clp'])} + IVA*\n"
+                f"💵 Ganancia: *{self._clp(eq['ganancia_limpia_bolsillo_clp'])} "
+                f"({eq['margen_rentabilidad_pct']}%)*\n"
+                f"🔗 {exp.get('url_portal', '')}"
             )
             lineas.append("----------------------------------------")
+        lineas.append("✅ DOC 1, DOC 2, DOC 3, Excel y adjuntos listos en Drive.")
+        mensaje = "\n".join(lineas)
 
-        lineas.append("✅ _DOC 1, DOC 2 (1 hoja), DOC 3, Excel, Tablero CRM y Adjuntos listos en tu carpeta y Google Drive._")
-        mensaje_final = "\n".join(lineas)
-
-        if WHATSAPP_API_LOCAL:
-            try:
-                r_wa = requests.post(
-                    WHATSAPP_API_LOCAL,
-                    json={"number": WHATSAPP_DESTINO.replace("+", ""), "text": mensaje_final},
-                    timeout=10
-                )
-                if r_wa.status_code in (200, 201):
-                    print("   📲 [WhatsApp] Resumen del lote enviado.")
-                    return
-                print(f"   [!] WhatsApp API respondió HTTP {r_wa.status_code}")
-            except Exception as e:
-                print(f"   [!] WhatsApp no disponible ({e}).")
-        else:
-            print("   ℹ️ WHATSAPP_API_URL no configurada: se omite el envío por WhatsApp.")
-
-        # En un contenedor no hay navegador: se deja el reporte en disco.
+        destinos = list(WHATSAPP_INTERNO) or ([WHATSAPP_DESTINO] if WHATSAPP_DESTINO else [])
+        if destinos and self._enviar_whatsapp(destinos, mensaje) > 0:
+            return
         try:
-            ruta_reporte = os.path.join(CARPETA_ENTREGABLES, f"REPORTE_LOTE_{FECHA_HOY_STR}.txt")
-            with open(ruta_reporte, "w", encoding="utf-8") as f:
-                f.write(mensaje_final)
-            print(f"   📝 Reporte del lote guardado en: {ruta_reporte}")
+            os.makedirs(CARPETA_ENTREGABLES, exist_ok=True)
+            ruta = os.path.join(CARPETA_ENTREGABLES, f"REPORTE_LOTE_{FECHA_HOY_STR}.txt")
+            with open(ruta, "w", encoding="utf-8") as f:
+                f.write(mensaje)
+            print(f"   📝 Reporte del lote guardado en: {ruta}")
         except Exception as e:
             print(f"   [!] No se pudo guardar el reporte del lote: {e}")
 
@@ -4076,6 +4184,8 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None):
                 agente1.registrar_procesado(codigo)
                 cola.pop(codigo, None)
                 _guardar_cola_pendiente(cola)
+                # Aviso al cliente por WhatsApp (sin márgenes) en cuanto está listo
+                agente5.notificar_cliente_whatsapp(expediente, escenarios, estado_nube)
             else:
                 fallidos.append(codigo)
                 _anotar_fallo(cola, codigo, candidato,
