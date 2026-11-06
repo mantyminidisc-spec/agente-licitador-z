@@ -193,6 +193,10 @@ DRIVE_MAX_ARCHIVOS = int(os.getenv("DRIVE_MAX_ARCHIVOS", "40"))
 MAX_BYTES_DESCARGA = int(os.getenv("MAX_BYTES_DESCARGA", str(80 * 1024 * 1024)))
 GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 
+# --- Filtro de giro ----------------------------------------------------------
+# 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
+FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
+
 # --- Servicio OFICIAL de adjuntos de Compra Ágil -----------------------------
 # Es el mismo microservicio que usa la web del buscador (SPA de React). Se
 # descubrió leyendo su bundle:  /v1/adjuntos-compra-agil/listar/{codigo}  y
@@ -420,7 +424,12 @@ def _get_con_reintento(url, headers=None, timeout=45, intentos=2, sesion=None):
     ultimo = None
     for numero in range(1, max(1, intentos) + 1):
         try:
-            return cliente.get(url, headers=headers or {}, timeout=timeout)
+            respuesta = cliente.get(url, headers=headers or {}, timeout=timeout)
+            if getattr(respuesta, "status_code", 0) == 429 and numero < intentos:
+                print("      [!] La API pidió esperar (HTTP 429). Reintentando en 12s...")
+                time.sleep(12)
+                continue
+            return respuesta
         except Exception as e:
             ultimo = e
             if numero < intentos:
@@ -552,10 +561,12 @@ class Agente1Buscador:
             print(f"   [!] Error guardando historial: {e}")
 
     def cumple_filtro_quirurgico(self, texto_evaluar):
-        """
-        Filtro Quirúrgico con Expresiones Regulares con límites exactos (\b...\b).
-        Evita falsos positivos como 'ia' dentro de 'cirugía' o 'terapia', y descarta
-        términos médicos o de obras antes de buscar coincidencias positivas de TI.
+        """Filtro de giro por palabras clave.
+
+        FILTRO_ESTRICTO=1 (por defecto): la lista negra siempre gana, como antes.
+        FILTRO_ESTRICTO=0: si el texto trae una palabra TI explícita (software,
+        página web, chatbot...), se aprueba aunque aparezca un término de la
+        lista negra. El pre-filtro de IA sigue validando después.
         """
         texto_original = (texto_evaluar or "").strip()
         if not texto_original:
@@ -563,19 +574,26 @@ class Agente1Buscador:
 
         texto_norm = _normalizar_para_regex(texto_original)
 
-        # 1. Validación de Lista Negra mediante Expresiones Regulares con límites de palabra exactos (\b...\b)
+        def _coincide(lista):
+            for palabra in lista:
+                patron = rf"\b{re.escape(_normalizar_para_regex(palabra))}\b"
+                if re.search(patron, texto_norm):
+                    return palabra
+            return ""
+
+        palabra_ti = _coincide(self.perfil["palabras_clave_positivas"])
+
+        # Modo permisivo: una señal TI clara gana sobre la lista negra
+        if not FILTRO_ESTRICTO and palabra_ti:
+            return True, palabra_ti
+
         for palabra_negra in self.perfil["lista_negra_exclusiones"]:
-            p_norm = _normalizar_para_regex(palabra_negra)
-            patron = rf"\b{re.escape(p_norm)}\b"
+            patron = rf"\b{re.escape(_normalizar_para_regex(palabra_negra))}\b"
             if re.search(patron, texto_norm):
                 return False, f"Excluido por lista negra ({palabra_negra})"
 
-        # 2. Validación de Palabras Clave Positivas mediante Regex (\b...\b)
-        for palabra_pos in self.perfil["palabras_clave_positivas"]:
-            p_norm = _normalizar_para_regex(palabra_pos)
-            patron = rf"\b{re.escape(p_norm)}\b"
-            if re.search(patron, texto_norm):
-                return True, palabra_pos
+        if palabra_ti:
+            return True, palabra_ti
 
         return False, "No coincide con giro TI/IA/SEO/Ads"
 
