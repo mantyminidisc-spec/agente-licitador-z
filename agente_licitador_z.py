@@ -4078,10 +4078,13 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None):
                 _guardar_cola_pendiente(cola)
             else:
                 fallidos.append(codigo)
+                _anotar_fallo(cola, codigo, candidato,
+                              estado_nube.get("detalle") or "no llegó a Drive")
                 print(f"   ⚠️ {codigo} queda PENDIENTE: no se registra en el historial para reintentarlo.")
         except Exception as e:
             fallidos.append(codigo)
             print(f"   ❌ ERROR procesando {codigo}: {e}")
+            _anotar_fallo(cola, codigo, candidato, f"error: {e}")
             print("   --- traza ---")
             traceback.print_exc()
             print("   -------------")
@@ -4100,6 +4103,181 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None):
     print("================================================================================")
 
 
+# ==============================================================================
+# MANTENIMIENTO POR CONSOLA
+#   python agente_licitador_z.py --estado
+#   python agente_licitador_z.py --historial
+#   python agente_licitador_z.py --pendientes
+#   python agente_licitador_z.py --reprocesar 4160-28-LE26
+#   python agente_licitador_z.py --olvidar 4160-28-LE26
+# ==============================================================================
+def _leer_json_lista(ruta):
+    """Lee una lista JSON sin reventar si el archivo no existe o está corrupto."""
+    if not os.path.exists(ruta):
+        return []
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        return datos if isinstance(datos, list) else []
+    except Exception:
+        return []
+
+
+def _escribir_json_lista(ruta, datos):
+    try:
+        os.makedirs(os.path.dirname(ruta) or ".", exist_ok=True)
+        temporal = ruta + ".tmp"
+        with open(temporal, "w", encoding="utf-8") as f:
+            json.dump(datos, f, indent=2, ensure_ascii=False)
+        os.replace(temporal, ruta)
+        return True
+    except Exception as e:
+        print(f"   [!] No se pudo escribir {os.path.basename(ruta)}: {e}")
+        return False
+
+
+def _anotar_fallo(cola, codigo, candidato, motivo):
+    """Deja en la cola el motivo del fallo y cuántas veces se intentó."""
+    try:
+        entrada = dict(cola.get(codigo) or candidato or {})
+        entrada["codigo"] = codigo
+        entrada["motivo_fallo"] = str(motivo)[:300]
+        entrada["intentos"] = int(entrada.get("intentos") or 0) + 1
+        cola[codigo] = entrada
+        _guardar_cola_pendiente(cola)
+    except Exception as e:
+        print(f"   [!] No se pudo anotar el fallo de {codigo}: {e}")
+
+
+def mostrar_historial():
+    historial = sorted(_leer_json_lista(ARCHIVO_HISTORIAL))
+    print("")
+    print(f"📚 HISTORIAL: {len(historial)} proyecto(s) ya entregados en Drive")
+    print(f"   Archivo: {ARCHIVO_HISTORIAL}")
+    if not historial:
+        print("   (vacío: la próxima corrida procesará todo lo que encuentre)")
+        return
+    for i, codigo in enumerate(historial, 1):
+        print(f"   {i:3}. {codigo}")
+    print("")
+    print("   Para repetir uno:   python agente_licitador_z.py --reprocesar CODIGO")
+
+
+def mostrar_pendientes():
+    cola = _leer_cola_pendiente()
+    print("")
+    print(f"⏳ PENDIENTES: {len(cola)} proyecto(s) en cola")
+    print(f"   Archivo: {ARCHIVO_COLA_PENDIENTE}")
+    if not cola:
+        print("   (nada pendiente: todo lo detectado llegó a Drive)")
+        return
+    for i, cand in enumerate(cola.values(), 1):
+        print(f"   {i:3}. [{cand.get('tipo_portal', '?')}] {cand.get('codigo')}")
+        if cand.get("nombre"):
+            print(f"        {str(cand.get('nombre'))[:90]}")
+        if cand.get("fecha_cierre"):
+            print(f"        cierre : {cand.get('fecha_cierre')}")
+        if cand.get("motivo_fallo"):
+            print(f"        motivo : {str(cand.get('motivo_fallo'))[:150]}")
+        if cand.get("intentos"):
+            print(f"        intentos: {cand.get('intentos')}")
+    print("")
+    print("   Se reintentan solos en la próxima corrida.")
+    print("   Para forzar uno ahora: python agente_licitador_z.py --reprocesar CODIGO")
+
+
+def olvidar_codigo(codigo, tambien_cola=True):
+    codigo = str(codigo or "").strip()
+    if not codigo:
+        print("   [!] Falta el código.")
+        return False
+    tocado = False
+    historial = _leer_json_lista(ARCHIVO_HISTORIAL)
+    if codigo in historial:
+        historial = [c for c in historial if c != codigo]
+        _escribir_json_lista(ARCHIVO_HISTORIAL, sorted(historial))
+        print(f"   ✓ {codigo} quitado del historial (quedan {len(historial)})")
+        tocado = True
+    if tambien_cola:
+        cola = _leer_cola_pendiente()
+        if codigo in cola:
+            cola.pop(codigo, None)
+            _guardar_cola_pendiente(cola)
+            print(f"   ✓ {codigo} quitado de la cola de pendientes")
+            tocado = True
+    if not tocado:
+        print(f"   ℹ️ {codigo} no estaba en el historial ni en la cola")
+    return tocado
+
+
+def mostrar_estado():
+    historial = _leer_json_lista(ARCHIVO_HISTORIAL)
+    cola = _leer_cola_pendiente()
+    print("")
+    print("=" * 72)
+    print(" ESTADO DEL AGENTE LICITAIA")
+    print("=" * 72)
+    print(f"  Carpeta de datos    : {DIRECTORIO_RAIZ}")
+    print(f"  Ticket Mercado Pub. : {'configurado' if TICKET_MERCADO_PUBLICO else 'FALTA'}")
+    print(f"  Modelo Gemini       : {MODELO_GEMINI}"
+          f" ({'con API key' if API_KEY_GEMINI else 'SIN API KEY'})")
+    print(f"  Ya entregados       : {len(historial)}")
+    print(f"  Pendientes          : {len(cola)}")
+    try:
+        total, usado, libre = shutil.disk_usage(DIRECTORIO_RAIZ)
+        print(f"  Disco               : {libre // (1024 ** 3)} GB libres de {total // (1024 ** 3)} GB")
+    except Exception:
+        pass
+    for etiqueta, ruta in (
+        ("Entregables", CARPETA_ENTREGABLES),
+        ("Historial", ARCHIVO_HISTORIAL),
+        ("Cola pendientes", ARCHIVO_COLA_PENDIENTE),
+        ("CRM Maestro", ARCHIVO_CATALOGO_MAESTRO),
+    ):
+        existe = "sí" if os.path.exists(ruta) else "no"
+        print(f"  {etiqueta:<19}: {existe:<3} {ruta}")
+    print("=" * 72)
+    print("  Comandos: --historial  --pendientes  --reprocesar CODIGO  --olvidar CODIGO")
+    print("")
+
+
+def _ayuda():
+    print("""
+==============================================================================
+ GOVILICIT.IA / LICITAIA - Comandos disponibles
+==============================================================================
+  python agente_licitador_z.py                     Corrida normal (busca nuevos)
+  python agente_licitador_z.py 4160-28-LE26        Procesa ESE proyecto (ignora historial)
+  python agente_licitador_z.py --estado            Resumen: procesados, pendientes, disco
+  python agente_licitador_z.py --historial         Lista los ya entregados en Drive
+  python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
+  python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
+  python agente_licitador_z.py --olvidar CODIGO    Solo lo saca de las listas (sin procesar)
+==============================================================================
+""")
+
+
 if __name__ == "__main__":
-    arg_codigo = sys.argv[1] if len(sys.argv) > 1 else None
-    ejecutar_pipeline_6_agentes(arg_codigo)
+    argumentos = [a for a in sys.argv[1:] if str(a).strip()]
+    if not argumentos:
+        ejecutar_pipeline_6_agentes(None)
+    elif argumentos[0] in ("-h", "--help", "--ayuda", "ayuda"):
+        _ayuda()
+    elif argumentos[0] in ("--estado", "estado"):
+        mostrar_estado()
+    elif argumentos[0] in ("--historial", "historial"):
+        mostrar_historial()
+    elif argumentos[0] in ("--pendientes", "pendientes"):
+        mostrar_pendientes()
+    elif argumentos[0] in ("--reprocesar", "reprocesar") and len(argumentos) > 1:
+        print(f"\n🔁 REPROCESANDO: {argumentos[1]}")
+        olvidar_codigo(argumentos[1])
+        ejecutar_pipeline_6_agentes(argumentos[1])
+    elif argumentos[0] in ("--olvidar", "olvidar") and len(argumentos) > 1:
+        print(f"\n🧹 OLVIDANDO: {argumentos[1]}")
+        olvidar_codigo(argumentos[1])
+    elif argumentos[0].startswith("--"):
+        print(f"\n[!] Opción desconocida: {argumentos[0]}")
+        _ayuda()
+    else:
+        ejecutar_pipeline_6_agentes(argumentos[0])
