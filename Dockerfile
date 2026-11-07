@@ -26,9 +26,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Solo lo mínimo: certificados, zona horaria y fuentes base
+# Solo lo mínimo: certificados, zona horaria, fuentes y OCR local (Tesseract)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl tzdata fonts-liberation \
+    tesseract-ocr tesseract-ocr-spa \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

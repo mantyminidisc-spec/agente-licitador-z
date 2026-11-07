@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.7"
+VERSION_LICITAIA = "9.8"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2795,6 +2795,47 @@ Lee y transcribe el contenido completo en formato estructurado."""
               f"{len(salida['excluyentes'])} excluyentes")
         return salida
 
+    def _extraer_texto_ocr(self, ruta_pdf, max_paginas=40):
+        """OCR local con Tesseract: gratis, sin cuota y sin internet.
+
+        Es la vía para los PDF escaneados (EETT, BAE) que no tienen capa de
+        texto: se renderiza cada página y se reconoce el texto en español.
+        """
+        try:
+            import fitz  # pymupdf
+            import pytesseract
+            from PIL import Image
+            from io import BytesIO
+        except Exception as e:
+            print(f"      [!] OCR no disponible en este contenedor: {str(e)[:60]}")
+            return ""
+        try:
+            documento = fitz.open(ruta_pdf)
+        except Exception as e:
+            print(f"      [!] OCR: no se pudo abrir el PDF: {str(e)[:60]}")
+            return ""
+        total = min(len(documento), int(max_paginas))
+        print(f"      🔎 OCR local: {total} página(s) de {os.path.basename(ruta_pdf)[:48]}")
+        partes = []
+        for numero in range(total):
+            try:
+                pagina = documento.load_page(numero)
+                pix = pagina.get_pixmap(dpi=200)
+                imagen = Image.open(BytesIO(pix.tobytes("png")))
+                texto_pagina = pytesseract.image_to_string(imagen, lang="spa")
+                if texto_pagina and texto_pagina.strip():
+                    partes.append(texto_pagina.strip())
+            except Exception as e:
+                print(f"      [!] OCR falló en la página {numero + 1}: {str(e)[:50]}")
+        try:
+            documento.close()
+        except Exception:
+            pass
+        resultado = "\n".join(partes)
+        if resultado:
+            print(f"      ✅ OCR local: {len(resultado)} caracteres recuperados")
+        return resultado
+
     def leer_adjuntos_forense(self, lista_rutas, carpeta_proyecto):
         """
         Proceso forense completo para todos los adjuntos.
@@ -2822,21 +2863,26 @@ Lee y transcribe el contenido completo en formato estructurado."""
             metodo_usado = "ninguno"
 
             if ext == ".pdf":
-                # Prioridad 1: Gemini multimodal (hoja por hoja, tablas incluidas)
-                texto_gemini = self._leer_pdf_con_gemini_multimodal(ruta, nom)
-                if texto_gemini and len(texto_gemini) > 100:
-                    texto_extraido = texto_gemini
-                    metodo_usado = "Gemini-Multimodal"
+                # 1) Texto embebido en el PDF (rapido y sin costo)
+                texto_plumber = self._extraer_texto_pdfplumber(ruta)
+                if texto_plumber and len(texto_plumber) > 1200:
+                    texto_extraido = texto_plumber
+                    metodo_usado = "pdfplumber"
                 else:
-                    # Prioridad 2: pdfplumber (texto + tablas)
-                    texto_plumber = self._extraer_texto_pdfplumber(ruta)
-                    if texto_plumber and len(texto_plumber) > 100:
-                        texto_extraido = texto_plumber
-                        metodo_usado = "pdfplumber"
+                    # 2) OCR local para escaneados (gratis, sin cuota)
+                    texto_ocr = self._extraer_texto_ocr(ruta)
+                    if texto_ocr and len(texto_ocr) > 300:
+                        texto_extraido = texto_ocr
+                        metodo_usado = "OCR local (tesseract)"
                     else:
-                        # Fallback: pypdf
-                        texto_extraido = self._extraer_texto_pypdf(ruta)
-                        metodo_usado = "pypdf"
+                        # 3) IA multimodal, ultima opcion
+                        texto_gemini = self._leer_pdf_con_gemini_multimodal(ruta, nom)
+                        if texto_gemini and len(texto_gemini) > 100:
+                            texto_extraido = texto_gemini
+                            metodo_usado = "Gemini-Multimodal"
+                        else:
+                            texto_extraido = self._extraer_texto_pypdf(ruta)
+                            metodo_usado = "pypdf"
 
             elif ext in [".docx", ".doc"]:
                 texto_extraido = self._extraer_texto_word(ruta)
