@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.8"
+VERSION_LICITAIA = "9.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -474,6 +474,27 @@ def _get_con_reintento(url, headers=None, timeout=45, intentos=2, sesion=None):
                 time.sleep(2 * numero)
     print(f"      [!] Sin respuesta de la API tras {intentos} intento(s): {str(ultimo)[:110]}")
     return None
+
+LEY_MULTAS = """MARCO LEGAL OBLIGATORIO PARA MULTAS Y DEFENSA DEL PROVEEDOR (cita siempre el artículo):
+- DS 661/2024 (Reglamento de la Ley 19.886), Art. 135: las multas, el cobro de garantía y el término anticipado deben estar tipificados de forma clara e inequívoca en las Bases o en el contrato, y ser proporcionales al incumplimiento.
+- Art. 136: las Bases y/o el contrato deben fijar un tope máximo de multas que NUNCA puede superar el 30% del precio total del contrato.
+- Art. 137: prohibida la multa automática o de plano; exige notificación escrita, traslado y plazo prudente para descargos, y resolución fundada tramitada en Gestión de Contratos.
+- Art. 138: el organismo NO puede cobrar multas si mantiene pagos o facturas impagas devengadas en meses anteriores a la exigibilidad de la multa.
+- Art. 139: solo si las multas y garantías no cubren el daño real procede demanda de indemnización en sede judicial.
+- Eximentes: caso fortuito o fuerza mayor (Art. 45 Código Civil) y causas no imputables al proveedor (atrasos de la propia entidad, caída de Mercado Público, falta de accesos o aprobaciones).
+- Impugnación: Recurso de Reposición y, en subsidio, Jerárquico, plazo fatal de 5 días hábiles administrativos (Art. 59 Ley 19.880); plataforma de reclamos de ChileCompra con 5 días hábiles.
+- Ley 21.634: el Tribunal de Contratación Pública también conoce ilegalidades de la etapa de ejecución contractual (multas, cobro de garantías, término anticipado).
+- Registro de Proveedores: las multas ejecutoriadas afectan la calificación de comportamiento contractual (Arts. 154 y 157 DS 661).
+
+REGLAS DE AUDITORÍA ANTI-MULTAS (evalúa cada una; reporta hallazgo, norma, riesgo y acción):
+M-01 Existe tope de multas y es menor o igual al 30% del contrato (Art. 136). Si no existe o supera el 30%, es ALERTA DE ILEGALIDAD.
+M-02 La multa se calcula sobre el monto neto, sobre el total con IVA o sobre el ítem atrasado (Art. 135, proporcionalidad). Si aplica porcentaje sobre el total por atraso de un hito menor, es RIESGO FINANCIERO ALTO.
+M-03 Las causales son objetivas o quedan a juicio exclusivo del organismo (Art. 135, claridad). Si son subjetivas, sugerir pregunta al foro para objetivar el estándar.
+M-04 Desde cuándo corre el plazo: orden de compra, aceptación de la OC o acta de inicio (Art. 135). En TI debe correr desde la entrega de accesos e insumos.
+M-05 Hay notificación previa y plazo de descargos antes de cursar la multa (Art. 137). Si dice multa automática sin trámite, es infracción al debido proceso.
+M-06 Se respetan Reposición y Jerárquico de 5 días hábiles (Art. 137 DS 661 y Art. 59 Ley 19.880). Verificar que no se renuncie anticipadamente a esos recursos.
+M-07 Contempla eximente por atrasos imputables a la entidad o por fuerza mayor (Art. 135 y Art. 45 Código Civil). Recomendar dejar constancia escrita de cada demora de la contraparte.
+M-08 Regula la prohibición de descontar multas cuando hay facturas impagas de meses anteriores (Art. 138). Recordar este escudo financiero en el dossier."""
 
 class Agente0Contexto:
     def __init__(self):
@@ -2751,6 +2772,7 @@ DATOS GENERALES DEL PROCESO:
   Archivos citados: {', '.join(expediente.get('nombres_adjuntos_leidos', []) or ['Ver adjuntos del proyecto'])}
 {expediente.get('informe_forense_adjuntos', expediente.get('texto_extraido_adjuntos', ''))[:7000]}
 
+{LEY_MULTAS}
 ESTRUCTURA DE AUDITORÍA OBLIGATORIA (DEBES DESARROLLAR LAS 7 SECCIONES):
 1. IDENTIFICACIÓN EXACTA DEL COMPRADOR: Analiza la naturaleza institucional del organismo ({organismo}) y su unidad requirente ({unidad_compra}), contextualizando las prioridades de contratación para esta entidad del Estado.
 2. RESUMEN EJECUTIVO Y DE QUÉ TRATA EL PROYECTO: Explicación profunda y técnica del requerimiento, objetivo de la contratación, problemas que resuelve y alcance concreto. IMPORTANTE: Basa este punto 100% en el contenido real de los adjuntos leidos. Cita explicitamente cada archivo adjunto (ej: 'Segun el archivo PLAN DE MEDIOS CONCIENCIA TURISTICA.pdf...') y detalla exactamente los items, cantidades y servicios que pide ese documento. PROHIBIDO inventar items genericos si los adjuntos tienen contenido especifico.
@@ -2795,6 +2817,24 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
       "Riesgo operativo..."
     ],
     "analisis_multas_plazos": "Detalle de multas diarias, causales de cobro y límites contractuales...",
+    
+    "auditoria_multas_ds661": {{
+      "nivel_riesgo_multas": "ALTO",
+      "tope_multas_pct": 30,
+      "reglas": [
+        {{"id": "M-01", "hallazgo": "Cláusula o ausencia detectada en las bases", "norma": "Art. 136 DS 661/2024", "riesgo": "ALTO", "accion": "Acción concreta para el oferente"}},
+        {{"id": "M-02", "hallazgo": "Base de cálculo de la multa", "norma": "Art. 135 DS 661/2024", "riesgo": "MEDIO", "accion": "..."}},
+        {{"id": "M-03", "hallazgo": "...", "norma": "Art. 135 DS 661/2024", "riesgo": "MEDIO", "accion": "..."}},
+        {{"id": "M-04", "hallazgo": "...", "norma": "Art. 135 DS 661/2024", "riesgo": "BAJO", "accion": "..."}},
+        {{"id": "M-05", "hallazgo": "...", "norma": "Art. 137 DS 661/2024", "riesgo": "ALTO", "accion": "..."}},
+        {{"id": "M-06", "hallazgo": "...", "norma": "Art. 137 DS 661/2024 y Art. 59 Ley 19.880", "riesgo": "MEDIO", "accion": "..."}},
+        {{"id": "M-07", "hallazgo": "...", "norma": "Art. 135 DS 661/2024 y Art. 45 Código Civil", "riesgo": "MEDIO", "accion": "..."}},
+        {{"id": "M-08", "hallazgo": "...", "norma": "Art. 138 DS 661/2024", "riesgo": "MEDIO", "accion": "..."}}
+      ],
+      "clausulas_ilegales": ["Cláusula que infringe una norma, citando el artículo vulnerado"],
+      "preguntas_foro": ["Pregunta lista para copiar y pegar en el foro de consultas del proceso"]
+    }},
+
     "garantias_exigidas": "Análisis de boletas de garantía o exención legal bajo 2.000 UTM..."
   }},
   "auditoria_37_normas_ley_19886": {{
@@ -2877,7 +2917,7 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
 """
 
         datos_ia, error_ia = _gemini_generar_json(
-            prompt, temperatura=0.2, max_tokens=8192, timeout=240, intentos=3
+            prompt, temperatura=0.2, max_tokens=16384, timeout=300, intentos=3
         )
         if datos_ia:
             # QA Matemático determinista sobre los 3 escenarios con IVA incluido
@@ -3616,8 +3656,51 @@ class Agente5Entregador:
             tam=7.5,
         )
 
-        # --- 7. Conclusión
-        self._titulo_seccion(doc, 7, "Conclusión y recomendación")
+        # --- 7. Auditoría de multas y defensa del proveedor
+        self._titulo_seccion(doc, 7, "Auditoría de multas y defensa del proveedor (DS 661/2024)")
+        multas = informes.get("auditoria_multas_ds661", {}) or {}
+        self._parrafo(
+            doc,
+            "Revisión de las cláusulas de multa, garantías y debido procedimiento conforme a los "
+            "artículos 135 a 139 del DS 661/2024, la Ley 19.886 y la Ley 19.880.",
+            9,
+            espacio_despues=6,
+        )
+        nivel_multas = str(multas.get("nivel_riesgo_multas") or "SIN INFORMACIÓN").upper()
+        self._parrafo(doc, f"Nivel de riesgo de multas detectado: {nivel_multas}", 9.5,
+                      negrita=True, espacio_despues=6)
+        filas_multas = []
+        for regla in (multas.get("reglas") or [])[:12]:
+            filas_multas.append((
+                str(regla.get("id", "")),
+                str(regla.get("hallazgo", ""))[:190],
+                str(regla.get("norma", ""))[:70],
+                str(regla.get("riesgo", ""))[:12],
+            ))
+        if filas_multas:
+            self._tabla(
+                doc,
+                ["Regla", "Hallazgo en las bases", "Norma aplicable", "Riesgo"],
+                filas_multas,
+                [1.3, 8.6, 4.4, 1.7],
+                alineaciones=["c", "l", "l", "c"],
+                tam=7.5,
+            )
+        ilegales = multas.get("clausulas_ilegales") or []
+        if ilegales:
+            self._parrafo(doc, "Cláusulas que infringen la normativa vigente", 9.5,
+                          negrita=True, espacio_despues=3)
+            for clausula in ilegales[:8]:
+                self._parrafo(doc, f"•  {clausula}", 9, espacio_despues=2)
+        preguntas = multas.get("preguntas_foro") or []
+        if preguntas:
+            self._parrafo(doc, "Preguntas sugeridas para el foro de consultas", 9.5,
+                          negrita=True, espacio_despues=3)
+            for numero_pregunta, pregunta in enumerate(preguntas[:8], 1):
+                self._parrafo(doc, f"{numero_pregunta}.  {pregunta}", 9, espacio_despues=2)
+
+        # --- 8. Conclusión
+        self._titulo_seccion(doc, 8, "Conclusión y recomendación")
         self._parrafo(
             doc,
             f"El procedimiento se considera {'admisible' if str(informes.get('estado_admisibilidad', '')).upper().startswith('APTO') else 'sujeto a verificación'} "
