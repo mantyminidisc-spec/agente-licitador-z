@@ -199,7 +199,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "7.0"
+VERSION_LICITAIA = "7.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4874,12 +4874,34 @@ def _ayuda():
   python agente_licitador_z.py --auto              Modo tarea programada (respeta el horario)
   python agente_licitador_z.py --barrido-final     Barrido profundo ahora (hoy + ayer)
   python agente_licitador_z.py --probar-whatsapp [NUM]  Manda un WhatsApp de prueba
+  python agente_licitador_z.py --limpiar             Borra clones antiguos (ANEXO_CLON, CLON_EXACTO)
   python agente_licitador_z.py --historial         Lista los ya entregados en Drive
   python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
   python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
   python agente_licitador_z.py --olvidar CODIGO    Solo lo saca de las listas (sin procesar)
 ==============================================================================
 """)
+
+
+def limpiar_clones():
+    """Borra los clones de bases que generaban las versiones anteriores."""
+    prefijos = ("ANEXO_CLON_", "CLON_EXACTO_")
+    borrados = 0
+    print("")
+    print("🧹 LIMPIANDO CLONES ANTIGUOS")
+    for raiz, _, archivos in os.walk(CARPETA_ENTREGABLES):
+        for nombre in archivos:
+            if not nombre.upper().startswith(prefijos):
+                continue
+            ruta = os.path.join(raiz, nombre)
+            try:
+                os.remove(ruta)
+                borrados += 1
+                print(f"   borrado: {os.path.relpath(ruta, CARPETA_ENTREGABLES)}")
+            except Exception as e:
+                print(f"   [!] No se pudo borrar {nombre}: {e}")
+    print(f"\n   Total: {borrados} archivo(s) eliminado(s).")
+    return 0
 
 
 def probar_whatsapp(destino=None):
@@ -4924,6 +4946,8 @@ if __name__ == "__main__":
         mostrar_estado()
     elif argumentos[0] in ("--horario", "horario"):
         mostrar_horario()
+    elif argumentos[0] in ("--limpiar", "limpiar"):
+        sys.exit(limpiar_clones())
     elif argumentos[0] in ("--probar-whatsapp", "probar-whatsapp"):
         sys.exit(probar_whatsapp(argumentos[1] if len(argumentos) > 1 else None))
     elif argumentos[0] in ("--auto", "auto"):

@@ -95,6 +95,22 @@ def _archivos(carpeta):
     return salida
 
 
+def _adjuntos(carpeta):
+    """Archivos originales del portal (subcarpeta adjuntos/)."""
+    salida = []
+    ruta_adj = os.path.join(carpeta, "adjuntos")
+    if not os.path.isdir(ruta_adj):
+        return salida
+    for raiz, _, archivos in os.walk(ruta_adj):
+        for nombre in sorted(archivos):
+            if nombre.startswith("."):
+                continue
+            ruta = os.path.join(raiz, nombre)
+            relativo = os.path.relpath(ruta, ruta_adj).replace("\\", "/")
+            salida.append({"nombre": relativo, "bytes": os.path.getsize(ruta)})
+    return salida
+
+
 def _zip_proyecto(carpeta):
     buffer = BytesIO()
     total = 0
@@ -173,6 +189,8 @@ PLANTILLA = """<!DOCTYPE html>
     <p style="margin:18px 0 0"><a class="boton" href="/p/{token}/zip">Descargar todo (ZIP)</a></p>
   </div>
 
+  {bloque_adjuntos}
+
   <div class="tarjeta">
     <h2>Cómo se usa</h2>
     <p style="font-size:13px; line-height:1.6; margin:0">
@@ -195,11 +213,25 @@ PLANTILLA = """<!DOCTYPE html>
 def _pagina(proyecto):
     token = _token(proyecto["_codigo"])
     archivos = _archivos(proyecto["_carpeta"])
+    adjuntos = _adjuntos(proyecto["_carpeta"])
     filas = "".join(
         f'<tr><td><a class="link" href="/p/{token}/f/{quote(a["nombre"])}">{a["nombre"]}</a></td>'
         f'<td class="n">{a["bytes"] // 1024} KB</td></tr>'
         for a in archivos
     ) or '<tr><td colspan="2">Todavía no hay documentos en esta carpeta.</td></tr>'
+    filas_adj = "".join(
+        f'<tr><td><a class="link" href="/p/{token}/a/{quote(a["nombre"])}">{a["nombre"]}</a></td>'
+        f'<td class="n">{a["bytes"] // 1024} KB</td></tr>'
+        for a in adjuntos
+    )
+    bloque_adj = ""
+    if filas_adj:
+        bloque_adj = (
+            '<div class="tarjeta"><h2>Adjuntos originales del portal (' + str(len(adjuntos)) + ')</h2>'
+            '<p style="font-size:12px;color:#6b7280;margin:0 0 10px">'
+            'Documentos oficiales tal como los publicó el organismo (PDF, DOCX, XLSX).</p>'
+            '<table>' + filas_adj + '</table></div>'
+        )
     return PLANTILLA.format(
         token=token,
         codigo=proyecto.get("codigo", ""),
@@ -210,6 +242,7 @@ def _pagina(proyecto):
         oferta=_formato_clp(proyecto.get("oferta_bruta_clp", 0)),
         cierre=proyecto.get("fecha_cierre", "ver ficha"),
         filas=filas,
+        bloque_adjuntos=bloque_adj,
     )
 
 
@@ -269,6 +302,21 @@ class Manejador(BaseHTTPRequestHandler):
                 ruta_archivo = os.path.join(proyecto["_carpeta"], seguro)
                 if not os.path.isfile(ruta_archivo):
                     return self._enviar(404, "<h1>Archivo no encontrado</h1>")
+                with open(ruta_archivo, "rb") as f:
+                    datos = f.read()
+                tipo = "application/octet-stream"
+                if seguro.lower().endswith(".pdf"):
+                    tipo = "application/pdf"
+                return self._enviar(200, datos, tipo,
+                                    {"Content-Disposition": f'attachment; filename="{seguro}"'})
+
+            # /p/<token>/a/<adjunto>  (originales del portal, en adjuntos/)
+            if len(partes) == 4 and partes[2] == "a":
+                pedido = unquote(partes[3])
+                seguro = os.path.basename(pedido)
+                ruta_archivo = os.path.join(proyecto["_carpeta"], "adjuntos", seguro)
+                if not os.path.isfile(ruta_archivo):
+                    return self._enviar(404, "<h1>Adjunto no encontrado</h1>")
                 with open(ruta_archivo, "rb") as f:
                     datos = f.read()
                 tipo = "application/octet-stream"
