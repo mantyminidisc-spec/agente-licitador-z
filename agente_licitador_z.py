@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.7"
+VERSION_LICITAIA = "8.8"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2385,6 +2385,21 @@ class Agente2_5LectorForense:
         return "\n\n".join(partes)
 
     def _leer_pdf_con_gemini_multimodal(self, ruta_pdf, nombre_archivo):
+        # Caché por huella: si el PDF ya se transcribió, no se vuelve a leer
+        try:
+            with open(ruta_pdf, "rb") as _f_cache:
+                _huella = hashlib.sha256(_f_cache.read()).hexdigest()[:32]
+            _dir_cache = os.path.join(DIRECTORIO_RAIZ, "cache_textos")
+            os.makedirs(_dir_cache, exist_ok=True)
+            _ruta_cache = os.path.join(_dir_cache, _huella + ".txt")
+            if os.path.isfile(_ruta_cache):
+                with open(_ruta_cache, encoding="utf-8") as _f_cache:
+                    _texto_guardado = _f_cache.read()
+                if len(_texto_guardado) > 200:
+                    print(f"      ♻️ {nombre_archivo}: transcripción reutilizada (caché)")
+                    return _texto_guardado
+        except Exception:
+            pass
         # PDFs gigantes: se trocean para que Gemini los lea completos
         try:
             _tam_pdf = os.path.getsize(ruta_pdf)
@@ -2471,6 +2486,16 @@ Lee y transcribe el contenido completo en formato estructurado."""
                 txt = r_gen.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
                 if txt:
                     print(f"      ✅ [Agente 2.5 Gemini Multimodal] {len(txt)} chars extraidos de {nombre_archivo}")
+                    try:
+                        with open(ruta_pdf, "rb") as _f_cache:
+                            _huella = hashlib.sha256(_f_cache.read()).hexdigest()[:32]
+                        _dir_cache = os.path.join(DIRECTORIO_RAIZ, "cache_textos")
+                        os.makedirs(_dir_cache, exist_ok=True)
+                        with open(os.path.join(_dir_cache, _huella + ".txt"), "w",
+                                  encoding="utf-8") as _f_cache:
+                            _f_cache.write(txt)
+                    except Exception:
+                        pass
                     return txt
         except Exception as e:
             print(f"      [!] Gemini File API error para {nombre_archivo}: {e}")
