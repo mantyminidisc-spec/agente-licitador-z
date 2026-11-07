@@ -4316,6 +4316,7 @@ class Agente5Entregador:
         for idx, item in enumerate(resultados_lote, 1):
             exp = item["expediente"]
             eq = item["escenarios"]["equilibrado"]
+            enlace_drive = str((item.get("nube") or {}).get("url_carpeta_drive") or "")
             lineas.append(
                 f"*{idx}. [{exp['codigo']}] ({exp['tipo_portal']})*\n"
                 f"📌 {str(exp['nombre'])[:55]}\n"
@@ -4324,7 +4325,8 @@ class Agente5Entregador:
                 f"📄 Oferta (92%): *{self._clp(eq['oferta_neta_clp'])} + IVA*\n"
                 f"💵 Ganancia: *{self._clp(eq['ganancia_limpia_bolsillo_clp'])} "
                 f"({eq['margen_rentabilidad_pct']}%)*\n"
-                f"🔗 {exp.get('url_portal', '')}"
+                + (f"📂 Carpeta: {enlace_drive}\n" if enlace_drive else "")
+                + f"🔗 {exp.get('url_portal', '')}"
             )
             lineas.append("----------------------------------------")
         lineas.append("✅ DOC 1, DOC 2, DOC 3, Excel y adjuntos listos en Drive.")
