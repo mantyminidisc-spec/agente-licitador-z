@@ -35,7 +35,7 @@ ARQUITECTURA ÍNTEGRA DE 6 AGENTES (100% COMPLETA Y MEJORADA):
 4. AGENTE 3 (Auditor de 37 Normas Ley 19.886 & Cotizador IA):
    - Redacta los 4 Informes Ejecutivos de alta dirección y audita las 37 reglas.
 5. AGENTE 4 (QA Matemático & Simulador de 3 Escenarios Financieros):
-   - Calcula Agresivo (86%), Equilibrado (92%) y Conservador (98%) con validación QA.
+   - Calcula Agresivo (86%), Equilibrado (recomendado) y Conservador (98%) con validación QA.
 6. AGENTE 5 (Entregador Corporativo Premium + Tablero CRM Excel + Drive/Email/WA):
    - DOC 1: Dossier Ejecutivo con Banner Corporativo, Tarjetas KPI, Cajas de
      Informes estilizadas y Matriz de 37 Normas con filas cebreadas y badges.
@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.2"
+VERSION_LICITAIA = "9.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -495,6 +495,119 @@ M-05 Hay notificación previa y plazo de descargos antes de cursar la multa (Art
 M-06 Se respetan Reposición y Jerárquico de 5 días hábiles (Art. 137 DS 661 y Art. 59 Ley 19.880). Verificar que no se renuncie anticipadamente a esos recursos.
 M-07 Contempla eximente por atrasos imputables a la entidad o por fuerza mayor (Art. 135 y Art. 45 Código Civil). Recomendar dejar constancia escrita de cada demora de la contraparte.
 M-08 Regula la prohibición de descontar multas cuando hay facturas impagas de meses anteriores (Art. 138). Recordar este escudo financiero en el dossier."""
+
+def _motor_precios(presupuesto, costo_interno=None):
+    """Motor de precios justificado (v9.3) · utilizable por Agente 3 y Agente 4.
+
+    Recorre el rango 78%-99% del tope, estima la probabilidad de adjudicar
+    según el precio de la competencia y elige el punto que maximiza
+    margen x probabilidad, respetando el margen objetivo del cliente.
+    """
+    presupuesto = int(presupuesto or 0)
+    if presupuesto <= 0:
+        presupuesto = 1
+    costo_ratio = max(0.30, min(0.92, float(os.getenv("COSTO_SOBRE_TOPE", "0.62"))))
+    costo = int(costo_interno or round(presupuesto * costo_ratio))
+    peso_precio = max(0.05, min(0.95, float(os.getenv("PESO_PRECIO", "0.40"))))
+    margen_objetivo = max(0.0, min(0.90, float(os.getenv("MARGEN_OBJETIVO", "0.35"))))
+    pct_competencia = max(0.50, min(0.99, float(os.getenv("PCT_COMPETENCIA", "0.85"))))
+    competidores = max(1, int(os.getenv("COMPETIDORES_ESTIMADOS", "3")))
+
+    def _probabilidad(pct):
+        x = (pct_competencia - pct) / 0.035
+        return 1.0 / (1.0 + 2.718281828459045 ** (-x))
+
+    def evaluar(pct):
+        bruto = int(round(presupuesto * pct))
+        neto = int(round(bruto / 1.19))
+        iva = bruto - neto
+        margen = neto - costo
+        margen_pct = (margen / neto * 100.0) if neto else 0.0
+        puntaje_precio = (peso_precio * 100.0) * min(1.0, pct_competencia / pct)
+        puntaje_tecnico = (1.0 - peso_precio) * 100.0
+        prob = _probabilidad(pct)
+        return {
+            "porcentaje_tope": int(round(pct * 100)),
+            "total_bruto_clp": bruto,
+            "neto_clp": neto,
+            "iva_19_clp": iva,
+            "costo_interno_clp": costo,
+            "margen_clp": margen,
+            "margen_pct": round(margen_pct, 1),
+            "puntaje_precio": round(puntaje_precio, 1),
+            "puntaje_estimado": round(puntaje_precio + puntaje_tecnico, 1),
+            "prob_adjudicacion_pct": round(prob * 100, 1),
+            "utilidad_esperada_clp": int(round(margen * prob)),
+        }
+
+    candidatos = [evaluar(p / 100.0) for p in range(78, 100)]
+    indice_eq = max(range(len(candidatos)), key=lambda i: candidatos[i]["utilidad_esperada_clp"])
+    equilibrado = candidatos[indice_eq]
+
+    piso_margen = max(3.0, margen_objetivo * 100.0 * 0.3)
+    indice_ag = max(0, indice_eq - 3)
+    if candidatos[indice_ag]["margen_pct"] < piso_margen:
+        indice_ag = 0
+    agresivo = candidatos[indice_ag]
+
+    indice_co = min(len(candidatos) - 1, indice_eq + 2)
+    if candidatos[indice_co]["prob_adjudicacion_pct"] < 20.0:
+        indice_co = indice_eq
+    conservador = candidatos[indice_co]
+
+    def _justificar(nombre, esc):
+        return (
+            f"{nombre}: oferta del {esc['porcentaje_tope']}% del tope "
+            f"(${esc['total_bruto_clp']:,} CLP con IVA). Margen {esc['margen_pct']}% "
+            f"(${esc['margen_clp']:,} CLP sobre un costo de ${esc['costo_interno_clp']:,} CLP). "
+            f"Puntaje estimado {esc['puntaje_estimado']}/100 y probabilidad de adjudicar "
+            f"{esc['prob_adjudicacion_pct']}%. Supuestos: peso del precio "
+            f"{int(peso_precio*100)}%, competencia al {int(pct_competencia*100)}% del tope, "
+            f"{competidores} oferentes."
+        )
+
+    aviso = ""
+    if equilibrado["margen_pct"] < margen_objetivo * 100.0:
+        aviso = (f" ADVERTENCIA: el margen objetivo de {int(margen_objetivo*100)}% no es "
+                 f"alcanzable en este proceso; el máximo lograble es {equilibrado['margen_pct']}%.")
+
+    agresivo["justificacion"] = _justificar("Oferta competitiva", agresivo) + aviso
+    equilibrado["justificacion"] = _justificar("Oferta recomendada", equilibrado) + aviso
+    conservador["justificacion"] = _justificar("Oferta conservadora", conservador) + aviso
+    for esc in (agresivo, equilibrado, conservador):
+        esc["estrategia"] = esc["justificacion"]
+
+    sensibilidad = []
+    for pct in (0.80, 0.84, 0.88, 0.92, 0.96, 0.99):
+        e = evaluar(pct)
+        sensibilidad.append({
+            "porcentaje_tope": e["porcentaje_tope"],
+            "total_bruto_clp": e["total_bruto_clp"],
+            "margen_pct": e["margen_pct"],
+            "margen_clp": e["margen_clp"],
+            "puntaje_estimado": e["puntaje_estimado"],
+            "prob_adjudicacion_pct": e["prob_adjudicacion_pct"],
+        })
+
+    return {
+        "presupuesto_oficial_tope_bruto_clp": presupuesto,
+        "neto_maximo_oficial_clp": int(round(presupuesto / 1.19)),
+        "costo_interno_clp": costo,
+        "parametros": {
+            "costo_sobre_tope": costo_ratio,
+            "margen_objetivo_pct": round(margen_objetivo * 100, 1),
+            "peso_precio_pct": round(peso_precio * 100, 1),
+            "pct_competencia": round(pct_competencia * 100, 1),
+            "competidores_estimados": competidores,
+        },
+        "escenario_1_competitivo_agresivo": agresivo,
+        "escenario_2_equilibrado_recomendado": equilibrado,
+        "escenario_3_premium_alta_gama": conservador,
+        "sensibilidad": sensibilidad,
+        "regla_calculo": ("Recorre 78%-99% del tope; estima probabilidad de adjudicar según el "
+                          "precio de la competencia y maximiza margen x probabilidad."),
+    }
+
 
 class Agente0Contexto:
     def __init__(self):
@@ -2261,6 +2374,7 @@ class Agente2Extractor:
             "origen_presupuesto": origen_presupuesto,
             "adjuntos_locales": adjuntos_descargados,
             "texto_extraido_adjuntos": texto_adjuntos,
+            "resumenes_documentos": (resultado_forense or {}).get("resumenes_documentos", []),
             "informe_forense_adjuntos": informe_forense if 'informe_forense' in dir() else texto_adjuntos,
             "nombres_adjuntos_leidos": nombres_adjuntos_leidos if 'nombres_adjuntos_leidos' in dir() else [],
             "firmas_y_anexos": info_firmas,
@@ -2748,147 +2862,39 @@ class Agente3AuditorCotizador:
         self.perfil = perfil
 
     def _calcular_escenarios_iva_incluido(self, presupuesto, costo_interno=None):
-        """Motor de precios justificado (v9.1).
+        """Delega en el motor de precios común (v9.3)."""
+        return _motor_precios(presupuesto, costo_interno)
 
-        Antes los tres escenarios eran tres porcentajes escritos a mano
-        (83%, 92%, 98%) sin ninguna razón. Ahora el precio se DEDUCE de:
-          1. el costo interno del proyecto,
-          2. el margen objetivo del cliente (MARGEN_OBJETIVO),
-          3. cuánto pesa el precio en la evaluación (PESO_PRECIO),
-          4. el precio al que se estima la competencia (PCT_COMPETENCIA).
-        Y cada escenario viene con su justificación numérica.
+    def _auditoria_multas(self, expediente):
+        """Segunda llamada enfocada: solo multas y defensa del proveedor (DS 661/2024).
+
+        El esquema grande a veces omite esta sección (el modelo prioriza el resto),
+        así que cuando falta se pide aparte con el texto de las bases.
         """
-        presupuesto = int(presupuesto or 0)
-        if presupuesto <= 0:
-            presupuesto = 1
-        neto_maximo_oficial = int(round(presupuesto / 1.19))
-
-        # Costo interno: si no viene informado se estima sobre la estructura
-        # histórica de la empresa (25,4% del presupuesto, igual que antes).
-        costo_ratio = max(0.30, min(0.92, float(os.getenv("COSTO_SOBRE_TOPE", "0.62"))))
-        costo = int(costo_interno or round(presupuesto * costo_ratio))
-
-        peso_precio = max(0.05, min(0.95, float(os.getenv("PESO_PRECIO", "0.40"))))
-        margen_objetivo = max(0.0, min(0.90, float(os.getenv("MARGEN_OBJETIVO", "0.35"))))
-        pct_competencia = max(0.50, min(0.99, float(os.getenv("PCT_COMPETENCIA", "0.85"))))
-        competidores = max(1, int(os.getenv("COMPETIDORES_ESTIMADOS", "3")))
-
-        def _probabilidad(pct):
-            """Probabilidad de adjudicar según la distancia al precio de la competencia.
-
-            Logística: si ofertas igual que la competencia estimada, 50%; si ofertas
-            5 puntos más barato, ~80%; si ofertas 10 puntos más caro, ~5%.
-            """
-            x = (pct_competencia - pct) / 0.035
-            return 1.0 / (1.0 + 2.718281828459045 ** (-x))
-
-        def evaluar(pct):
-            bruto = int(round(presupuesto * pct))
-            neto = int(round(bruto / 1.19))
-            iva = bruto - neto
-            margen = neto - costo
-            margen_pct = (margen / neto * 100.0) if neto else 0.0
-            puntaje_precio = (peso_precio * 100.0) * min(1.0, pct_competencia / pct)
-            puntaje_tecnico = (1.0 - peso_precio) * 100.0  # se asume cumplimiento técnico pleno
-            puntaje_total = puntaje_precio + puntaje_tecnico
-            prob = _probabilidad(pct)
-            utilidad_esperada = margen * prob
-            return {
-                "porcentaje_tope": int(round(pct * 100)),
-                "total_bruto_clp": bruto,
-                "neto_clp": neto,
-                "iva_19_clp": iva,
-                "costo_interno_clp": costo,
-                "margen_clp": margen,
-                "margen_pct": round(margen_pct, 1),
-                "puntaje_precio": round(puntaje_precio, 1),
-                "puntaje_estimado": round(puntaje_total, 1),
-                "prob_adjudicacion_pct": round(prob * 100, 1),
-                "utilidad_esperada_clp": int(round(utilidad_esperada)),
-            }
-
-        # Candidatos: del 78% al 99% del tope, un punto porcentual cada uno
-        candidatos = [evaluar(p / 100.0) for p in range(78, 100)]
-
-        # El recomendado es el que maximiza margen x probabilidad de adjudicar
-        indice_eq = max(range(len(candidatos)),
-                        key=lambda i: candidatos[i]["utilidad_esperada_clp"])
-        equilibrado = candidatos[indice_eq]
-
-        # Agresivo: tres puntos más abajo (si conserva margen positivo), si no el mínimo viable
-        piso_margen = max(3.0, margen_objetivo * 100.0 * 0.3)
-        indice_ag = max(0, indice_eq - 3)
-        if candidatos[indice_ag]["margen_pct"] < piso_margen:
-            indice_ag = 0
-        agresivo = candidatos[indice_ag]
-
-        # Conservador: dos puntos más arriba, siempre que mantenga opción real de ganar
-        indice_co = min(len(candidatos) - 1, indice_eq + 2)
-        if candidatos[indice_co]["prob_adjudicacion_pct"] < 20.0:
-            indice_co = indice_eq
-        conservador = candidatos[indice_co]
-
-        def _justificar(nombre, esc, referencia):
-            diferencia = esc["margen_clp"] - referencia["margen_clp"]
-            signo = "+" if diferencia >= 0 else "-"
-            return (
-                f"{nombre} ({esc['porcentaje_tope']}% del tope = ${esc['total_bruto_clp']:,} CLP con IVA). "
-                f"Margen resultante {esc['margen_pct']}% (${esc['margen_clp']:,} CLP sobre un costo de "
-                f"${esc['costo_interno_clp']:,} CLP). Puntaje estimado {esc['puntaje_estimado']}/100 "
-                f"y probabilidad de adjudicar {esc['prob_adjudicacion_pct']}%. "
-                f"Frente al escenario recomendado el margen cambia en {signo}${abs(diferencia):,} CLP. "
-                f"Supuestos: peso del precio {int(peso_precio*100)}%, competencia ofertando cerca del "
-                f"{int(pct_competencia*100)}% del tope y {competidores} oferentes."
-            )
-
-        _aviso = ""
-        if equilibrado["margen_pct"] < margen_objetivo * 100.0:
-            _aviso = (f" ADVERTENCIA: con este presupuesto el margen objetivo de "
-                      f"{int(margen_objetivo*100)}% no es alcanzable; el máximo lograble en el "
-                      f"escenario recomendado es {equilibrado['margen_pct']}%.")
-        agresivo["estrategia"] = _justificar("Oferta competitiva (maximiza opción de ganar)", agresivo, equilibrado)
-        equilibrado["estrategia"] = _justificar("Oferta recomendada (mejor margen esperado)", equilibrado, equilibrado) + _aviso
-        conservador["estrategia"] = _justificar("Oferta conservadora (prioriza rentabilidad)", conservador, equilibrado) + _aviso
-
-        sensibilidad = []
-        for pct in (0.80, 0.84, 0.88, 0.92, 0.96, 0.99):
-            e = evaluar(pct)
-            sensibilidad.append({
-                "porcentaje_tope": e["porcentaje_tope"],
-                "total_bruto_clp": e["total_bruto_clp"],
-                "margen_pct": e["margen_pct"],
-                "margen_clp": e["margen_clp"],
-                "puntaje_estimado": e["puntaje_estimado"],
-                "prob_adjudicacion_pct": e["prob_adjudicacion_pct"],
-                "utilidad_esperada_clp": e["utilidad_esperada_clp"],
-            })
-
-        print(f"   ✓ Costo interno base  : ${costo:,} CLP")
-        print(f"   ✓ Parámetros          : margen objetivo {int(margen_objetivo*100)}% · "
-              f"peso precio {int(peso_precio*100)}% · competencia al {int(pct_competencia*100)}% "
-              f"({competidores} oferentes)")
-
-        return {
-            "presupuesto_oficial_tope_bruto_clp": presupuesto,
-            "neto_maximo_oficial_clp": neto_maximo_oficial,
-            "regla_iva": "En el Estado de Chile el presupuesto oficial publicado ya incluye el 19% de IVA (Tope Total Bruto)",
-            "costo_interno_clp": costo,
-            "parametros": {
-                "margen_objetivo_pct": round(margen_objetivo * 100, 1),
-                "peso_precio_pct": round(peso_precio * 100, 1),
-                "pct_competencia": round(pct_competencia * 100, 1),
-                "competidores_estimados": competidores,
-            },
-            "escenario_1_competitivo_agresivo": agresivo,
-            "escenario_2_equilibrado_recomendado": equilibrado,
-            "escenario_3_premium_alta_gama": conservador,
-            "sensibilidad": sensibilidad,
-            "regla_calculo": (
-                "El precio no se fija a mano: se recorre el rango 78%-99% del tope, se estima la "
-                "probabilidad de adjudicar según el precio de la competencia y se elige el punto que "
-                "maximiza margen x probabilidad, respetando el margen objetivo."
-            ),
-        }
+        texto = (expediente.get("informe_forense_adjuntos")
+                 or expediente.get("texto_extraido_adjuntos") or "")
+        texto = texto[:30000]
+        if len(texto.strip()) < 300:
+            return {}
+        prompt = (
+            LEY_MULTAS
+            + "\n\nDevuelve SOLO JSON válido, sin markdown, con esta forma exacta:\n"
+            '{"nivel_riesgo_multas": "ALTO", "tope_multas_pct": 0, '
+            '"reglas": [{"id": "M-01", "hallazgo": "...", "norma": "Art. 136 DS 661/2024", '
+            '"riesgo": "ALTO", "accion": "..."}], '
+            '"clausulas_ilegales": ["..."], "preguntas_foro": ["..."]}\n'
+            "Incluye las 8 reglas (M-01 a M-08). Si algo no está en las bases, dilo explícitamente.\n\n"
+            f"BASES DEL PROCESO {expediente.get('codigo', '')}:\n{texto}"
+        )
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=4000,
+                                            timeout=240, intentos=2)
+        if not datos:
+            print(f"   [!] Auditoría de multas sin respuesta: {str(error)[:70]}")
+            return {}
+        reglas = datos.get("reglas") or []
+        print(f"   ✓ [Agente 3] Auditoría de multas DS 661 completada "
+              f"({len(reglas)} reglas · riesgo {datos.get('nivel_riesgo_multas', '?')})")
+        return datos
 
     def auditar_y_redactar_4_informes(self, expediente):
         print(f"\n🧠 [AGENTE 3] MOTOR CONSULTOR SENIOR EN CONTRATACIÓN PÚBLICA (LEY 19.886 / DS 661 / LEY 21.634)...")
@@ -3086,6 +3092,11 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
                 datos_ia["plazo_entrega_dias_habiles"] = 15
             print(f"   ✓ [Agente 3] Auditoría SENIOR con IA completada "
                   f"(Admisibilidad: {datos_ia.get('estado_admisibilidad', 'APTO')})")
+            if not datos_ia.get("auditoria_multas_ds661"):
+                try:
+                    datos_ia["auditoria_multas_ds661"] = self._auditoria_multas(expediente) or {}
+                except Exception:
+                    datos_ia["auditoria_multas_ds661"] = {}
             return datos_ia
 
         print(f"   ⚠️ [Agente 3] Gemini NO respondió: {error_ia}")
@@ -3169,7 +3180,7 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
                 f"✅ *Admisibilidad:* APTO (Ley 19.886 / DS 661)\n"
                 f"📈 *Éxito Estimado:* 95%\n"
                 f"💰 *Tope Bruto Oficial:* ${presupuesto:,} CLP\n"
-                f"🎯 *Oferta Rec. (92%):* ${esc2['total_bruto_clp']:,} CLP Bruto\n"
+                f"🎯 *Oferta Rec. (recomendado):* ${esc2['total_bruto_clp']:,} CLP Bruto\n"
                 f"💵 *Neto:* ${esc2['neto_clp']:,} + IVA: ${esc2['iva_19_clp']:,}\n"
                 f"📌 *Visita Terreno:* Voluntaria\n"
                 f"Normas: NCh 2728 / ISO 27001"
@@ -3197,7 +3208,7 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
                 f"• TOPE BRUTO MÁXIMO: ${presupuesto:,} CLP (Neto Máximo Permitido: ${estudio_base['neto_maximo_oficial_clp']:,} CLP).\n"
                 f"• 3 PROPUESTAS ECONÓMICAS ESTRATÉGICAS (CON IVA INCLUIDO):\n"
                 f"  1. Opción Competitiva / Agresiva (83%): Total Bruto ${esc1['total_bruto_clp']:,} CLP (Neto: ${esc1['neto_clp']:,} + IVA: ${esc1['iva_19_clp']:,})\n"
-                f"  2. Opción Equilibrada / Recomendada (92%): Total Bruto ${esc2['total_bruto_clp']:,} CLP (Neto: ${esc2['neto_clp']:,} + IVA: ${esc2['iva_19_clp']:,})\n"
+                f"  2. Opción Equilibrada / Recomendada (recomendado): Total Bruto ${esc2['total_bruto_clp']:,} CLP (Neto: ${esc2['neto_clp']:,} + IVA: ${esc2['iva_19_clp']:,})\n"
                 f"  3. Opción Premium / Alta Gama (98%): Total Bruto ${esc3['total_bruto_clp']:,} CLP (Neto: ${esc3['neto_clp']:,} + IVA: ${esc3['iva_19_clp']:,})\n"
                 f"• MULTAS: Multa diaria estándar de 1% por atrasos no justificados con tope del 10% del contrato."
             ),
@@ -3243,29 +3254,29 @@ class Agente4IngenieriaFinanciera:
         # 1. Opción 1: Agresivo al 83% (rango 82%-85%)
         # 2. Opción 2: Equilibrado al 92% (rango 90%-93%)
         # 3. Opción 3: Premium / Conservador al 98% (rango 97%-99%, jamás superando el 100% oficial)
+        # --- P57: motor de precios justificado también en el Agente 4
+        _motor = _motor_precios(presupuesto, costo_interno_total)
         definicion_escenarios = [
-            ("agresivo", "Escenario 1: Agresivo / Competitivo (83% del Tope con IVA)", 0.83),
-            ("equilibrado", "Escenario 2: Equilibrado / Recomendado Ganador (92% del Tope con IVA)", 0.92),
-            ("conservador", "Escenario 3: Premium / Alta Gama (98% del Tope con IVA)", 0.98)
+            ("agresivo", "Escenario 1: Competitivo", _motor["escenario_1_competitivo_agresivo"]),
+            ("equilibrado", "Escenario 2: Recomendado", _motor["escenario_2_equilibrado_recomendado"]),
+            ("conservador", "Escenario 3: Conservador", _motor["escenario_3_premium_alta_gama"]),
         ]
 
         escenarios = {}
-        for clave, titulo, factor in definicion_escenarios:
-            total_bruto = int(round(presupuesto * factor))
-            oferta_neta = int(round(total_bruto / 1.19))
-            iva_19 = total_bruto - oferta_neta
+        for clave, titulo, calc in definicion_escenarios:
+            total_bruto = calc["total_bruto_clp"]
+            oferta_neta = calc["neto_clp"]
+            iva_19 = calc["iva_19_clp"]
             ganancia_limpia = oferta_neta - costo_interno_total
             margen_pct = round((ganancia_limpia / oferta_neta) * 100, 1) if oferta_neta > 0 else 0.0
             roi_pct = round((ganancia_limpia / costo_interno_total) * 100, 1) if costo_interno_total > 0 else 0.0
 
-            # QA Matemático estricto:
             assert oferta_neta + iva_19 == total_bruto, "Error QA en suma exacta de IVA"
-            assert total_bruto <= presupuesto, f"Error QA: La oferta bruta ({total_bruto}) supera el presupuesto oficial ({presupuesto})"
-            assert oferta_neta - costo_interno_total == ganancia_limpia, "Error QA en utilidad neta"
+            assert total_bruto <= presupuesto, "Error QA: la oferta supera el presupuesto oficial"
 
             escenarios[clave] = {
-                "titulo": titulo,
-                "porcentaje_presupuesto": int(factor * 100),
+                "titulo": f"{titulo} ({calc['porcentaje_tope']}% del tope)",
+                "porcentaje_presupuesto": calc["porcentaje_tope"],
                 "oferta_neta_clp": oferta_neta,
                 "iva_19_clp": iva_19,
                 "oferta_total_bruta_clp": total_bruto,
@@ -3275,12 +3286,18 @@ class Agente4IngenieriaFinanciera:
                 "costo_imprevistos_clp": costo_gestion_imprevistos,
                 "ganancia_limpia_bolsillo_clp": ganancia_limpia,
                 "margen_rentabilidad_pct": margen_pct,
-                "roi_pct": roi_pct
+                "roi_pct": roi_pct,
+                "prob_adjudicacion_pct": calc["prob_adjudicacion_pct"],
+                "puntaje_estimado": calc["puntaje_estimado"],
+                "justificacion": calc["justificacion"],
+                "estrategia": calc["justificacion"],
             }
 
+        # Se deja disponible para DOC 1 / DOC 3
+        _escenarios_justificados = _motor
         eq = escenarios["equilibrado"]
         print(f"   ✓ Presupuesto Entidad : ${presupuesto:,} CLP (Tope Bruto Oficial con IVA)")
-        print(f"   ✓ Oferta DOC 2 (92%)  : ${eq['oferta_total_bruta_clp']:,} CLP Bruto (Neto: ${eq['oferta_neta_clp']:,} + IVA: ${eq['iva_19_clp']:,})")
+        print(f"   ✓ Oferta DOC 2 (recomendado)  : ${eq['oferta_total_bruta_clp']:,} CLP Bruto (Neto: ${eq['oferta_neta_clp']:,} + IVA: ${eq['iva_19_clp']:,})")
         print(f"   ✓ Costo Interno Total : ${costo_interno_total:,} CLP")
         print(f"   ✓ Ganancia de Bolsillo: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP (Margen: {eq['margen_rentabilidad_pct']}%)")
         return escenarios
@@ -3657,7 +3674,7 @@ class Agente5Entregador:
         # --- Indicadores principales (sin recuadros de colores fuertes)
         indicadores = [
             ("Presupuesto oficial", self._clp(presupuesto), "IVA incluido"),
-            ("Oferta recomendada", self._clp(eq.get("oferta_total_bruta_clp", 0)), "92% del tope"),
+            ("Oferta recomendada", self._clp(eq.get("oferta_total_bruta_clp", 0)), "del tope recomendado"),
             ("Ganancia estimada", self._clp(eq.get("ganancia_limpia_bolsillo_clp", 0)),
              f"margen {eq.get('margen_rentabilidad_pct', 0)}%"),
             ("Admisibilidad", str(informes.get("estado_admisibilidad", "Por verificar")),
@@ -4363,7 +4380,7 @@ class Agente5Entregador:
             "ORGANISMO COMPRADOR",
             "FECHA CIERRE",
             "PRESUPUESTO ESTADO (CLP)",
-            "OFERTA DOC 2 NETA (92%)",
+            "OFERTA DOC 2 NETA (recomendado)",
             "IVA 19% (CLP)",
             "TOTAL OFERTA BRUTO",
             "COSTO INTERNO (CLP)",
@@ -4730,7 +4747,7 @@ class Agente5Entregador:
                 <td style="padding: 12px; text-align: right; font-weight: bold; font-size: 15px;">${expediente['presupuesto_estatal_clp']:,} CLP</td>
               </tr>
               <tr style="border-bottom: 1px solid #e2e8f0;">
-                <td style="padding: 12px;"><b>📄 Oferta Oficial DOC 2 (92%):</b></td>
+                <td style="padding: 12px;"><b>📄 Oferta Oficial DOC 2 (recomendado):</b></td>
                 <td style="padding: 12px; text-align: right; font-weight: bold; color: #2563eb; font-size: 15px;">${eq['oferta_neta_clp']:,} CLP + IVA (${eq['oferta_total_bruta_clp']:,} Total)</td>
               </tr>
               <tr style="background: #ecfdf5;">
@@ -4964,7 +4981,7 @@ class Agente5Entregador:
                 f"📌 {str(exp['nombre'])[:55]}\n"
                 f"🏛️ {str(exp['organismo'])[:45]}\n"
                 f"💰 Presupuesto: *{self._clp(exp['presupuesto_estatal_clp'])} CLP*\n"
-                f"📄 Oferta (92%): *{self._clp(eq['oferta_neta_clp'])} + IVA*\n"
+                f"📄 Oferta (recomendado): *{self._clp(eq['oferta_neta_clp'])} + IVA*\n"
                 f"💵 Ganancia: *{self._clp(eq['ganancia_limpia_bolsillo_clp'])} "
                 f"({eq['margen_rentabilidad_pct']}%)*\n"
                 + (f"📂 Carpeta: {enlace_drive}\n" if enlace_drive else "")
