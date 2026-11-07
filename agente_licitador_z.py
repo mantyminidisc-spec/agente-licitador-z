@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.8"
+VERSION_LICITAIA = "9.9"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3089,7 +3089,7 @@ DATOS GENERALES DEL PROCESO:
 - DESCRIPCIÓN DE BASES / GLOSA: {expediente['descripcion']}
 - ADJUNTOS OFICIALES LEIDOS (INFORME FORENSE COMPLETO DEL AGENTE 2.5):
   Archivos citados: {', '.join(expediente.get('nombres_adjuntos_leidos', []) or ['Ver adjuntos del proyecto'])}
-{expediente.get('informe_forense_adjuntos', expediente.get('texto_extraido_adjuntos', ''))[:7000]}
+{expediente.get('informe_forense_adjuntos', expediente.get('texto_extraido_adjuntos', ''))[:int(os.getenv('MAX_TEXTO_PROMPT', '24000'))]}
 
 {LEY_MULTAS}
 ESTRUCTURA DE AUDITORÍA OBLIGATORIA (DEBES DESARROLLAR LAS 7 SECCIONES):
