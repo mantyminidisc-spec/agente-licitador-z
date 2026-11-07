@@ -204,6 +204,12 @@ MAX_BYTES_DESCARGA = int(os.getenv("MAX_BYTES_DESCARGA", str(80 * 1024 * 1024)))
 GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 
 # Ritmo máximo hacia Gemini: la capa gratuita responde 429 si se llama muy seguido
+# Proveedor de IA: gemini (por defecto) u openai (DeepSeek, Groq, OpenRouter...)
+PROVEEDOR_IA = os.getenv("PROVEEDOR_IA", "gemini").strip().lower()
+IA_BASE_URL = os.getenv("IA_BASE_URL", "https://api.groq.com/openai/v1").strip()
+IA_API_KEY = os.getenv("IA_API_KEY", "").strip()
+IA_MODELO = os.getenv("IA_MODELO", "llama-3.3-70b-versatile").strip()
+
 PAUSA_MINIMA_IA = float(os.getenv("PAUSA_MINIMA_IA", "5"))
 MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 
@@ -211,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.6"
+VERSION_LICITAIA = "9.7"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -322,6 +328,82 @@ _ULTIMA_LLAMADA_IA = [0.0]
 _FALLOS_CUOTA = [0]
 
 
+def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3):
+    """Llamada a un proveedor compatible con OpenAI (DeepSeek, Groq, OpenRouter...).
+
+    Devuelve (dict, "") o (None, motivo). Misma lógica de reintentos que Gemini.
+    """
+    if not IA_API_KEY:
+        return None, "IA_API_KEY no configurada"
+    url = IA_BASE_URL.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": IA_MODELO,
+        "messages": [
+            {"role": "system",
+             "content": "Eres un consultor experto en contratacion publica chilena. "
+                        "Respondes SIEMPRE con JSON valido, sin markdown."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperatura,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    cabeceras = {
+        "Authorization": f"Bearer {IA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    ultimo = "sin intentos"
+    for n in range(1, max(1, intentos) + 1):
+        _faltante = PAUSA_MINIMA_IA - (time.time() - _ULTIMA_LLAMADA_IA[0])
+        if _faltante > 0:
+            time.sleep(_faltante)
+        _ULTIMA_LLAMADA_IA[0] = time.time()
+        try:
+            r = requests.post(url, json=payload, headers=cabeceras,
+                              timeout=timeout or GEMINI_TIMEOUT)
+            if r.status_code != 200:
+                detalle = (r.text or "")[:220].replace("\n", " ")
+                ultimo = f"HTTP {r.status_code} ({IA_MODELO}): {detalle}"
+                if r.status_code == 429:
+                    _FALLOS_CUOTA[0] += 1
+                    espera = min(35 * n, 120)
+                elif r.status_code in (500, 502, 503, 504):
+                    espera = min(25 * n, 70)
+                else:
+                    espera = 0
+                if espera and n < intentos:
+                    print(f"      [!] {IA_MODELO} saturado (HTTP {r.status_code}); "
+                          f"reintentando en {espera}s...")
+                    time.sleep(espera)
+                    continue
+            else:
+                _FALLOS_CUOTA[0] = 0
+                datos = r.json()
+                contenido = ((datos.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                contenido = contenido.strip()
+                if not contenido:
+                    ultimo = "respuesta vacía del proveedor"
+                else:
+                    contenido = re.sub(r"^\s*```(?:json)?|```\s*$", "", contenido,
+                                       flags=re.IGNORECASE).strip()
+                    try:
+                        return json.loads(contenido), ""
+                    except Exception as e_json:
+                        i = contenido.find("{")
+                        j = contenido.rfind("}")
+                        if i >= 0 and j > i:
+                            try:
+                                return json.loads(contenido[i:j + 1]), ""
+                            except Exception:
+                                pass
+                        ultimo = f"JSON inválido ({e_json}) largo={len(contenido)}"
+        except Exception as e_red:
+            ultimo = f"excepción de red: {e_red}"
+        if n < intentos:
+            time.sleep(min(3 * n, 15))
+    return None, ultimo
+
+
 def _ia_limite_alcanzado():
     """True si Gemini ya rechazó varias veces por cuota en esta corrida."""
     return _FALLOS_CUOTA[0] >= MAX_FALLOS_CUOTA
@@ -334,6 +416,8 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
     json.loads fallaba y TODOS los agentes caían en silencio al texto genérico.
     Aquí el fallo se informa y se reintenta.
     """
+    if PROVEEDOR_IA == "openai":
+        return _generar_json_openai(prompt, temperatura, max_tokens, timeout, intentos)
     if not API_KEY_GEMINI:
         return None, "GEMINI_API_KEY no configurada en el entorno"
     modelos = [MODELO_GEMINI]
