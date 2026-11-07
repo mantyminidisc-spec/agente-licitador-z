@@ -199,7 +199,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "7.2"
+VERSION_LICITAIA = "7.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4885,10 +4885,10 @@ def _ayuda():
 
 
 def diagnostico_visor(codigo):
-    """Inspecciona el visor de anexos desde dentro del contenedor."""
+    """Inspecciona el visor de anexos probando variantes del token y del referer."""
     codigo = str(codigo or "").strip()
     print("")
-    print(f"🔍 DIAGNÓSTICO DEL VISOR DE ANEXOS · {codigo}")
+    print(f"🔍 DIAGNÓSTICO DEL VISOR · {codigo}")
     sesion = _crear_sesion_api()
     url_ficha = ("https://www.mercadopublico.cl/Procurement/Modules/RFB/"
                  f"DetailsAcquisition.aspx?idlicitacion={codigo}")
@@ -4897,42 +4897,64 @@ def diagnostico_visor(codigo):
     except Exception as e:
         print(f"   [x] ficha: {e}")
         return 1
-    print(f"   ficha       : HTTP {r.status_code} · {len(r.text or '')} chars")
-    tokens = re.findall(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>]+)", r.text or "", re.I)
-    print(f"   tokens enc  : {len(tokens)}")
-    if not tokens:
-        print("   [!] La ficha no expone el visor. Puede que los anexos estén enlazados directo.")
-        return 1
-    url_visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
-                 f"ViewAttachmentLC.aspx?enc={tokens[0]}")
-    try:
-        rv = sesion.get(url_visor, headers={"Referer": url_ficha}, timeout=45, allow_redirects=True)
-    except Exception as e:
-        print(f"   [x] visor: {e}")
-        return 1
-    texto = rv.text or ""
-    print(f"   visor       : HTTP {rv.status_code} · {len(texto)} chars")
-    print(f"   URL final   : {str(getattr(rv, 'url', ''))[:110]}")
-    for marca in ("captcha", "ingrese el texto", "seleccionar todos", "__viewstate",
-                  'type="image"', "ver adjuntos", "onclick"):
-        print(f"     ¿{marca}?: {marca.lower() in texto.lower()}")
-    ruta = os.path.join(DIRECTORIO_RAIZ, f"visor_{codigo}.html")
-    try:
-        with open(ruta, "w", encoding="utf-8") as f:
-            f.write(texto)
-        print(f"   HTML guardado: {ruta}")
-    except Exception as e:
-        print(f"   [!] No se pudo guardar el HTML: {e}")
-    filas = re.findall(r"<tr[^>]*>(.*?)</tr>", texto, re.I | re.S)
-    print(f"   filas tabla : {len(filas)}")
-    for fila in filas[:8]:
-        limpio = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " | ", fila)).strip()
-        if limpio:
-            print(f"     · {limpio[:140]}")
-    print("")
-    print("   Copia este resultado completo y lo analizamos.")
-    return 0
+    html = r.text or ""
+    url_real = str(getattr(r, "url", url_ficha))
+    print(f"   ficha       : HTTP {r.status_code} · {len(html)} chars")
+    print(f"   ficha final : {url_real[:110]}")
 
+    tokens = re.findall(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>]+)", html, re.I)
+    print(f"   tokens enc  : {len(tokens)}")
+    if tokens:
+        pos = html.lower().find("viewattachment")
+        fragmento = re.sub(r"\s+", " ", html[max(0, pos - 220):pos + 300])
+        print(f"   contexto    : ...{fragmento}...")
+
+    postbacks = sorted(set(re.findall(r"__doPostBack\('([^']+)'", html)))
+    interes = [p for p in postbacks if re.search(r"anex|adjunt|attach|docum", p, re.I)]
+    print(f"   postbacks   : {len(postbacks)} · relacionados: {interes[:4]}")
+
+    if not tokens:
+        print("   [!] Sin token: los anexos no están enlazados por el visor.")
+        return 1
+
+    token = tokens[0]
+    variantes = [
+        ("token tal cual + referer original", token, url_ficha),
+        ("token tal cual + referer final", token, url_real),
+        ("token decodificado + referer final", urllib.parse.unquote(token), url_real),
+    ]
+    print("")
+    for etiqueta, tok, referer in variantes:
+        url_visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
+                     f"ViewAttachmentLC.aspx?enc={tok}")
+        try:
+            rv = sesion.get(url_visor, headers={"Referer": referer}, timeout=45,
+                            allow_redirects=True)
+            texto = rv.text or ""
+            final = str(getattr(rv, "url", ""))
+            bloqueado = "403.html" in final.lower()
+            print(f"   {etiqueta:36} -> HTTP {rv.status_code} · {len(texto):>6} chars · "
+                  f"{'BLOQUEADO' if bloqueado else 'OK'}")
+            if not bloqueado and len(texto) > 1500:
+                ruta = os.path.join(DIRECTORIO_RAIZ, f"visor_{codigo}.html")
+                with open(ruta, "w", encoding="utf-8") as f:
+                    f.write(texto)
+                print(f"      HTML guardado: {ruta}")
+                bajo = texto.lower()
+                print(f"      ¿captcha?: {'captcha' in bajo} · "
+                      f"¿type=image?: {'type=\"image\"' in bajo} · "
+                      f"¿__viewstate?: {'__viewstate' in bajo}")
+                filas = re.findall(r"<tr[^>]*>(.*?)</tr>", texto, re.I | re.S)
+                print(f"      filas tabla: {len(filas)}")
+                for fila in filas[:6]:
+                    limpio = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " | ", fila)).strip()
+                    if limpio:
+                        print(f"        · {limpio[:130]}")
+                break
+        except Exception as e:
+            print(f"   {etiqueta:36} -> ERROR {str(e)[:70]}")
+    print("")
+    return 0
 
 def limpiar_clones():
     """Borra los clones de bases que generaban las versiones anteriores."""
