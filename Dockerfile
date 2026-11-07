@@ -21,7 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUTF8=1 \
     TZ=America/Santiago \
     LICITAIA_DATA_DIR=/data \
-    GEMINI_MODEL=gemini-2.5-flash \
+    GEMINI_MODEL=gemini-3.8-flash \
     PAUSA_ENTRE_PROYECTOS=15
 
 WORKDIR /app

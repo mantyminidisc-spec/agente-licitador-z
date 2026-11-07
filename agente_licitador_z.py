@@ -132,8 +132,8 @@ API_KEY_GEMINI = os.getenv("GEMINI_API_KEY", "").strip()
 
 # Modelos vigentes 2026. El modelo 1.5-flash está RETIRADO: cualquier llamada a ese
 # modelo devuelve 404 y el agente caía en silencio al "motor local de respaldo".
-MODELO_GEMINI = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
-MODELO_GEMINI_VISION = os.getenv("GEMINI_MODEL_VISION", "gemini-2.5-flash").strip()
+MODELO_GEMINI = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+MODELO_GEMINI_VISION = os.getenv("GEMINI_MODEL_VISION", "gemini-3.8-flash").strip()
 
 URL_APPS_SCRIPT = os.getenv(
     "APPS_SCRIPT_URL",
@@ -199,7 +199,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.0"
+VERSION_LICITAIA = "8.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -315,8 +315,12 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
     """
     if not API_KEY_GEMINI:
         return None, "GEMINI_API_KEY no configurada en el entorno"
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{MODELO_GEMINI}:generateContent?key={API_KEY_GEMINI}")
+    modelos = [MODELO_GEMINI]
+    for _alt in ("gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"):
+        if _alt not in modelos:
+            modelos.append(_alt)
+    indice_modelo = 0
+    url = ""
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -327,6 +331,9 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
     }
     ultimo = "sin intentos"
     for n in range(1, max(1, intentos) + 1):
+        modelo_actual = modelos[min(indice_modelo, len(modelos) - 1)]
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{modelo_actual}:generateContent?key={API_KEY_GEMINI}")
         try:
             r = requests.post(url, json=payload, timeout=timeout or GEMINI_TIMEOUT)
             if r.status_code != 200:
@@ -334,6 +341,11 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
                 ultimo = f"HTTP {r.status_code}: {detalle}"
                 if r.status_code in (400, 404):
                     ultimo += "  <-- modelo inexistente o prompt inválido (revisa GEMINI_MODEL)"
+                    if indice_modelo < len(modelos) - 1:
+                        indice_modelo += 1
+                        print(f"      [!] El modelo {modelo_actual} no está disponible; "
+                              f"se prueba con {modelos[indice_modelo]}")
+                        continue
             else:
                 js = r.json()
                 cand = (js.get("candidates") or [{}])[0]
@@ -1355,6 +1367,15 @@ class Agente2Extractor:
         ruta_ficha = self._postback_ficha_pdf(url_ficha, html, codigo, carpeta, sesion)
         if ruta_ficha:
             rutas.append(ruta_ficha)
+
+        # 1b) Se refresca la ficha: el token del visor caduca al usar el postback anterior
+        try:
+            datos_frescos = self._get_bytes(url_ficha, sesion=sesion,
+                                            referer="https://www.mercadopublico.cl/")
+            if datos_frescos and not self._es_bloqueo(datos_frescos):
+                html = datos_frescos.decode("utf-8", "ignore")
+        except Exception:
+            pass
 
         # 2) Visor de adjuntos: el enlace real es un popup JS (ViewAttachment.aspx)
         tokens_visor = re.findall(r"ViewAttachment\.aspx\?enc=([^'\"<>\s]+)", html, re.I)
