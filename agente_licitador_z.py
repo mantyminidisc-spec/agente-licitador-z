@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.3"
+VERSION_LICITAIA = "10.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3846,7 +3846,9 @@ class Agente5Entregador:
             nombre = cabecera.strip()
             metodo = ""
             if not metodo and "(Metodo:" in resto[:90]:
-                metodo = resto[:90].split("(Metodo:")[1].split("=")[0].strip().rstrip(")").strip()
+                _cab = resto.split("===")[0]
+                if "Metodo:" in _cab:
+                    metodo = _cab.split("Metodo:")[1].strip().strip("()").strip()
             if "(Metodo:" in nombre:
                 nombre = nombre.split("(Metodo:")[0].strip()
             nombre = nombre.strip()
@@ -4116,6 +4118,43 @@ class Agente5Entregador:
             9,
             espacio_despues=6,
         )
+        if not multas or not multas.get("reglas"):
+            self._parrafo(
+                doc,
+                "No fue posible analizar automáticamente las cláusulas de multa en esta corrida. "
+                "A continuación se entrega el marco de control aplicable para revisarlas a mano "
+                "antes de postular (DS 661/2024, artículos 135 a 139).",
+                9,
+                espacio_despues=8,
+            )
+            filas_marco = [
+                ("M-01", "¿Existe tope de multas y es menor o igual al 30% del contrato?", "Art. 136 DS 661/2024"),
+                ("M-02", "¿Sobre qué monto se calcula la multa: neto, total o ítem atrasado?", "Art. 135 DS 661/2024"),
+                ("M-03", "¿Las causales son objetivas o quedan a juicio del organismo?", "Art. 135 DS 661/2024"),
+                ("M-04", "¿Desde cuándo corre el plazo: OC, aceptación o acta de inicio?", "Art. 135 DS 661/2024"),
+                ("M-05", "¿Hay notificación previa y plazo de descargos antes de multar?", "Art. 137 DS 661/2024"),
+                ("M-06", "¿Se respetan reposición y jerárquico de 5 días hábiles?", "Art. 137 DS 661 y Art. 59 Ley 19.880"),
+                ("M-07", "¿Contempla eximente por atrasos imputables a la entidad o fuerza mayor?", "Art. 135 DS 661 y Art. 45 C.C."),
+                ("M-08", "¿Prohíbe descontar multas si hay facturas impagas previas?", "Art. 138 DS 661/2024"),
+            ]
+            self._tabla(
+                doc,
+                ["Regla", "Punto a revisar en las bases", "Norma"],
+                filas_marco,
+                [1.3, 10.4, 4.3],
+                alineaciones=["c", "l", "l"],
+                tam=8,
+            )
+            self._parrafo(
+                doc,
+                "Si detecta que las bases no fijan tope de multas o lo fijan sobre el 30%, o si aplican "
+                "multas automáticas sin descargos, conviene objetarlo en el foro de consultas del proceso.",
+                9,
+                cursiva=True,
+                espacio_despues=6,
+            )
+            return
+
         nivel_multas = str(multas.get("nivel_riesgo_multas") or "SIN INFORMACIÓN").upper()
         self._parrafo(doc, f"Nivel de riesgo de multas detectado: {nivel_multas}", 9.5,
                       negrita=True, espacio_despues=6)
