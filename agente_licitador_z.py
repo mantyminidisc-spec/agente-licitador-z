@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.1"
+VERSION_LICITAIA = "9.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2522,6 +2522,52 @@ Lee y transcribe el contenido completo en formato estructurado."""
             print(f"      [!] Gemini File API error para {nombre_archivo}: {e}")
         return ""
 
+    def _resumen_documental(self, nombre, texto):
+        """Resumen estructurado de UN documento, para el informe del cliente.
+
+        Devuelve dict con: archivo, objeto, requisitos, excluyentes, riesgos,
+        preguntas. Si la IA falla, devuelve None (el informe sigue funcionando).
+        """
+        recorte = (texto or "")[:24000]
+        if len(recorte.strip()) < 400:
+            return None
+        prompt = (
+            "Eres abogado experto en contratacion publica chilena (Ley 19.886, "
+            "DS 661/2024). Analiza ESTE documento de un proceso de Mercado Publico y "
+            "responde SOLO JSON valido, sin markdown, con esta forma exacta:\n"
+            '{"objeto": "que exige el documento en una frase", '
+            '"requisitos": ["requisito obligatorio 1", "..."], '
+            '"excluyentes": ["causal de inadmisibilidad 1", "..."], '
+            '"riesgos": ["riesgo concreto para el oferente 1", "..."], '
+            '"preguntas": ["pregunta lista para el foro de consultas 1", "..."]}\n'
+            "Maximo 6 elementos por lista. Cita cifras y plazos cuando existan.\n\n"
+            f"DOCUMENTO: {nombre}\n"
+            f"CONTENIDO:\n{recorte}"
+        )
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=3000,
+                                            timeout=180, intentos=2)
+        if not datos:
+            print(f"      [!] Sin resumen de {nombre}: {str(error)[:80]}")
+            return None
+
+        def _lista(clave):
+            valor = datos.get(clave) or []
+            if isinstance(valor, str):
+                valor = [valor]
+            return [str(v)[:300] for v in valor if str(v).strip()][:6]
+
+        salida = {
+            "archivo": nombre,
+            "objeto": str(datos.get("objeto") or "")[:400],
+            "requisitos": _lista("requisitos"),
+            "excluyentes": _lista("excluyentes"),
+            "riesgos": _lista("riesgos"),
+            "preguntas": _lista("preguntas"),
+        }
+        print(f"      Resumen de {nombre}: {len(salida['requisitos'])} requisitos, "
+              f"{len(salida['excluyentes'])} excluyentes")
+        return salida
+
     def leer_adjuntos_forense(self, lista_rutas, carpeta_proyecto):
         """
         Proceso forense completo para todos los adjuntos.
@@ -2534,6 +2580,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
         informe_bloques = []
         archivos_clon = []
         nombres_leidos = []
+        resumenes_docs = []
 
         # Filtrar solo archivos con contenido real (no clones anteriores ni DOM txt para PDF-lectura)
         rutas_a_leer = [r for r in lista_rutas if os.path.exists(r) and not os.path.basename(r).startswith("CLON_EXACTO_")]
@@ -2587,6 +2634,10 @@ Lee y transcribe el contenido completo en formato estructurado."""
                 )
                 informe_bloques.append(bloque)
                 nombres_leidos.append(nom)
+                if len(texto_extraido) > 800 and len(resumenes_docs) < 8:
+                    _res = self._resumen_documental(nom, texto_extraido)
+                    if _res:
+                        resumenes_docs.append(_res)
                 print(f"      ✅ [2.5 Forense] {nom}: {len(texto_extraido)} chars ({metodo_usado})")
 
                 # (no se genera clon Word: el adjunto original ya está en la carpeta)
@@ -2601,7 +2652,8 @@ Lee y transcribe el contenido completo en formato estructurado."""
         return {
             "informe_forense_consolidado": informe_consolidado,
             "archivos_clon_generados": archivos_clon,
-            "nombres_adjuntos_leidos": nombres_leidos
+            "nombres_adjuntos_leidos": nombres_leidos,
+            "resumenes_documentos": resumenes_docs
         }
 
     def _generar_clon_word(self, nombre_archivo, texto_forense, metodo, ruta_docx):
@@ -3758,8 +3810,48 @@ class Agente5Entregador:
             tam=7.5,
         )
 
-        # --- 7. Auditoría de multas y defensa del proveedor
-        self._titulo_seccion(doc, 7, "Auditoría de multas y defensa del proveedor (DS 661/2024)")
+        # --- 7. Análisis documental por anexo
+        self._titulo_seccion(doc, 7, "Análisis documental por anexo")
+        docs = informes.get("analisis_por_documento") or []
+        if not docs:
+            self._parrafo(
+                doc,
+                "No se generaron resúmenes individuales: el proceso no tenía anexos legibles "
+                "o la lectura automática no pudo completarse. Revisar la ficha y las bases en "
+                "el portal antes de postular.",
+                9,
+                espacio_despues=6,
+            )
+        else:
+            self._parrafo(
+                doc,
+                f"Se analizaron {len(docs)} documento(s) del proceso. Para cada uno se resume "
+                "qué exige, qué causal de inadmisibilidad introduce y qué conviene preguntar.",
+                9,
+                espacio_despues=8,
+            )
+            for documento in docs[:8]:
+                nombre_doc = str(documento.get("archivo") or "Documento")
+                self._parrafo(doc, nombre_doc, 9.5, negrita=True, espacio_despues=2)
+                if documento.get("objeto"):
+                    self._parrafo(doc, str(documento["objeto"]), 9, cursiva=True,
+                                  espacio_despues=3)
+                for clave, etiqueta in (
+                    ("requisitos", "Exige"),
+                    ("excluyentes", "Causal de inadmisibilidad"),
+                    ("riesgos", "Riesgo para el oferente"),
+                    ("preguntas", "Pregunta sugerida al foro"),
+                ):
+                    valores = documento.get(clave) or []
+                    if not valores:
+                        continue
+                    self._parrafo(doc, etiqueta, 8.5, negrita=True, espacio_despues=1)
+                    for valor in valores[:5]:
+                        self._parrafo(doc, f"•  {valor}", 8.5, espacio_despues=1)
+                self._parrafo(doc, "", 6, espacio_despues=4)
+
+        # --- 8. Auditoría de multas y defensa del proveedor
+        self._titulo_seccion(doc, 8, "Auditoría de multas y defensa del proveedor (DS 661/2024)")
         multas = informes.get("auditoria_multas_ds661", {}) or {}
         self._parrafo(
             doc,
@@ -3802,7 +3894,7 @@ class Agente5Entregador:
                 self._parrafo(doc, f"{numero_pregunta}.  {pregunta}", 9, espacio_despues=2)
 
         # --- 8. Conclusión
-        self._titulo_seccion(doc, 8, "Conclusión y recomendación")
+        self._titulo_seccion(doc, 9, "Conclusión y recomendación")
         self._parrafo(
             doc,
             f"El procedimiento se considera {'admisible' if str(informes.get('estado_admisibilidad', '')).upper().startswith('APTO') else 'sujeto a verificación'} "
@@ -5077,6 +5169,10 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
         try:
             expediente = agente2.extraer_proyecto_completo(candidato, carpeta_proyecto)
             informes = agente3.auditar_y_redactar_4_informes(expediente)
+            try:
+                informes['analisis_por_documento'] = expediente.get('resumenes_documentos') or []
+            except Exception:
+                pass
             escenarios = agente4.calcular_matriz_financiera(expediente, informes)
             estado_nube = agente5.empaquetar_y_entregar_proyecto(expediente, informes, escenarios)
 
