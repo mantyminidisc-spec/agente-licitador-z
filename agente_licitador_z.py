@@ -197,6 +197,8 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
+VERSION_LICITAIA = "6.3"
+
 # --- Servicio OFICIAL de adjuntos de Compra Ágil -----------------------------
 # Es el mismo microservicio que usa la web del buscador (SPA de React). Se
 # descubrió leyendo su bundle:  /v1/adjuntos-compra-agil/listar/{codigo}  y
@@ -4695,6 +4697,7 @@ def mostrar_estado():
     print("=" * 72)
     print(" ESTADO DEL AGENTE LICITAIA")
     print("=" * 72)
+    print(f"  Versión             : {VERSION_LICITAIA}")
     print(f"  Carpeta de datos    : {DIRECTORIO_RAIZ}")
     print(f"  Ticket Mercado Pub. : {'configurado' if TICKET_MERCADO_PUBLICO else 'FALTA'}")
     print(f"  Modelo Gemini       : {MODELO_GEMINI}"
