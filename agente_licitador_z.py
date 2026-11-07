@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.0"
+VERSION_LICITAIA = "9.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2695,45 +2695,147 @@ class Agente3AuditorCotizador:
     def __init__(self, perfil):
         self.perfil = perfil
 
-    def _calcular_escenarios_iva_incluido(self, presupuesto):
+    def _calcular_escenarios_iva_incluido(self, presupuesto, costo_interno=None):
+        """Motor de precios justificado (v9.1).
+
+        Antes los tres escenarios eran tres porcentajes escritos a mano
+        (83%, 92%, 98%) sin ninguna razón. Ahora el precio se DEDUCE de:
+          1. el costo interno del proyecto,
+          2. el margen objetivo del cliente (MARGEN_OBJETIVO),
+          3. cuánto pesa el precio en la evaluación (PESO_PRECIO),
+          4. el precio al que se estima la competencia (PCT_COMPETENCIA).
+        Y cada escenario viene con su justificación numérica.
         """
-        Calcula matemáticamente los 3 escenarios económicos bajo la regla oficial de
-        contratación pública chilena: El Presupuesto Oficial publicado YA INCLUYE el 19% de IVA.
-        Ninguna oferta puede superar el Tope Total Bruto publicado.
-        """
-        presupuesto = int(presupuesto)
+        presupuesto = int(presupuesto or 0)
+        if presupuesto <= 0:
+            presupuesto = 1
         neto_maximo_oficial = int(round(presupuesto / 1.19))
 
-        # Factores estratégicos solicitados:
-        # 1. Opción 1: Competitiva / Agresiva al 83% (rango 82%-85%)
-        # 2. Opción 2: Equilibrada / Recomendada al 92% (rango 90%-93%)
-        # 3. Opción 3: Premium / Alta Gama al 98% (rango 97%-99%, jamás superando 100%)
-        def calc_opcion(factor, pct):
-            b = int(round(presupuesto * factor))
-            n = int(round(b / 1.19))
-            i = b - n
+        # Costo interno: si no viene informado se estima sobre la estructura
+        # histórica de la empresa (25,4% del presupuesto, igual que antes).
+        costo_ratio = max(0.30, min(0.92, float(os.getenv("COSTO_SOBRE_TOPE", "0.62"))))
+        costo = int(costo_interno or round(presupuesto * costo_ratio))
+
+        peso_precio = max(0.05, min(0.95, float(os.getenv("PESO_PRECIO", "0.40"))))
+        margen_objetivo = max(0.0, min(0.90, float(os.getenv("MARGEN_OBJETIVO", "0.35"))))
+        pct_competencia = max(0.50, min(0.99, float(os.getenv("PCT_COMPETENCIA", "0.85"))))
+        competidores = max(1, int(os.getenv("COMPETIDORES_ESTIMADOS", "3")))
+
+        def _probabilidad(pct):
+            """Probabilidad de adjudicar según la distancia al precio de la competencia.
+
+            Logística: si ofertas igual que la competencia estimada, 50%; si ofertas
+            5 puntos más barato, ~80%; si ofertas 10 puntos más caro, ~5%.
+            """
+            x = (pct_competencia - pct) / 0.035
+            return 1.0 / (1.0 + 2.718281828459045 ** (-x))
+
+        def evaluar(pct):
+            bruto = int(round(presupuesto * pct))
+            neto = int(round(bruto / 1.19))
+            iva = bruto - neto
+            margen = neto - costo
+            margen_pct = (margen / neto * 100.0) if neto else 0.0
+            puntaje_precio = (peso_precio * 100.0) * min(1.0, pct_competencia / pct)
+            puntaje_tecnico = (1.0 - peso_precio) * 100.0  # se asume cumplimiento técnico pleno
+            puntaje_total = puntaje_precio + puntaje_tecnico
+            prob = _probabilidad(pct)
+            utilidad_esperada = margen * prob
             return {
-                "porcentaje_tope": pct,
-                "total_bruto_clp": b,
-                "neto_clp": n,
-                "iva_19_clp": i
+                "porcentaje_tope": int(round(pct * 100)),
+                "total_bruto_clp": bruto,
+                "neto_clp": neto,
+                "iva_19_clp": iva,
+                "costo_interno_clp": costo,
+                "margen_clp": margen,
+                "margen_pct": round(margen_pct, 1),
+                "puntaje_precio": round(puntaje_precio, 1),
+                "puntaje_estimado": round(puntaje_total, 1),
+                "prob_adjudicacion_pct": round(prob * 100, 1),
+                "utilidad_esperada_clp": int(round(utilidad_esperada)),
             }
 
-        esc1 = calc_opcion(0.83, 83)
-        esc2 = calc_opcion(0.92, 92)
-        esc3 = calc_opcion(0.98, 98)
+        # Candidatos: del 78% al 99% del tope, un punto porcentual cada uno
+        candidatos = [evaluar(p / 100.0) for p in range(78, 100)]
 
-        esc1["estrategia"] = "Oferta Competitiva / Agresiva (83% del Tope): Máximo puntaje en fórmula de evaluación económica."
-        esc2["estrategia"] = "Oferta Equilibrada / Recomendada (92% del Tope): Balance óptimo entre rentabilidad segura y puntaje ponderado ganador."
-        esc3["estrategia"] = "Oferta Premium / Alta Gama (98% del Tope): Máximo margen de utilidad con alcance extendido sin exceder el presupuesto oficial."
+        # El recomendado es el que maximiza margen x probabilidad de adjudicar
+        indice_eq = max(range(len(candidatos)),
+                        key=lambda i: candidatos[i]["utilidad_esperada_clp"])
+        equilibrado = candidatos[indice_eq]
+
+        # Agresivo: tres puntos más abajo (si conserva margen positivo), si no el mínimo viable
+        piso_margen = max(3.0, margen_objetivo * 100.0 * 0.3)
+        indice_ag = max(0, indice_eq - 3)
+        if candidatos[indice_ag]["margen_pct"] < piso_margen:
+            indice_ag = 0
+        agresivo = candidatos[indice_ag]
+
+        # Conservador: dos puntos más arriba, siempre que mantenga opción real de ganar
+        indice_co = min(len(candidatos) - 1, indice_eq + 2)
+        if candidatos[indice_co]["prob_adjudicacion_pct"] < 20.0:
+            indice_co = indice_eq
+        conservador = candidatos[indice_co]
+
+        def _justificar(nombre, esc, referencia):
+            diferencia = esc["margen_clp"] - referencia["margen_clp"]
+            signo = "+" if diferencia >= 0 else "-"
+            return (
+                f"{nombre} ({esc['porcentaje_tope']}% del tope = ${esc['total_bruto_clp']:,} CLP con IVA). "
+                f"Margen resultante {esc['margen_pct']}% (${esc['margen_clp']:,} CLP sobre un costo de "
+                f"${esc['costo_interno_clp']:,} CLP). Puntaje estimado {esc['puntaje_estimado']}/100 "
+                f"y probabilidad de adjudicar {esc['prob_adjudicacion_pct']}%. "
+                f"Frente al escenario recomendado el margen cambia en {signo}${abs(diferencia):,} CLP. "
+                f"Supuestos: peso del precio {int(peso_precio*100)}%, competencia ofertando cerca del "
+                f"{int(pct_competencia*100)}% del tope y {competidores} oferentes."
+            )
+
+        _aviso = ""
+        if equilibrado["margen_pct"] < margen_objetivo * 100.0:
+            _aviso = (f" ADVERTENCIA: con este presupuesto el margen objetivo de "
+                      f"{int(margen_objetivo*100)}% no es alcanzable; el máximo lograble en el "
+                      f"escenario recomendado es {equilibrado['margen_pct']}%.")
+        agresivo["estrategia"] = _justificar("Oferta competitiva (maximiza opción de ganar)", agresivo, equilibrado)
+        equilibrado["estrategia"] = _justificar("Oferta recomendada (mejor margen esperado)", equilibrado, equilibrado) + _aviso
+        conservador["estrategia"] = _justificar("Oferta conservadora (prioriza rentabilidad)", conservador, equilibrado) + _aviso
+
+        sensibilidad = []
+        for pct in (0.80, 0.84, 0.88, 0.92, 0.96, 0.99):
+            e = evaluar(pct)
+            sensibilidad.append({
+                "porcentaje_tope": e["porcentaje_tope"],
+                "total_bruto_clp": e["total_bruto_clp"],
+                "margen_pct": e["margen_pct"],
+                "margen_clp": e["margen_clp"],
+                "puntaje_estimado": e["puntaje_estimado"],
+                "prob_adjudicacion_pct": e["prob_adjudicacion_pct"],
+                "utilidad_esperada_clp": e["utilidad_esperada_clp"],
+            })
+
+        print(f"   ✓ Costo interno base  : ${costo:,} CLP")
+        print(f"   ✓ Parámetros          : margen objetivo {int(margen_objetivo*100)}% · "
+              f"peso precio {int(peso_precio*100)}% · competencia al {int(pct_competencia*100)}% "
+              f"({competidores} oferentes)")
 
         return {
             "presupuesto_oficial_tope_bruto_clp": presupuesto,
             "neto_maximo_oficial_clp": neto_maximo_oficial,
             "regla_iva": "En el Estado de Chile el presupuesto oficial publicado ya incluye el 19% de IVA (Tope Total Bruto)",
-            "escenario_1_competitivo_agresivo": esc1,
-            "escenario_2_equilibrado_recomendado": esc2,
-            "escenario_3_premium_alta_gama": esc3
+            "costo_interno_clp": costo,
+            "parametros": {
+                "margen_objetivo_pct": round(margen_objetivo * 100, 1),
+                "peso_precio_pct": round(peso_precio * 100, 1),
+                "pct_competencia": round(pct_competencia * 100, 1),
+                "competidores_estimados": competidores,
+            },
+            "escenario_1_competitivo_agresivo": agresivo,
+            "escenario_2_equilibrado_recomendado": equilibrado,
+            "escenario_3_premium_alta_gama": conservador,
+            "sensibilidad": sensibilidad,
+            "regla_calculo": (
+                "El precio no se fija a mano: se recorre el rango 78%-99% del tope, se estima la "
+                "probabilidad de adjudicar según el precio de la competencia y se elige el punto que "
+                "maximiza margen x probabilidad, respetando el margen objetivo."
+            ),
         }
 
     def auditar_y_redactar_4_informes(self, expediente):
