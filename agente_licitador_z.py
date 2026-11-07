@@ -199,7 +199,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.1"
+VERSION_LICITAIA = "8.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1251,7 +1251,22 @@ class Agente2Extractor:
             url_visor = visor
         else:
             url_visor = urllib.parse.urljoin(referer, visor)
-        html = self._get_texto(url_visor, sesion=sesion, referer=referer)
+        try:
+            rv = sesion.get(url_visor, headers={
+                "Referer": referer,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+            }, timeout=45, allow_redirects=True)
+        except Exception as e:
+            print(f"      [x] Visor de anexos: {e}")
+            return rutas
+        if rv.status_code != 200:
+            cuerpo = str(rv.text or "").replace("\n", " ")[:150]
+            print(f"      [x] Visor HTTP {rv.status_code}: {cuerpo}")
+            return rutas
+        html = rv.text or ""
         if not html:
             return rutas
         if len(html) < 700:
@@ -1363,21 +1378,8 @@ class Agente2Extractor:
             return rutas
         html = datos.decode("utf-8", "ignore")
 
-        # 1) Ficha oficial en PDF (postback descargar_pdf)
-        ruta_ficha = self._postback_ficha_pdf(url_ficha, html, codigo, carpeta, sesion)
-        if ruta_ficha:
-            rutas.append(ruta_ficha)
-
-        # 1b) Se refresca la ficha: el token del visor caduca al usar el postback anterior
-        try:
-            datos_frescos = self._get_bytes(url_ficha, sesion=sesion,
-                                            referer="https://www.mercadopublico.cl/")
-            if datos_frescos and not self._es_bloqueo(datos_frescos):
-                html = datos_frescos.decode("utf-8", "ignore")
-        except Exception:
-            pass
-
-        # 2) Visor de adjuntos: el enlace real es un popup JS (ViewAttachment.aspx)
+        # 1) Visor de anexos PRIMERO: el token caduca si antes se usa el
+        #    postback de la ficha PDF (el portal responde HTTP 500).
         tokens_visor = re.findall(r"ViewAttachment\.aspx\?enc=([^'\"<>\s]+)", html, re.I)
         vistos_visor = set()
         for token_visor in tokens_visor:
@@ -1387,6 +1389,11 @@ class Agente2Extractor:
             visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
                      f"ViewAttachment.aspx?enc={token_visor}")
             rutas.extend(self._adjuntos_por_visor_aspx(visor, codigo, carpeta, sesion, url_ficha))
+
+        # 2) Ficha oficial en PDF (postback descargar_pdf): después del visor
+        ruta_ficha = self._postback_ficha_pdf(url_ficha, html, codigo, carpeta, sesion)
+        if ruta_ficha:
+            rutas.append(ruta_ficha)
 
         # 3) Enlaces directos presentes en la ficha (CSV/JSON/anexos)
         rutas.extend(self._descargar_lista_urls(self._urls_desde_html(html, url_ficha),
