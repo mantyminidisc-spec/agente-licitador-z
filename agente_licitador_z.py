@@ -100,6 +100,14 @@ try:
     try:
         from playwright.sync_api import sync_playwright
         PLAYWRIGHT_DISPONIBLE = True
+        # El paquete puede estar instalado sin el navegador descargado.
+        try:
+            _ruta_nav = os.getenv("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
+                os.path.expanduser("~"), ".cache", "ms-playwright")
+            PLAYWRIGHT_DISPONIBLE = os.path.isdir(_ruta_nav) and any(
+                _n.startswith("chromium") for _n in os.listdir(_ruta_nav))
+        except Exception:
+            PLAYWRIGHT_DISPONIBLE = False
     except ImportError:
         PLAYWRIGHT_DISPONIBLE = False
     # curl_cffi clona la huella TLS/JA3 de un Chrome real. Sin esto, CloudFront
@@ -199,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.2"
+VERSION_LICITAIA = "8.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1389,6 +1397,16 @@ class Agente2Extractor:
             visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
                      f"ViewAttachment.aspx?enc={token_visor}")
             rutas.extend(self._adjuntos_por_visor_aspx(visor, codigo, carpeta, sesion, url_ficha))
+
+        # 2b) Se refresca la ficha antes del postback: el intento al visor pudo
+        #     consumir la sesión y el postback devolvería HTML en vez del PDF.
+        try:
+            datos_frescos = self._get_bytes(url_ficha, sesion=sesion,
+                                            referer="https://www.mercadopublico.cl/")
+            if datos_frescos and not self._es_bloqueo(datos_frescos):
+                html = datos_frescos.decode("utf-8", "ignore")
+        except Exception:
+            pass
 
         # 2) Ficha oficial en PDF (postback descargar_pdf): después del visor
         ruta_ficha = self._postback_ficha_pdf(url_ficha, html, codigo, carpeta, sesion)
