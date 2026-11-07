@@ -199,7 +199,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "7.1"
+VERSION_LICITAIA = "7.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4875,12 +4875,63 @@ def _ayuda():
   python agente_licitador_z.py --barrido-final     Barrido profundo ahora (hoy + ayer)
   python agente_licitador_z.py --probar-whatsapp [NUM]  Manda un WhatsApp de prueba
   python agente_licitador_z.py --limpiar             Borra clones antiguos (ANEXO_CLON, CLON_EXACTO)
+  python agente_licitador_z.py --diagnostico-visor COD  Muestra la estructura del visor de anexos
   python agente_licitador_z.py --historial         Lista los ya entregados en Drive
   python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
   python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
   python agente_licitador_z.py --olvidar CODIGO    Solo lo saca de las listas (sin procesar)
 ==============================================================================
 """)
+
+
+def diagnostico_visor(codigo):
+    """Inspecciona el visor de anexos desde dentro del contenedor."""
+    codigo = str(codigo or "").strip()
+    print("")
+    print(f"🔍 DIAGNÓSTICO DEL VISOR DE ANEXOS · {codigo}")
+    sesion = _crear_sesion_api()
+    url_ficha = ("https://www.mercadopublico.cl/Procurement/Modules/RFB/"
+                 f"DetailsAcquisition.aspx?idlicitacion={codigo}")
+    try:
+        r = sesion.get(url_ficha, timeout=45, allow_redirects=True)
+    except Exception as e:
+        print(f"   [x] ficha: {e}")
+        return 1
+    print(f"   ficha       : HTTP {r.status_code} · {len(r.text or '')} chars")
+    tokens = re.findall(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>]+)", r.text or "", re.I)
+    print(f"   tokens enc  : {len(tokens)}")
+    if not tokens:
+        print("   [!] La ficha no expone el visor. Puede que los anexos estén enlazados directo.")
+        return 1
+    url_visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
+                 f"ViewAttachmentLC.aspx?enc={tokens[0]}")
+    try:
+        rv = sesion.get(url_visor, headers={"Referer": url_ficha}, timeout=45, allow_redirects=True)
+    except Exception as e:
+        print(f"   [x] visor: {e}")
+        return 1
+    texto = rv.text or ""
+    print(f"   visor       : HTTP {rv.status_code} · {len(texto)} chars")
+    print(f"   URL final   : {str(getattr(rv, 'url', ''))[:110]}")
+    for marca in ("captcha", "ingrese el texto", "seleccionar todos", "__viewstate",
+                  'type="image"', "ver adjuntos", "onclick"):
+        print(f"     ¿{marca}?: {marca.lower() in texto.lower()}")
+    ruta = os.path.join(DIRECTORIO_RAIZ, f"visor_{codigo}.html")
+    try:
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(texto)
+        print(f"   HTML guardado: {ruta}")
+    except Exception as e:
+        print(f"   [!] No se pudo guardar el HTML: {e}")
+    filas = re.findall(r"<tr[^>]*>(.*?)</tr>", texto, re.I | re.S)
+    print(f"   filas tabla : {len(filas)}")
+    for fila in filas[:8]:
+        limpio = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " | ", fila)).strip()
+        if limpio:
+            print(f"     · {limpio[:140]}")
+    print("")
+    print("   Copia este resultado completo y lo analizamos.")
+    return 0
 
 
 def limpiar_clones():
@@ -4948,6 +4999,8 @@ if __name__ == "__main__":
         mostrar_horario()
     elif argumentos[0] in ("--limpiar", "limpiar"):
         sys.exit(limpiar_clones())
+    elif argumentos[0] in ("--diagnostico-visor", "diagnostico-visor") and len(argumentos) > 1:
+        sys.exit(diagnostico_visor(argumentos[1]))
     elif argumentos[0] in ("--probar-whatsapp", "probar-whatsapp"):
         sys.exit(probar_whatsapp(argumentos[1] if len(argumentos) > 1 else None))
     elif argumentos[0] in ("--auto", "auto"):
