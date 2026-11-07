@@ -199,7 +199,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "7.3"
+VERSION_LICITAIA = "8.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1222,21 +1222,46 @@ class Agente2Extractor:
         return rutas
 
     # ---------- visor ASPX de licitaciones ----------------------------
-    def _adjuntos_por_visor_aspx(self, token, codigo, carpeta, sesion, referer):
-        """El visor real de Mercado Público: ViewAttachmentLC.aspx + postback por botón."""
+    def _adjuntos_por_visor_aspx(self, visor, codigo, carpeta, sesion, referer):
+        """Visor de anexos de una licitación.
+
+        El enlace real de Mercado Público es un popup de JavaScript:
+            open('../Attachment/ViewAttachment.aspx?enc=<token>')
+        El endpoint correcto es ViewAttachment.aspx (el legacy
+        ViewAttachmentLC.aspx responde 403) y el token va URL-encoded:
+        decodificarlo devuelve HTTP 500.
+        """
         rutas = []
-        token = urllib.parse.unquote(token)
-        url_visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
-                     f"ViewAttachmentLC.aspx?enc={token}")
+        if not visor:
+            return rutas
+        visor = visor.replace("&amp;", "&")
+        if visor.lower().startswith("http"):
+            url_visor = visor
+        else:
+            url_visor = urllib.parse.urljoin(referer, visor)
         html = self._get_texto(url_visor, sesion=sesion, referer=referer)
         if not html:
             return rutas
-        soup = BeautifulSoup(html, "html.parser")
-        ocultos = {i["name"]: (i.get("value") or "") for i in soup.find_all("input", {"type": "hidden"}) if i.get("name")}
-        if not ocultos:
-            print("      [!] Visor ASPX sin campos ocultos (probablemente token vencido).")
+        if len(html) < 700:
+            print("      [!] El visor devolvió una página vacía (posible bloqueo).")
             return rutas
 
+        try:
+            with open(os.path.join(DIRECTORIO_RAIZ, f"visor_{codigo}.html"), "w",
+                      encoding="utf-8") as f:
+                f.write(html)
+        except Exception:
+            pass
+
+        soup = BeautifulSoup(html, "html.parser")
+        ocultos = {i["name"]: (i.get("value") or "")
+                   for i in soup.find_all("input", {"type": "hidden"}) if i.get("name")}
+        bajo = html.lower()
+        hay_captcha = ("captcha" in bajo) or ("ingrese el texto" in bajo)
+        print(f"      ℹ️ Visor de anexos: {len(soup.find_all('tr'))} filas · "
+              f"{len(ocultos)} campos ocultos · captcha: {'sí' if hay_captcha else 'no'}")
+
+        # 1) Botones de descarga por fila (input type=image)
         botones = []
         for tr in soup.find_all("tr"):
             inp = tr.find("input", {"type": "image"})
@@ -1245,6 +1270,7 @@ class Agente2Extractor:
             celdas = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
             nombre = next((c for c in celdas if re.search(r"\.(pdf|docx?|xlsx?|zip)$", c, re.I)), "")
             botones.append((inp["name"], nombre))
+        print(f"      ℹ️ Botones de descarga: {len(botones)}")
 
         for nombre_btn, nombre_arch in botones:
             payload = dict(ocultos)
@@ -1254,18 +1280,40 @@ class Agente2Extractor:
                 r = sesion.post(url_visor, data=payload, timeout=120, allow_redirects=True,
                                 headers={"Referer": url_visor})
             except Exception as e:
-                print(f"      [x] Postback ASPX ({nombre_btn}): {e}")
-                continue
-            if r.status_code != 200:
-                print(f"      [x] Postback ASPX HTTP {r.status_code} ({nombre_btn})")
+                print(f"      [x] Postback ({nombre_btn}): {e}")
                 continue
             disp = r.headers.get("Content-Disposition", "") or ""
+            contenido = r.content or b""
+            es_archivo = bool(disp) or contenido[:4] in (b"%PDF", b"PK\x03\x04")
+            if r.status_code != 200 or not es_archivo:
+                if hay_captcha:
+                    print(f"      [!] {nombre_arch or nombre_btn}: el visor exige CAPTCHA "
+                          f"(descarga manual).")
+                else:
+                    print(f"      [!] {nombre_arch or nombre_btn}: sin archivo "
+                          f"(HTTP {r.status_code}, {len(contenido)} bytes).")
+                continue
             m = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", disp, re.IGNORECASE)
-            sugerido = urllib.parse.unquote(m.group(1).strip()) if m else (nombre_arch or f"Anexo_{codigo}.pdf")
-            ruta = self._guardar_bytes(r.content, carpeta, sugerido, codigo, origen="(visor ASPX)")
+            sugerido = (urllib.parse.unquote(m.group(1).strip()) if m
+                        else (nombre_arch or f"Anexo_{codigo}.pdf"))
+            ruta = self._guardar_bytes(contenido, carpeta, sugerido, codigo,
+                                       origen="(visor de anexos)")
             if ruta:
                 rutas.append(ruta)
-        return rutas
+
+        # 2) Enlaces directos de descarga dentro del visor
+        directos = []
+        for href in re.findall(r'href=["\']([^"\']+)["\']', html, re.I):
+            if not re.search(r"\.(pdf|docx?|xlsx?|zip)(\?|$)", href, re.I):
+                continue
+            absoluto = urllib.parse.urljoin(url_visor, href)
+            if absoluto not in directos:
+                directos.append(absoluto)
+        if directos:
+            print(f"      ℹ️ Enlaces directos en el visor: {len(directos)}")
+            rutas.extend(self._descargar_lista_urls(directos, carpeta, codigo, sesion,
+                                                    referer=url_visor))
+        return list(dict.fromkeys(rutas))
 
     def _postback_ficha_pdf(self, url_ficha, html, codigo, carpeta, sesion):
         """Descarga la 'Ficha Oficial' en PDF usando el postback ASP.NET del portal.
@@ -1308,10 +1356,16 @@ class Agente2Extractor:
         if ruta_ficha:
             rutas.append(ruta_ficha)
 
-        # 2) Visor de adjuntos (uno o varios tokens enc)
-        tokens = set(re.findall(r"ViewAttachment(?:LC)?\.aspx\?enc=([^\"'&\s<>]+)", html, re.IGNORECASE))
-        for token in tokens:
-            rutas.extend(self._adjuntos_por_visor_aspx(token, codigo, carpeta, sesion, url_ficha))
+        # 2) Visor de adjuntos: el enlace real es un popup JS (ViewAttachment.aspx)
+        tokens_visor = re.findall(r"ViewAttachment\.aspx\?enc=([^'\"<>\s]+)", html, re.I)
+        vistos_visor = set()
+        for token_visor in tokens_visor:
+            if token_visor in vistos_visor:
+                continue
+            vistos_visor.add(token_visor)
+            visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
+                     f"ViewAttachment.aspx?enc={token_visor}")
+            rutas.extend(self._adjuntos_por_visor_aspx(visor, codigo, carpeta, sesion, url_ficha))
 
         # 3) Enlaces directos presentes en la ficha (CSV/JSON/anexos)
         rutas.extend(self._descargar_lista_urls(self._urls_desde_html(html, url_ficha),
@@ -4926,7 +4980,7 @@ def diagnostico_visor(codigo):
     print("")
     for etiqueta, tok, referer in variantes:
         url_visor = ("https://www.mercadopublico.cl/Procurement/Modules/Attachment/"
-                     f"ViewAttachmentLC.aspx?enc={tok}")
+                     f"ViewAttachment.aspx?enc={tok}")
         try:
             rv = sesion.get(url_visor, headers={"Referer": referer}, timeout=45,
                             allow_redirects=True)
