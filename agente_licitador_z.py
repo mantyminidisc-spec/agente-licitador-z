@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.2"
+VERSION_LICITAIA = "10.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -361,8 +361,11 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
         try:
             r = requests.post(url, json=payload, headers=cabeceras,
                               timeout=timeout or GEMINI_TIMEOUT)
-            if r.status_code == 400 and "response_format" in (r.text or "").lower():
-                print("      [!] El proveedor no acepta response_format; se reintenta sin el")
+            _error_400 = (r.text or "").lower()
+            if r.status_code == 400 and ("response_format" in _error_400
+                                            or "json_validate" in _error_400
+                                            or "validate json" in _error_400):
+                print("      [!] El proveedor rechazo el JSON estricto; se reintenta en modo texto")
                 payload.pop("response_format", None)
                 continue
             if r.status_code != 200:
@@ -5694,7 +5697,7 @@ def probar_ia():
 
     datos, error = _gemini_generar_json(
         'Responde SOLO este JSON: {"estado": "ok", "mensaje": "conectado"}',
-        temperatura=0, max_tokens=80, timeout=60, intentos=1,
+        temperatura=0, max_tokens=400, timeout=90, intentos=2,
     )
     if datos:
         print(f"\n   ✅ El proveedor respondió: {datos}")
