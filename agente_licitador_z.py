@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.6"
+VERSION_LICITAIA = "8.7"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2340,7 +2340,61 @@ class Agente2_5LectorForense:
             textos.append(f"(excel error: {e})")
         return "\n".join(textos)
 
+    def _leer_pdf_por_partes(self, ruta_pdf, nombre_archivo, paginas_por_bloque=10):
+        """Parte un PDF enorme en bloques y los lee por separado.
+
+        Un PDF de 12 MB no alcanza a procesarse en una sola llamada (timeout de
+        300s): se trocea con pypdf y se concatena el resultado.
+        """
+        try:
+            import pypdf
+            lector = pypdf.PdfReader(ruta_pdf)
+            total_paginas = len(lector.pages)
+        except Exception as e:
+            print(f"      [!] No se pudo abrir el PDF para trocearlo: {e}")
+            return ""
+        if total_paginas <= paginas_por_bloque:
+            return ""
+        print(f"      ✂️ PDF grande ({total_paginas} páginas): se lee en bloques de {paginas_por_bloque}")
+        import tempfile
+        partes = []
+        for inicio in range(0, total_paginas, paginas_por_bloque):
+            ruta_parte = ""
+            try:
+                escritor = pypdf.PdfWriter()
+                for pagina in lector.pages[inicio:inicio + paginas_por_bloque]:
+                    escritor.add_page(pagina)
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                    escritor.write(tmp.name)
+                    ruta_parte = tmp.name
+                fin = min(inicio + paginas_por_bloque, total_paginas)
+                etiqueta = f"{nombre_archivo} (paginas {inicio + 1}-{fin})"
+                texto = self._leer_pdf_con_gemini_multimodal(ruta_parte, etiqueta)
+                if texto:
+                    partes.append(f"--- {etiqueta} ---\n{texto}")
+            except Exception as e:
+                print(f"      [!] Error leyendo el bloque {inicio + 1}: {str(e)[:70]}")
+            finally:
+                if ruta_parte:
+                    try:
+                        os.remove(ruta_parte)
+                    except Exception:
+                        pass
+        if partes:
+            print(f"      ✅ [2.5] {nombre_archivo}: {len(partes)} bloque(s) leídos")
+        return "\n\n".join(partes)
+
     def _leer_pdf_con_gemini_multimodal(self, ruta_pdf, nombre_archivo):
+        # PDFs gigantes: se trocean para que Gemini los lea completos
+        try:
+            _tam_pdf = os.path.getsize(ruta_pdf)
+        except OSError:
+            _tam_pdf = 0
+        if _tam_pdf > 8 * 1024 * 1024:
+            _texto_partes = self._leer_pdf_por_partes(ruta_pdf, nombre_archivo)
+            if _texto_partes:
+                return _texto_partes
+
         """
         Envia el PDF binario directamente a Gemini como parte multimodal.
         Usa la File API para subir y luego generateContent con mime_type=application/pdf.
