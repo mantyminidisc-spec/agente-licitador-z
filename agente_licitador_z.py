@@ -208,7 +208,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 PROVEEDOR_IA = os.getenv("PROVEEDOR_IA", "gemini").strip().lower()
 IA_BASE_URL = os.getenv("IA_BASE_URL", "https://api.groq.com/openai/v1").strip()
 IA_API_KEY = os.getenv("IA_API_KEY", "").strip()
-IA_MODELO = os.getenv("IA_MODELO", "llama-3.3-70b-versatile").strip()
+IA_MODELO = os.getenv("IA_MODELO", "openai/gpt-oss-120b").strip()
 
 PAUSA_MINIMA_IA = float(os.getenv("PAUSA_MINIMA_IA", "5"))
 MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.1"
+VERSION_LICITAIA = "10.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -361,6 +361,10 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
         try:
             r = requests.post(url, json=payload, headers=cabeceras,
                               timeout=timeout or GEMINI_TIMEOUT)
+            if r.status_code == 400 and "response_format" in (r.text or "").lower():
+                print("      [!] El proveedor no acepta response_format; se reintenta sin el")
+                payload.pop("response_format", None)
+                continue
             if r.status_code != 200:
                 detalle = (r.text or "")[:220].replace("\n", " ")
                 ultimo = f"HTTP {r.status_code} ({IA_MODELO}): {detalle}"
