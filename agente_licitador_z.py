@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.3"
+VERSION_LICITAIA = "8.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1385,6 +1385,22 @@ class Agente2Extractor:
             print(f"      [🛡️ WAF] La ficha de {codigo} vino bloqueada; se intentará con navegador.")
             return rutas
         html = datos.decode("utf-8", "ignore")
+
+        # 1a) Texto de la ficha: es la información oficial que SIEMPRE se puede
+        #     leer, aunque los PDF anexos estén protegidos. Alimenta al Agente 3.
+        try:
+            soup_ficha = BeautifulSoup(html, "html.parser")
+            for etiqueta in soup_ficha(["script", "style", "noscript"]):
+                etiqueta.decompose()
+            texto_ficha = re.sub(r"\n{3,}", "\n\n", soup_ficha.get_text("\n", strip=True))
+            if len(texto_ficha) > 400:
+                ruta_txt = os.path.join(carpeta, f"FICHA_TEXTO_{codigo}.txt")
+                with open(ruta_txt, "w", encoding="utf-8") as f:
+                    f.write(texto_ficha[:60000])
+                rutas.append(ruta_txt)
+                print(f"      ✓ Texto de la ficha leído ({len(texto_ficha)} caracteres)")
+        except Exception as e:
+            print(f"      [!] No se pudo extraer el texto de la ficha: {e}")
 
         # 1) Visor de anexos PRIMERO: el token caduca si antes se usa el
         #    postback de la ficha PDF (el portal responde HTTP 500).
