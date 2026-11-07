@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.0"
+VERSION_LICITAIA = "10.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2559,7 +2559,7 @@ class Agente2_5LectorForense:
                     if celdas:
                         textos.append("  " + " | ".join(celdas))
         except Exception as e:
-            textos.append(f"(word error: {e})")
+            print(f"      [!] Word no legible ({os.path.basename(ruta_docx)}): {str(e)[:60]}")
         return "\n".join(textos)
 
     def _extraer_texto_excel(self, ruta_xlsx):
@@ -3799,49 +3799,69 @@ class Agente5Entregador:
     # DOC 1 · DOSSIER DE AUDITORÍA
     # ==================================================================
     def _resumenes_extractivos(self, expediente):
-        """Respaldo sin IA: arma un resumen por documento desde el informe forense.
+        """Respaldo sin IA: arma un resumen legible por documento.
 
-        Si la IA no devolvió los resúmenes estructurados, el informe forense ya
-        trae un bloque por cada archivo leído. Esto garantiza que la sección 7
-        del DOSSIER nunca quede vacía.
+        Limpia el ruido típico del OCR (índices con puntos, secuencias de una
+        sola letra) y se queda con las frases más informativas. Si un documento
+        no se pudo leer, lo dice de forma explícita en vez de mostrar un error.
         """
         texto = (expediente.get("informe_forense_adjuntos")
                  or expediente.get("texto_extraido_adjuntos") or "")
         if not texto:
             return []
+
+        def _limpiar(cuerpo):
+            """Quita el ruido del OCR y devuelve las frases con más contenido."""
+            cuerpo = re.sub(r"\.{3,}", " ", cuerpo)
+            cuerpo = re.sub(r"[-_=]{4,}", " ", cuerpo)
+            cuerpo = re.sub(r"(\w)\1{4,}", " ", cuerpo)  # ooooooo -> nada
+            candidatas = []
+            for linea in cuerpo.split("\n"):
+                limpia = " ".join(linea.split())
+                if len(limpia) < 60:
+                    continue
+                letras = sum(1 for c in limpia if c.isalpha())
+                if letras / max(1, len(limpia)) < 0.65:
+                    continue  # línea con demasiados símbolos
+                palabras = limpia.split()
+                utiles = sum(1 for p in palabras if len(p) > 3 and
+                             sum(1 for v in p if v.lower() in "aeiou") >= 2)
+                if utiles < 6:
+                    continue  # sin suficientes palabras reales
+                candidatas.append((utiles, limpia))
+            candidatas.sort(key=lambda x: -x[0])
+            elegidas = [f for _, f in candidatas[:3]]
+            return " ".join(elegidas)[:600].strip()
+
         salida = []
-        partes = texto.split("=== [LECTURA FORENSE COMPLETA:")
-        for parte in partes[1:]:
+        for parte in texto.split("=== [LECTURA FORENSE COMPLETA:")[1:]:
             cabecera, _, resto = parte.partition("]")
             nombre = cabecera.strip()
             metodo = ""
-            if "(Metodo:" in nombre:
-                nombre, _, metodo = nombre.partition("(Metodo:")
-                metodo = metodo.replace(")", "").strip()
-            nombre = nombre.strip()
             if not metodo and "(Metodo:" in resto[:90]:
-                metodo = resto[:90].split("(Metodo:")[1].split(")")[0].strip()
-            if not nombre:
+                metodo = resto[:90].split("(Metodo:")[1].split("=")[0].strip().rstrip(")").strip()
+            if "(Metodo:" in nombre:
+                nombre = nombre.split("(Metodo:")[0].strip()
+            nombre = nombre.strip()
+            if not nombre or nombre.upper().startswith("FICHA_TEXTO_"):
                 continue
-            cuerpo = resto.split("=== [FIN ADJUNTO:")[0].strip()
-            if len(cuerpo) < 80:
+            cuerpo = resto.split("=== [FIN ADJUNTO:")[0]
+            extracto = _limpiar(cuerpo)
+            if len(extracto) < 80:
+                salida.append({
+                    "archivo": nombre,
+                    "objeto": ("No se pudo leer el contenido de este documento "
+                               "(formato no legible automáticamente). Conviene abrirlo "
+                               "manualmente antes de postular."),
+                    "requisitos": [], "excluyentes": [], "riesgos": [], "preguntas": [],
+                    "_extractivo": True,
+                })
                 continue
-            oraciones = []
-            for linea in cuerpo.split("\n"):
-                limpia = " ".join(linea.split())
-                if len(limpia) > 40:
-                    oraciones.append(limpia)
-                if len(" ".join(oraciones)) > 600:
-                    break
-            extracto = " ".join(oraciones)[:700].strip()
             salida.append({
                 "archivo": nombre,
-                "objeto": (f"Documento leído con {metodo}. Extracto: {extracto}"
-                           if metodo else f"Extracto: {extracto}"),
-                "requisitos": [],
-                "excluyentes": [],
-                "riesgos": [],
-                "preguntas": [],
+                "objeto": f"Documento leído con {metodo or 'lectura automática'}. "
+                          f"Extracto: {extracto}",
+                "requisitos": [], "excluyentes": [], "riesgos": [], "preguntas": [],
                 "_extractivo": True,
             })
         return salida[:8]
