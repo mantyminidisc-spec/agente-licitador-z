@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.9"
+VERSION_LICITAIA = "10.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2802,7 +2802,10 @@ Lee y transcribe el contenido completo en formato estructurado."""
         texto: se renderiza cada página y se reconoce el texto en español.
         """
         try:
-            import fitz  # pymupdf
+            try:
+                import pymupdf as fitz
+            except Exception:
+                import fitz  # pymupdf version antigua
             import pytesseract
             from PIL import Image
             from io import BytesIO
@@ -5623,6 +5626,58 @@ def _ayuda():
 """)
 
 
+def probar_ia():
+    """Prueba el proveedor de IA configurado y muestra el error exacto."""
+    print("")
+    print("🧪 PRUEBA DEL PROVEEDOR DE IA")
+    print(f"   Proveedor : {PROVEEDOR_IA}")
+    if PROVEEDOR_IA == "openai":
+        print(f"   URL base  : {IA_BASE_URL}")
+        print(f"   Modelo    : {IA_MODELO}")
+        clave = IA_API_KEY or ""
+        if clave:
+            print(f"   Clave     : {clave[:8]}...{clave[-4:]} ({len(clave)} caracteres)")
+        else:
+            print("   Clave     : NO CONFIGURADA")
+        if not clave:
+            print("\n   [!] Falta IA_API_KEY en las variables de entorno.")
+            return 1
+        if len(clave) < 30:
+            print("\n   [!] La clave parece incompleta (muy corta).")
+        try:
+            r = requests.get(IA_BASE_URL.rstrip("/") + "/models",
+                             headers={"Authorization": f"Bearer {clave}"}, timeout=30)
+            if r.status_code == 200:
+                modelos = [m.get("id", "") for m in (r.json().get("data") or [])]
+                print(f"\n   ✓ La clave es válida. Modelos disponibles: {len(modelos)}")
+                for nombre in modelos[:12]:
+                    marca = "  <-- el configurado" if nombre == IA_MODELO else ""
+                    print(f"      · {nombre}{marca}")
+                if IA_MODELO not in modelos:
+                    print(f"\n   [!] El modelo {IA_MODELO} NO aparece en la lista de arriba.")
+            else:
+                detalle = (r.text or "")[:200].replace("\n", " ")
+                print(f"\n   [x] La clave fue rechazada: HTTP {r.status_code} · {detalle}")
+                print("       Revisa en la consola del proveedor que la clave esté activa")
+                print("       y que la copiaste completa (sin espacios).")
+                return 1
+        except Exception as e:
+            print(f"\n   [x] No se pudo conectar a {IA_BASE_URL}: {str(e)[:120]}")
+            return 1
+    else:
+        print(f"   Modelo    : {MODELO_GEMINI}")
+        print(f"   Clave     : {'configurada' if API_KEY_GEMINI else 'NO CONFIGURADA'}")
+
+    datos, error = _gemini_generar_json(
+        'Responde SOLO este JSON: {"estado": "ok", "mensaje": "conectado"}',
+        temperatura=0, max_tokens=80, timeout=60, intentos=1,
+    )
+    if datos:
+        print(f"\n   ✅ El proveedor respondió: {datos}")
+        return 0
+    print(f"\n   ❌ El proveedor falló: {error}")
+    return 1
+
 def adjuntar_archivos(codigo, rutas):
     """Copia archivos a la carpeta del proyecto para que el agente los lea."""
     codigo = str(codigo or "").strip()
@@ -5791,6 +5846,8 @@ if __name__ == "__main__":
         mostrar_estado()
     elif argumentos[0] in ("--horario", "horario"):
         mostrar_horario()
+    elif argumentos[0] in ("--probar-ia", "probar-ia"):
+        sys.exit(probar_ia())
     elif argumentos[0] in ("--limpiar", "limpiar"):
         sys.exit(limpiar_clones())
     elif argumentos[0] in ("--adjuntar", "adjuntar") and len(argumentos) > 2:
