@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.5"
+VERSION_LICITAIA = "8.6"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -354,6 +354,12 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
                         print(f"      [!] El modelo {modelo_actual} no está disponible; "
                               f"se prueba con {modelos[indice_modelo]}")
                         continue
+                if r.status_code in (429, 500, 502, 503, 504):
+                    # Saturación temporal de Google: se espera y se reintenta
+                    espera = min(25 * n, 70)
+                    print(f"      [!] Gemini saturado (HTTP {r.status_code}); "
+                          f"reintentando en {espera}s...")
+                    time.sleep(espera)
             else:
                 js = r.json()
                 cand = (js.get("candidates") or [{}])[0]
@@ -2391,8 +2397,23 @@ Lee y transcribe el contenido completo en formato estructurado."""
                 }],
                 "generationConfig": {"temperature": 0.1, "max_output_tokens": 8192}
             }
-            r_gen = requests.post(self.url_gemini_gen, json=payload_gen, timeout=90)
-            if r_gen.status_code == 200:
+            r_gen = None
+            for _intento_lect in (1, 2):
+                try:
+                    r_gen = requests.post(self.url_gemini_gen, json=payload_gen, timeout=300)
+                except Exception as e_up:
+                    print(f"      [!] Reintento {_intento_lect} de lectura multimodal "
+                          f"({nombre_archivo}): {str(e_up)[:80]}")
+                    r_gen = None
+                    if _intento_lect == 1:
+                        time.sleep(5)
+                    continue
+                if r_gen.status_code == 200:
+                    break
+                print(f"      [!] Gemini respondió {r_gen.status_code} leyendo {nombre_archivo}")
+                if _intento_lect == 1:
+                    time.sleep(8)
+            if r_gen is not None and r_gen.status_code == 200:
                 txt = r_gen.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
                 if txt:
                     print(f"      ✅ [Agente 2.5 Gemini Multimodal] {len(txt)} chars extraidos de {nombre_archivo}")
