@@ -1,30 +1,37 @@
 # -*- coding: utf-8 -*-
 """
 ===============================================================================
-LICITAIA · PORTAL DE ENTREGABLES (v7.0)
+LICITAIA · PORTAL DE ENTREGABLES (v2)
 ===============================================================================
-Sirve una página privada por proyecto, con enlace con token y descarga del
-paquete completo en ZIP. Sin dependencias externas (solo librería estándar).
+Sirve una página privada por proyecto, con enlace con token, descarga en ZIP y
+SUBIDA de anexos (para los documentos que el portal oficial no permite bajar:
+EETT, BAE, formularios) + botón para regenerar la auditoría con ellos.
 
 Rutas
-    GET /salud                     estado del servicio (JSON)
-    GET /p/<token>                 página del proyecto
-    GET /p/<token>/zip             descarga todo el paquete
-    GET /p/<token>/f/<archivo>     descarga un archivo
+    GET  /salud                       estado del servicio (JSON)
+    GET  /p/<token>                   página del proyecto
+    GET  /p/<token>/zip               descarga todo el paquete
+    GET  /p/<token>/f/<archivo>       descarga un archivo
+    GET  /p/<token>/a/<adjunto>       descarga un adjunto original
+    POST /p/<token>/subir             sube anexos (multipart)
+    POST /p/<token>/reprocesar        relanza el agente con los anexos subidos
 
 Variables de entorno
     LICITAIA_DATA_DIR   carpeta de datos (por defecto /data)
-    PORTAL_SECRETO      secreto para firmar los tokens (cámbialo)
+    PORTAL_SECRETO      secreto para firmar los tokens
     PORTAL_PUERTO       puerto de escucha (por defecto 8090)
-    PORTAL_URL_BASE     URL pública, ej. http://1.2.3.4:8090
+    PORTAL_URL_BASE     URL pública, ej. https://licitaia.duckdns.org
 ===============================================================================
 """
 import hashlib
 import hmac
 import json
 import os
-import socket
+import re
+import shutil
+import subprocess
 import sys
+import time
 import zipfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,15 +44,23 @@ SECRETO = os.getenv("PORTAL_SECRETO", "cambia-este-secreto-licitaia").encode("ut
 PUERTO = int(os.getenv("PORTAL_PUERTO", "8090"))
 URL_BASE = os.getenv("PORTAL_URL_BASE", "").rstrip("/")
 MAX_ZIP = 80 * 1024 * 1024
+MAX_SUBIDA = 60 * 1024 * 1024
+BLOQUEO = os.path.join(RAIZ, "portal_reproceso.lock")
 
 _cache = {"t": 0.0, "proyectos": {}}
+
+# Qué documentos conviene subir para una auditoría técnica completa
+CHECKLIST = [
+    ("Bases administrativas (BAE / BAG)", ("bae", "bases", "bag", "administrativ")),
+    ("Especificaciones técnicas (EETT)", ("eett", "tecnica", "técnica", "especificacion", "especificación")),
+    ("Formularios / anexos editables", ("formato", "anexo", "declaracion", "declaración", "carta")),
+]
 
 
 # ---------------------------------------------------------------------------
 # Utilidades
 # ---------------------------------------------------------------------------
 def _token(codigo):
-    """Token estable y no adivinable para un proyecto."""
     firma = hmac.new(SECRETO, str(codigo).encode("utf-8"), hashlib.sha256).hexdigest()
     return firma[:20]
 
@@ -58,11 +73,9 @@ def _formato_clp(valor):
 
 
 def _proyectos(recargar=False):
-    """Mapa token -> manifest, escaneando los manifest.json del disco."""
     ahora = datetime.now().timestamp()
     if not recargar and (ahora - _cache["t"]) < 20 and _cache["proyectos"]:
         return _cache["proyectos"]
-
     encontrados = {}
     for raiz, _, archivos in os.walk(ENTREGABLES):
         if "manifest.json" not in archivos:
@@ -77,10 +90,25 @@ def _proyectos(recargar=False):
         datos["_carpeta"] = raiz
         datos["_codigo"] = codigo
         encontrados[_token(codigo)] = datos
-
     _cache["t"] = ahora
     _cache["proyectos"] = encontrados
     return encontrados
+
+
+def _leer_manifest(carpeta):
+    try:
+        with open(os.path.join(carpeta, "manifest.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _guardar_manifest(carpeta, datos):
+    try:
+        with open(os.path.join(carpeta, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(datos, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def _archivos(carpeta):
@@ -96,7 +124,6 @@ def _archivos(carpeta):
 
 
 def _adjuntos(carpeta):
-    """Archivos originales del portal (subcarpeta adjuntos/)."""
     salida = []
     ruta_adj = os.path.join(carpeta, "adjuntos")
     if not os.path.isdir(ruta_adj):
@@ -120,12 +147,69 @@ def _zip_proyecto(carpeta):
                 if nombre.startswith("."):
                     continue
                 ruta = os.path.join(raiz, nombre)
-                relativo = os.path.relpath(ruta, carpeta)
                 total += os.path.getsize(ruta)
                 if total > MAX_ZIP:
                     break
-                zf.write(ruta, relativo)
+                zf.write(ruta, os.path.relpath(ruta, carpeta))
     return buffer.getvalue()
+
+
+def _leer_multipart(cuerpo, tipo_contenido):
+    """Parser multipart mínimo (sin dependencias)."""
+    m = re.search(r"boundary=([^;]+)", tipo_contenido or "")
+    if not m:
+        return []
+    limite = m.group(1).strip().strip('"').encode()
+    archivos = []
+    for parte in cuerpo.split(b"--" + limite):
+        if b"filename=" not in parte:
+            continue
+        cabecera, _, datos = parte.partition(b"\r\n\r\n")
+        mf = re.search(rb'filename="([^"]*)"', cabecera)
+        if not mf:
+            continue
+        nombre = os.path.basename(mf.group(1).decode("utf-8", "ignore"))
+        datos = datos.rstrip(b"\r\n")
+        if datos[-2:] == b"--":
+            datos = datos[:-2].rstrip(b"\r\n")
+        if nombre and datos:
+            archivos.append((nombre, datos))
+    return archivos
+
+
+def _agente_python():
+    for ruta in ("/app/agente_licitador_z.py",
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "agente_licitador_z.py")):
+        if os.path.isfile(ruta):
+            return ruta
+    return ""
+
+
+def _lanzar_reproceso(codigo):
+    """Lanza el agente en segundo plano. Devuelve (ok, mensaje)."""
+    if os.path.exists(BLOQUEO):
+        try:
+            with open(BLOQUEO, encoding="utf-8") as f:
+                pid = int((f.read() or "0").strip())
+            os.kill(pid, 0)
+            return False, "Ya hay un procesamiento en curso."
+        except Exception:
+            pass
+    script = _agente_python()
+    if not script:
+        return False, "No se encontró el agente en el contenedor."
+    registro = os.path.join(RAIZ, f"reproceso_{codigo}.log")
+    try:
+        with open(registro, "ab") as salida:
+            proceso = subprocess.Popen(
+                [sys.executable, script, "--reprocesar", codigo],
+                cwd=os.path.dirname(script), stdout=salida, stderr=subprocess.STDOUT,
+            )
+        with open(BLOQUEO, "w", encoding="utf-8") as f:
+            f.write(str(proceso.pid))
+        return True, f"Reproceso iniciado (PID {proceso.pid}). Revisa el registro {registro}"
+    except Exception as e:
+        return False, f"No se pudo iniciar: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -159,13 +243,23 @@ PLANTILLA = """<!DOCTYPE html>
  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
  td {{ padding:7px 4px; border-bottom:1px solid var(--linea); }}
  td.n {{ text-align:right; color:var(--gris); white-space:nowrap; }}
- a.boton {{ display:inline-block; background:var(--azul); color:#fff; text-decoration:none;
-           padding:12px 20px; border-radius:8px; font-weight:600; font-size:14px; }}
- a.boton:hover {{ opacity:.9; }}
+ a.boton, button.boton {{ display:inline-block; background:var(--azul); color:#fff; text-decoration:none;
+           padding:12px 20px; border-radius:8px; font-weight:600; font-size:14px; border:none; cursor:pointer; }}
+ a.boton:hover, button.boton:hover {{ opacity:.9; }}
  a.link {{ color:#1d4ed8; text-decoration:none; font-size:13px; }}
  footer {{ text-align:center; color:var(--gris); font-size:11px; padding:24px; }}
  .aviso {{ background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; font-size:12px;
           padding:10px 12px; border-radius:8px; }}
+ .ok {{ background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; font-size:12px;
+       padding:10px 12px; border-radius:8px; margin-bottom:12px; }}
+ .falta {{ background:#fffbeb; border:1px solid #fde68a; color:#92400e; font-size:12px;
+          padding:10px 12px; border-radius:8px; margin-bottom:12px; }}
+ .lista-check {{ list-style:none; padding:0; margin:0 0 14px; font-size:13px; }}
+ .lista-check li {{ padding:5px 0; }}
+ .si {{ color:#166534; font-weight:600; }}
+ .no {{ color:#b45309; font-weight:600; }}
+ input[type=file] {{ font-size:13px; margin:8px 0 12px; width:100%; }}
+ .ayuda {{ font-size:12px; color:var(--gris); }}
 </style>
 </head>
 <body>
@@ -175,6 +269,7 @@ PLANTILLA = """<!DOCTYPE html>
   <div class="meta">{organismo} · Proceso {codigo} · {tipo}</div>
 </header>
 <main>
+  {aviso}
   <div class="kpis">
     <div class="kpi"><div class="et">Presupuesto</div><div class="va">{presupuesto}</div><div class="no">IVA incluido</div></div>
     <div class="kpi"><div class="et">Oferta recomendada</div><div class="va">{oferta}</div><div class="no">con IVA</div></div>
@@ -192,11 +287,30 @@ PLANTILLA = """<!DOCTYPE html>
   {bloque_adjuntos}
 
   <div class="tarjeta">
+    <h2>Anexos para auditoría técnica</h2>
+    <p class="ayuda" style="margin:0 0 12px">
+      Estos documentos (EETT, bases especiales, formularios) no se pueden leer
+      automáticamente del portal. Súbelos aquí y el agente los incorpora al informe.
+    </p>
+    <ul class="lista-check">
+      {checklist}
+    </ul>
+    <form method="post" action="/p/{token}/subir" enctype="multipart/form-data">
+      <input type="file" name="archivos" multiple>
+      <button class="boton" type="submit">Subir anexos</button>
+    </form>
+    <p class="ayuda" style="margin:14px 0 0">
+      Acepta PDF, DOCX, XLSX y ZIP (máximo 60 MB por archivo).
+    </p>
+    {boton_reprocesar}
+  </div>
+
+  <div class="tarjeta">
     <h2>Cómo se usa</h2>
     <p style="font-size:13px; line-height:1.6; margin:0">
-      Descarga el ZIP, revisa el <b>DOC 2</b> (cotización) y ajusta lo que necesites en Word.
-      El <b>DOC 1</b> es tu auditoría interna y el <b>Excel</b> el respaldo financiero.
-      Si quieres otro precio, pídelo por WhatsApp y se regeneran los documentos.
+      Descarga el ZIP y revisa el <b>DOC 2</b> (cotización). El <b>DOC 1</b> es tu
+      auditoría interna y el <b>Excel</b> el respaldo financiero. Si quieres otro
+      precio, pídelo por WhatsApp y se regeneran los documentos.
     </p>
   </div>
 
@@ -210,15 +324,19 @@ PLANTILLA = """<!DOCTYPE html>
 """
 
 
-def _pagina(proyecto):
+def _pagina(proyecto, aviso=""):
     token = _token(proyecto["_codigo"])
-    archivos = _archivos(proyecto["_carpeta"])
-    adjuntos = _adjuntos(proyecto["_carpeta"])
+    carpeta = proyecto["_carpeta"]
+    archivos = _archivos(carpeta)
+    adjuntos = _adjuntos(carpeta)
+    manifest = _leer_manifest(carpeta)
+
     filas = "".join(
         f'<tr><td><a class="link" href="/p/{token}/f/{quote(a["nombre"])}">{a["nombre"]}</a></td>'
         f'<td class="n">{a["bytes"] // 1024} KB</td></tr>'
         for a in archivos
     ) or '<tr><td colspan="2">Todavía no hay documentos en esta carpeta.</td></tr>'
+
     filas_adj = "".join(
         f'<tr><td><a class="link" href="/p/{token}/a/{quote(a["nombre"])}">{a["nombre"]}</a></td>'
         f'<td class="n">{a["bytes"] // 1024} KB</td></tr>'
@@ -228,10 +346,36 @@ def _pagina(proyecto):
     if filas_adj:
         bloque_adj = (
             '<div class="tarjeta"><h2>Adjuntos originales del portal (' + str(len(adjuntos)) + ')</h2>'
-            '<p style="font-size:12px;color:#6b7280;margin:0 0 10px">'
+            '<p class="ayuda" style="margin:0 0 10px">'
             'Documentos oficiales tal como los publicó el organismo (PDF, DOCX, XLSX).</p>'
             '<table>' + filas_adj + '</table></div>'
         )
+
+    nombres = " ".join(a["nombre"].lower() for a in adjuntos)
+    checklist = ""
+    faltan = []
+    for etiqueta, claves in CHECKLIST:
+        presente = any(clave in nombres for clave in claves)
+        if presente:
+            checklist += f'<li><span class="si">✔</span> {etiqueta}</li>'
+        else:
+            checklist += f'<li><span class="no">○</span> {etiqueta} <span class="ayuda">— pendiente</span></li>'
+            faltan.append(etiqueta)
+
+    boton_reprocesar = ""
+    if manifest.get("estado") == "anexos_subidos":
+        boton_reprocesar = (
+            f'<form method="post" action="/p/{token}/reprocesar" style="margin-top:16px">'
+            f'<button class="boton" type="submit">Regenerar auditoría con estos anexos</button>'
+            '</form>'
+        )
+
+    if not aviso and faltan:
+        aviso = ('<div class="falta"><b>Falta información para la auditoría técnica.</b> '
+                 'Puedes subir: ' + ", ".join(faltan) + '.</div>')
+    elif not aviso:
+        aviso = '<div class="ok">Anexos completos: la auditoría técnica está incluida.</div>'
+
     return PLANTILLA.format(
         token=token,
         codigo=proyecto.get("codigo", ""),
@@ -243,6 +387,9 @@ def _pagina(proyecto):
         cierre=proyecto.get("fecha_cierre", "ver ficha"),
         filas=filas,
         bloque_adjuntos=bloque_adj,
+        checklist=checklist,
+        boton_reprocesar=boton_reprocesar,
+        aviso=aviso,
     )
 
 
@@ -250,7 +397,7 @@ def _pagina(proyecto):
 # Servidor
 # ---------------------------------------------------------------------------
 class Manejador(BaseHTTPRequestHandler):
-    server_version = "LicitaiaPortal/7.0"
+    server_version = "LicitaiaPortal/2.0"
 
     def log_message(self, formato, *args):
         sys.stdout.write("%s - %s\n" % (self.address_string(), formato % args))
@@ -268,73 +415,118 @@ class Manejador(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(cuerpo)
 
+    def _redirigir(self, destino):
+        self.send_response(303)
+        self.send_header("Location", destino)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _buscar(self, token):
+        proyecto = _proyectos().get(token)
+        if not proyecto:
+            _proyectos(recargar=True)
+            proyecto = _proyectos().get(token)
+        return proyecto
+
     def do_GET(self):
         ruta = self.path.split("?")[0]
+        consulta = self.path.split("?")[1] if "?" in self.path else ""
         partes = [p for p in ruta.split("/") if p]
 
-        if ruta == "/salud" or ruta == "/":
-            datos = {"servicio": "licitaia-portal", "estado": "ok",
-                     "proyectos": len(_proyectos()),
-                     "carpeta": ENTREGABLES}
+        if ruta in ("/salud", "/"):
+            datos = {"servicio": "licitaia-portal", "estado": "ok", "version": "2.0",
+                     "proyectos": len(_proyectos()), "carpeta": ENTREGABLES}
             return self._enviar(200, json.dumps(datos, ensure_ascii=False), "application/json")
 
         if len(partes) >= 2 and partes[0] == "p":
             token = partes[1]
-            proyecto = _proyectos().get(token)
-            if not proyecto:
-                _proyectos(recargar=True)
-                proyecto = _proyectos().get(token)
+            proyecto = self._buscar(token)
             if not proyecto:
                 return self._enviar(404, "<h1>Enlace no válido</h1>"
                                          "<p>El proyecto no existe o el enlace fue revocado.</p>")
 
-            # /p/<token>/zip
             if len(partes) == 3 and partes[2] == "zip":
                 datos = _zip_proyecto(proyecto["_carpeta"])
                 nombre = f"{proyecto['_codigo']}.zip"
                 return self._enviar(200, datos, "application/zip",
                                     {"Content-Disposition": f'attachment; filename="{nombre}"'})
 
-            # /p/<token>/f/<archivo>
-            if len(partes) == 4 and partes[2] == "f":
-                pedido = unquote(partes[3])
-                seguro = os.path.basename(pedido)
-                ruta_archivo = os.path.join(proyecto["_carpeta"], seguro)
+            if len(partes) == 4 and partes[2] in ("f", "a"):
+                seguro = os.path.basename(unquote(partes[3]))
+                base = proyecto["_carpeta"] if partes[2] == "f" else os.path.join(
+                    proyecto["_carpeta"], "adjuntos")
+                ruta_archivo = os.path.join(base, seguro)
                 if not os.path.isfile(ruta_archivo):
                     return self._enviar(404, "<h1>Archivo no encontrado</h1>")
                 with open(ruta_archivo, "rb") as f:
                     datos = f.read()
-                tipo = "application/octet-stream"
-                if seguro.lower().endswith(".pdf"):
-                    tipo = "application/pdf"
+                tipo = "application/pdf" if seguro.lower().endswith(".pdf") else "application/octet-stream"
                 return self._enviar(200, datos, tipo,
                                     {"Content-Disposition": f'attachment; filename="{seguro}"'})
 
-            # /p/<token>/a/<adjunto>  (originales del portal, en adjuntos/)
-            if len(partes) == 4 and partes[2] == "a":
-                pedido = unquote(partes[3])
-                seguro = os.path.basename(pedido)
-                ruta_archivo = os.path.join(proyecto["_carpeta"], "adjuntos", seguro)
-                if not os.path.isfile(ruta_archivo):
-                    return self._enviar(404, "<h1>Adjunto no encontrado</h1>")
-                with open(ruta_archivo, "rb") as f:
-                    datos = f.read()
-                tipo = "application/octet-stream"
-                if seguro.lower().endswith(".pdf"):
-                    tipo = "application/pdf"
-                return self._enviar(200, datos, tipo,
-                                    {"Content-Disposition": f'attachment; filename="{seguro}"'})
-
-            return self._enviar(200, _pagina(proyecto))
+            aviso = ""
+            if "subido=" in consulta:
+                aviso = '<div class="ok">Anexos recibidos correctamente.</div>'
+            if "run=1" in consulta:
+                aviso = ('<div class="ok">Reproceso iniciado. En unos minutos el informe '
+                         'estará actualizado en esta misma página.</div>')
+            return self._enviar(200, _pagina(proyecto, aviso))
 
         return self._enviar(404, "<h1>No encontrado</h1>")
+
+    def do_POST(self):
+        ruta = self.path.split("?")[0]
+        partes = [p for p in ruta.split("/") if p]
+        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar"):
+            return self._enviar(404, "<h1>No encontrado</h1>")
+        proyecto = self._buscar(partes[1])
+        if not proyecto:
+            return self._enviar(404, "<h1>Enlace no válido</h1>")
+
+        carpeta = proyecto["_carpeta"]
+        codigo = proyecto["_codigo"]
+
+        if partes[2] == "reprocesar":
+            ok, mensaje = _lanzar_reproceso(codigo)
+            print(f"   [PORTAL] reproceso {codigo}: {mensaje}")
+            return self._redirigir(f"/p/{partes[1]}" + ("?run=1" if ok else ""))
+
+        largo = int(self.headers.get("Content-Length") or 0)
+        if largo <= 0 or largo > MAX_SUBIDA:
+            return self._enviar(413, "<h1>Archivo demasiado grande</h1>")
+        cuerpo = self.rfile.read(largo)
+        archivos = _leer_multipart(cuerpo, self.headers.get("Content-Type", ""))
+        if not archivos:
+            return self._enviar(400, "<h1>No se recibió ningún archivo</h1>")
+
+        destino = os.path.join(carpeta, "adjuntos")
+        os.makedirs(destino, exist_ok=True)
+        guardados = []
+        for nombre, datos in archivos:
+            try:
+                ruta_final = os.path.join(destino, nombre)
+                with open(ruta_final, "wb") as f:
+                    f.write(datos)
+                guardados.append(nombre)
+                print(f"   [PORTAL] subido {codigo}: {nombre} ({len(datos)} bytes)")
+            except Exception as e:
+                print(f"   [PORTAL] error guardando {nombre}: {e}")
+
+        manifest = _leer_manifest(carpeta)
+        previos = manifest.get("anexos_subidos") or []
+        manifest["anexos_subidos"] = sorted(set(previos + guardados))
+        manifest["estado"] = "anexos_subidos"
+        manifest["subido_en"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _guardar_manifest(carpeta, manifest)
+        _cache["t"] = 0
+        return self._redirigir(f"/p/{partes[1]}?subido={len(guardados)}")
 
 
 def main():
     os.makedirs(ENTREGABLES, exist_ok=True)
-    print(f"LICITAIA PORTAL · carpeta: {ENTREGABLES}")
-    print(f"LICITAIA PORTAL · proyectos indexados: {len(_proyectos())}")
-    print(f"LICITAIA PORTAL · escuchando en 0.0.0.0:{PUERTO}"
+    print(f"LICITAIA PORTAL v2 · carpeta: {ENTREGABLES}")
+    print(f"LICITAIA PORTAL v2 · proyectos indexados: {len(_proyectos())}")
+    print(f"LICITAIA PORTAL v2 · escuchando en 0.0.0.0:{PUERTO}"
           + (f" · URL base: {URL_BASE}" if URL_BASE else ""))
     servidor = ThreadingHTTPServer(("0.0.0.0", PUERTO), Manejador)
     try:

@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "8.4"
+VERSION_LICITAIA = "8.5"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2159,6 +2159,21 @@ class Agente2Extractor:
 
         # 1. Descarga real de archivos adjuntos originales (.pdf, .docx, .doc, .xlsx, etc.)
         adjuntos_descargados = self._descargar_adjuntos_reales_portal(codigo, tipo_portal, datos_api, carpeta_adjuntos)
+
+        # Anexos que el cliente subió al portal: también se leen
+        try:
+            _extra = []
+            for _raiz, _dirs, _archs in os.walk(carpeta_adjuntos):
+                for _nombre in _archs:
+                    _ruta = os.path.join(_raiz, _nombre)
+                    if _ruta not in adjuntos_descargados:
+                        _extra.append(_ruta)
+            if _extra:
+                print(f"   ✓ {len(_extra)} anexo(s) subido(s) por el cliente al portal")
+                adjuntos_descargados = adjuntos_descargados + _extra
+        except Exception:
+            pass
+
 
         # 2. Extracción profunda de texto desde los archivos descargados para el Agente 3
         texto_adjuntos = self._extraer_texto_de_adjuntos_locales(adjuntos_descargados)
@@ -4992,12 +5007,46 @@ def _ayuda():
   python agente_licitador_z.py --probar-whatsapp [NUM]  Manda un WhatsApp de prueba
   python agente_licitador_z.py --limpiar             Borra clones antiguos (ANEXO_CLON, CLON_EXACTO)
   python agente_licitador_z.py --diagnostico-visor COD  Muestra la estructura del visor de anexos
+  python agente_licitador_z.py --adjuntar CODIGO A.pdf   Agrega anexos a un proyecto (EETT, bases)
   python agente_licitador_z.py --historial         Lista los ya entregados en Drive
   python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
   python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
   python agente_licitador_z.py --olvidar CODIGO    Solo lo saca de las listas (sin procesar)
 ==============================================================================
 """)
+
+
+def adjuntar_archivos(codigo, rutas):
+    """Copia archivos a la carpeta del proyecto para que el agente los lea."""
+    codigo = str(codigo or "").strip()
+    destino = None
+    for raiz, _dirs, _archivos in os.walk(CARPETA_ENTREGABLES):
+        if os.path.basename(raiz) == codigo:
+            destino = os.path.join(raiz, "adjuntos")
+            break
+    if not destino:
+        print(f"   [!] No existe la carpeta del proyecto {codigo}.")
+        print("       Procesa primero el proyecto (o usa --reprocesar) y reintenta.")
+        return 1
+    os.makedirs(destino, exist_ok=True)
+    copiados = 0
+    print("")
+    print(f"📎 ADJUNTANDO ARCHIVOS A {codigo}")
+    for ruta in rutas:
+        try:
+            if not os.path.isfile(ruta):
+                print(f"   [!] No existe: {ruta}")
+                continue
+            nombre = os.path.basename(ruta)
+            shutil.copy2(ruta, os.path.join(destino, nombre))
+            copiados += 1
+            print(f"   ✓ {nombre}")
+        except Exception as e:
+            print(f"   [!] {ruta}: {e}")
+    print(f"\n   {copiados} archivo(s) agregado(s) a la carpeta de anexos.")
+    if copiados:
+        print(f"   Ahora ejecuta:  python agente_licitador_z.py --reprocesar {codigo}")
+    return 0 if copiados else 1
 
 
 def diagnostico_visor(codigo):
@@ -5137,6 +5186,8 @@ if __name__ == "__main__":
         mostrar_horario()
     elif argumentos[0] in ("--limpiar", "limpiar"):
         sys.exit(limpiar_clones())
+    elif argumentos[0] in ("--adjuntar", "adjuntar") and len(argumentos) > 2:
+        sys.exit(adjuntar_archivos(argumentos[1], argumentos[2:]))
     elif argumentos[0] in ("--diagnostico-visor", "diagnostico-visor") and len(argumentos) > 1:
         sys.exit(diagnostico_visor(argumentos[1]))
     elif argumentos[0] in ("--probar-whatsapp", "probar-whatsapp"):
