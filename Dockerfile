@@ -44,19 +44,23 @@ RUN if [ "$INSTALAR_NAVEGADOR" = "1" ]; then \
 
 COPY agente_licitador_z.py .
 COPY probar_conexion.py .
+# Portal de entregables (sirve las páginas privadas y las descargas)
+COPY portal.py .
 # Logo corporativo (DOC 1 y DOC 2). Si no lo quieres, bórralo del repo.
 COPY logo.png .
 
 RUN mkdir -p /data
 VOLUME ["/data"]
 
-# El contenedor queda vivo: el agente se ejecuta desde la Terminal de Coolify
-# o con un Scheduled Task (recomendado para producción).
-CMD ["sleep", "infinity"]
+EXPOSE 8090
+
+# El contenedor queda vivo: el portal atiende en 8090 y el agente se ejecuta
+# desde la Terminal de Coolify o con un Scheduled Task.
+CMD ["sh", "-c", "python portal.py & exec sleep infinity"]
 
 # -----------------------------------------------------------------------------
 # ALTERNATIVA: que el agente corra solo al arrancar el contenedor.
-# Comenta la línea CMD de arriba y descomenta esta:
+# Cambia la línea CMD de arriba por:
 #
-#   CMD ["python", "agente_licitador_z.py"]
+#   CMD ["sh", "-c", "python portal.py & exec python agente_licitador_z.py"]
 # -----------------------------------------------------------------------------

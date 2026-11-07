@@ -53,6 +53,8 @@ import sys
 import time
 import json
 import base64
+import hmac
+import hashlib
 import shutil
 import zipfile
 import datetime
@@ -197,7 +199,15 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "6.3"
+VERSION_LICITAIA = "7.0"
+
+# --- Entrega de documentos ---------------------------------------------------
+# portal = guarda en el servidor y entrega un link privado (sin Google)
+# drive  = comportamiento anterior (Apps Script + Google Drive)
+ENTREGA_MODO = os.getenv("ENTREGA_MODO", "portal").strip().lower()
+PORTAL_URL_BASE = os.getenv("PORTAL_URL_BASE", "").rstrip("/")
+PORTAL_SECRETO = os.getenv("PORTAL_SECRETO", "licitaia-cambia-este-secreto")
+PORTAL_PUERTO = int(os.getenv("PORTAL_PUERTO", "8090"))
 
 # --- Servicio OFICIAL de adjuntos de Compra Ágil -----------------------------
 # Es el mismo microservicio que usa la web del buscador (SPA de React). Se
@@ -3979,6 +3989,124 @@ class Agente5Entregador:
     # --------------------------------------------------------------------------
     # SINCRONIZACIÓN CON GOOGLE DRIVE Y CORREO HTML EJECUTIVO
     # --------------------------------------------------------------------------
+    # ==================================================================
+    # ENTREGA POR PORTAL · carpeta local + link privado (sin Google)
+    # ==================================================================
+    @staticmethod
+    def _token_portal(codigo):
+        firma = hmac.new(PORTAL_SECRETO.encode("utf-8"), str(codigo).encode("utf-8"),
+                         hashlib.sha256).hexdigest()
+        return firma[:20]
+
+    def _link_portal(self, codigo):
+        base = PORTAL_URL_BASE or f"http://localhost:{PORTAL_PUERTO}"
+        return f"{base}/p/{self._token_portal(codigo)}"
+
+    def _guardar_manifest(self, carpeta_proyecto, expediente, escenarios):
+        eq = (escenarios or {}).get("equilibrado", {})
+        datos = {
+            "codigo": expediente.get("codigo", ""),
+            "cliente": os.getenv("CLIENTE", "mantytech"),
+            "nombre": expediente.get("nombre", ""),
+            "organismo": expediente.get("organismo", ""),
+            "tipo_portal": expediente.get("tipo_portal", ""),
+            "fecha_cierre": expediente.get("fecha_cierre", ""),
+            "presupuesto_clp": int(expediente.get("presupuesto_estatal_clp") or 0),
+            "oferta_bruta_clp": int(eq.get("oferta_total_bruta_clp") or 0),
+            "generado": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "version": VERSION_LICITAIA,
+            "estado": "por_revisar",
+        }
+        ruta = os.path.join(carpeta_proyecto, "manifest.json")
+        try:
+            with open(ruta, "w", encoding="utf-8") as f:
+                json.dump(datos, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"   [!] No se pudo escribir el manifiesto: {e}")
+        return ruta
+
+    def _html_correo_portal(self, expediente, informes, escenarios, enlace):
+        eq = (escenarios or {}).get("equilibrado", {})
+        return f"""
+        <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;
+                    border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">
+          <div style="background:#1f2a44;color:#fff;padding:24px">
+            <div style="font-size:11px;letter-spacing:.16em;opacity:.75">LICITAIA</div>
+            <h2 style="margin:8px 0 4px;font-size:20px">Proyecto listo para revisar</h2>
+            <div style="font-size:13px;opacity:.85">{expediente.get('codigo','')} ·
+              {'Compra Ágil' if expediente.get('tipo_portal')=='COMPRA_AGIL' else 'Licitación pública'}</div>
+          </div>
+          <div style="padding:24px;color:#111827">
+            <p style="font-size:15px;margin:0 0 6px"><b>{expediente.get('nombre','')}</b></p>
+            <p style="font-size:13px;color:#6b7280;margin:0 0 18px">
+              {expediente.get('organismo','')} · cierre {expediente.get('fecha_cierre','ver ficha')}</p>
+            <table style="width:100%;border-collapse:collapse;font-size:14px">
+              <tr style="border-top:1px solid #e5e7eb">
+                <td style="padding:10px 0">Presupuesto del organismo (IVA incl.)</td>
+                <td style="padding:10px 0;text-align:right"><b>${int(expediente.get('presupuesto_estatal_clp') or 0):,} CLP</b></td>
+              </tr>
+              <tr style="border-top:1px solid #e5e7eb">
+                <td style="padding:10px 0">Oferta recomendada (con IVA)</td>
+                <td style="padding:10px 0;text-align:right"><b>${int(eq.get('oferta_total_bruta_clp') or 0):,} CLP</b></td>
+              </tr>
+            </table>
+            <div style="text-align:center;margin:26px 0 8px">
+              <a href="{enlace}" style="background:#1f2a44;color:#fff;text-decoration:none;
+                 padding:14px 26px;border-radius:8px;font-weight:bold;display:inline-block">
+                 Ver documentos y descargar</a>
+            </div>
+            <p style="font-size:12px;color:#6b7280;text-align:center;margin:10px 0 0">
+              Incluye auditoría (DOC 1), cotización (DOC 2), informe financiero (DOC 3),
+              planilla Excel y los adjuntos originales del portal.</p>
+            <p style="font-size:12px;color:#6b7280;margin:22px 0 0">
+              {informes.get('resumen_ejecutivo_gerencial','')[:400]}</p>
+          </div>
+        </div>
+        """
+
+    def _entregar_por_portal(self, carpeta_proyecto, expediente, informes, escenarios):
+        """Guarda el manifiesto, avisa por correo con el link y devuelve el enlace.
+
+        La entrega es exitosa cuando los documentos están en el disco y existe el
+        link: si el correo falla, NO se marca el proyecto como pendiente.
+        """
+        codigo = expediente["codigo"]
+        self._guardar_manifest(carpeta_proyecto, expediente, escenarios)
+        enlace = self._link_portal(codigo)
+        archivos = self._recopilar_archivos_proyecto(carpeta_proyecto)
+        print(f"   📁 [PORTAL] {len(archivos)} archivo(s) guardados en disco")
+        print(f"   🔗 [PORTAL] Enlace privado: {enlace}")
+
+        html = self._html_correo_portal(expediente, informes, escenarios, enlace)
+        enviado = False
+        if URL_APPS_SCRIPT:
+            payload = {
+                "empresa": "Mantytech_SpA",
+                "email_destino": self.perfil["email_notificaciones"],
+                "asunto_email": f"✅ [LICITAIA] {codigo} listo para revisar",
+                "html_resumen": html,
+                "enviar_correo": True,
+                "id_envio": f"{codigo}-{datetime.datetime.now().strftime('%Y%m%d%H%M')}",
+                "subcarpeta_portal": "",
+                "codigo_id": codigo,
+                "archivos": [],
+            }
+            ok, _carpeta, detalle = self._enviar_lote_apps_script(payload, timeout=90)
+            enviado = ok
+            if ok:
+                print(f"   ✅ Correo enviado a {self.perfil['email_notificaciones']} con el enlace")
+            else:
+                print(f"   [!] El correo no salió ({detalle}). El enlace sigue disponible.")
+        if not enviado:
+            try:
+                with open(os.path.join(carpeta_proyecto, "CORREO_PENDIENTE.html"), "w",
+                          encoding="utf-8") as f:
+                    f.write(html + f"\n<!-- enlace: {enlace} -->")
+            except Exception:
+                pass
+
+        return {"subido_drive": True, "url_carpeta_drive": enlace, "modo": "portal"}
+
     # ------------------------------------------------------------------
     # PUENTE GOOGLE DRIVE v5.4 (honesto, por lotes y con reintentos reales)
     # ------------------------------------------------------------------
@@ -4142,6 +4270,10 @@ class Agente5Entregador:
             print(f"   [!] CRM Maestro no se pudo subir: {detalle}")
 
     def sincronizar_drive_y_correo(self, carpeta_proyecto, expediente, informes, escenarios):
+        # Entrega por portal: guarda en el servidor y devuelve el link privado.
+        if ENTREGA_MODO == "portal":
+            return self._entregar_por_portal(carpeta_proyecto, expediente, informes, escenarios)
+
         eq = escenarios["equilibrado"]
         codigo = expediente["codigo"]
         subcarpeta = "01_COMPRAS_AGILES" if expediente["tipo_portal"] == "COMPRA_AGIL" else "02_LICITACIONES_PUBLICAS"
@@ -4698,6 +4830,8 @@ def mostrar_estado():
     print(" ESTADO DEL AGENTE LICITAIA")
     print("=" * 72)
     print(f"  Versión             : {VERSION_LICITAIA}")
+    print(f"  Entrega             : {ENTREGA_MODO} "
+          + (f"(portal: {PORTAL_URL_BASE or 'sin URL base'})" if ENTREGA_MODO == "portal" else ""))
     print(f"  Carpeta de datos    : {DIRECTORIO_RAIZ}")
     print(f"  Ticket Mercado Pub. : {'configurado' if TICKET_MERCADO_PUBLICO else 'FALTA'}")
     print(f"  Modelo Gemini       : {MODELO_GEMINI}"
