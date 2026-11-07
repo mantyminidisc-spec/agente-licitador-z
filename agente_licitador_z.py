@@ -207,7 +207,7 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.3"
+VERSION_LICITAIA = "9.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3636,6 +3636,54 @@ class Agente5Entregador:
     # ==================================================================
     # DOC 1 · DOSSIER DE AUDITORÍA
     # ==================================================================
+    def _resumenes_extractivos(self, expediente):
+        """Respaldo sin IA: arma un resumen por documento desde el informe forense.
+
+        Si la IA no devolvió los resúmenes estructurados, el informe forense ya
+        trae un bloque por cada archivo leído. Esto garantiza que la sección 7
+        del DOSSIER nunca quede vacía.
+        """
+        texto = (expediente.get("informe_forense_adjuntos")
+                 or expediente.get("texto_extraido_adjuntos") or "")
+        if not texto:
+            return []
+        salida = []
+        partes = texto.split("=== [LECTURA FORENSE COMPLETA:")
+        for parte in partes[1:]:
+            cabecera, _, resto = parte.partition("]")
+            nombre = cabecera.strip()
+            metodo = ""
+            if "(Metodo:" in nombre:
+                nombre, _, metodo = nombre.partition("(Metodo:")
+                metodo = metodo.replace(")", "").strip()
+            nombre = nombre.strip()
+            if not metodo and "(Metodo:" in resto[:90]:
+                metodo = resto[:90].split("(Metodo:")[1].split(")")[0].strip()
+            if not nombre:
+                continue
+            cuerpo = resto.split("=== [FIN ADJUNTO:")[0].strip()
+            if len(cuerpo) < 80:
+                continue
+            oraciones = []
+            for linea in cuerpo.split("\n"):
+                limpia = " ".join(linea.split())
+                if len(limpia) > 40:
+                    oraciones.append(limpia)
+                if len(" ".join(oraciones)) > 600:
+                    break
+            extracto = " ".join(oraciones)[:700].strip()
+            salida.append({
+                "archivo": nombre,
+                "objeto": (f"Documento leído con {metodo}. Extracto: {extracto}"
+                           if metodo else f"Extracto: {extracto}"),
+                "requisitos": [],
+                "excluyentes": [],
+                "riesgos": [],
+                "preguntas": [],
+                "_extractivo": True,
+            })
+        return salida[:8]
+
     def generar_doc1_auditoria(self, expediente, informes, escenarios, ruta_doc1):
         doc = Document()
         self._config_documento(doc, 1.7, 10.5)
@@ -3830,6 +3878,8 @@ class Agente5Entregador:
         # --- 7. Análisis documental por anexo
         self._titulo_seccion(doc, 7, "Análisis documental por anexo")
         docs = informes.get("analisis_por_documento") or []
+        if not docs:
+            docs = self._resumenes_extractivos(expediente)
         if not docs:
             self._parrafo(
                 doc,
