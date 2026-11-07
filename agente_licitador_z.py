@@ -203,11 +203,15 @@ DRIVE_MAX_ARCHIVOS = int(os.getenv("DRIVE_MAX_ARCHIVOS", "40"))
 MAX_BYTES_DESCARGA = int(os.getenv("MAX_BYTES_DESCARGA", str(80 * 1024 * 1024)))
 GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "180"))
 
+# Ritmo máximo hacia Gemini: la capa gratuita responde 429 si se llama muy seguido
+PAUSA_MINIMA_IA = float(os.getenv("PAUSA_MINIMA_IA", "5"))
+MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
+
 # --- Filtro de giro ----------------------------------------------------------
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "9.4"
+VERSION_LICITAIA = "9.5"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -314,6 +318,15 @@ def _normalizar_para_regex(texto):
 # ==============================================================================
 # LLAMADA ÚNICA A GEMINI (JSON validado, modelo vigente, reintentos con backoff)
 # ==============================================================================
+_ULTIMA_LLAMADA_IA = [0.0]
+_FALLOS_CUOTA = [0]
+
+
+def _ia_limite_alcanzado():
+    """True si Gemini ya rechazó varias veces por cuota en esta corrida."""
+    return _FALLOS_CUOTA[0] >= MAX_FALLOS_CUOTA
+
+
 def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3):
     """Devuelve (dict, "") si todo va bien, o (None, motivo_del_fallo).
 
@@ -339,6 +352,11 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
     }
     ultimo = "sin intentos"
     for n in range(1, max(1, intentos) + 1):
+        # Ritmo mínimo entre llamadas
+        _faltante = PAUSA_MINIMA_IA - (time.time() - _ULTIMA_LLAMADA_IA[0])
+        if _faltante > 0:
+            time.sleep(_faltante)
+        _ULTIMA_LLAMADA_IA[0] = time.time()
         modelo_actual = modelos[min(indice_modelo, len(modelos) - 1)]
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                f"{modelo_actual}:generateContent?key={API_KEY_GEMINI}")
@@ -356,7 +374,9 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
                         continue
                 if r.status_code in (429, 500, 502, 503, 504):
                     # Saturación temporal de Google: se espera y se reintenta
-                    espera = min(25 * n, 70)
+                    if r.status_code == 429:
+                        _FALLOS_CUOTA[0] += 1
+                    espera = min(35 * n, 120) if r.status_code == 429 else min(25 * n, 70)
                     print(f"      [!] Gemini saturado (HTTP {r.status_code}); "
                           f"reintentando en {espera}s...")
                     time.sleep(espera)
@@ -370,6 +390,7 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
                     ultimo = f"respuesta vacía (finishReason={fin})"
                 else:
                     txt = re.sub(r"^\s*```(?:json)?|```\s*$", "", txt, flags=re.IGNORECASE).strip()
+                    _FALLOS_CUOTA[0] = 0
                     try:
                         return json.loads(txt), ""
                     except Exception as e:
@@ -2520,6 +2541,9 @@ class Agente2_5LectorForense:
         return "\n\n".join(partes)
 
     def _leer_pdf_con_gemini_multimodal(self, ruta_pdf, nombre_archivo):
+        if _ia_limite_alcanzado():
+            print("      [!] Cuota de IA agotada: se extrae el texto sin IA")
+            return ""
         # Caché por huella: si el PDF ya se transcribió, no se vuelve a leer
         try:
             with open(ruta_pdf, "rb") as _f_cache:
@@ -2644,6 +2668,9 @@ Lee y transcribe el contenido completo en formato estructurado."""
         """
         recorte = (texto or "")[:24000]
         if len(recorte.strip()) < 400:
+            return None
+        if _ia_limite_alcanzado():
+            print("      [!] Cuota de IA agotada: se usa el resumen extractivo")
             return None
         prompt = (
             "Eres abogado experto en contratacion publica chilena (Ley 19.886, "
