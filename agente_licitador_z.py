@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.6"
+VERSION_LICITAIA = "10.7"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2853,6 +2853,34 @@ Lee y transcribe el contenido completo en formato estructurado."""
             print(f"      ✅ OCR local: {len(resultado)} caracteres recuperados")
         return resultado
 
+    def resumenes_diferidos(self, expediente):
+        """Genera los resúmenes por documento DESPUÉS de la auditoría principal.
+
+        Motivo: los proveedores gratuitos limitan los tokens por minuto. Si los
+        resúmenes se piden antes, consumen la cuota y el Agente 3 (el dossier y
+        la auditoría de multas) se queda sin turno.
+        """
+        texto = (expediente.get("informe_forense_adjuntos")
+                 or expediente.get("texto_extraido_adjuntos") or "")
+        if not texto:
+            return []
+        salida = []
+        for parte in texto.split("=== [LECTURA FORENSE COMPLETA:")[1:]:
+            cabecera, _, resto = parte.partition("]")
+            nombre = cabecera.strip()
+            if "(Metodo:" in nombre:
+                nombre = nombre.split("(Metodo:")[0].strip()
+            if not nombre or nombre.upper().startswith("FICHA_TEXTO_"):
+                continue
+            cuerpo = resto.split("=== [FIN ADJUNTO:")[0].strip()
+            if len(cuerpo) < 800 or len(salida) >= 6:
+                continue
+            resumen = self._resumen_documental(nombre, cuerpo)
+            if resumen:
+                salida.append(resumen)
+        print(f"   ✓ [2.5] {len(salida)} resumen(es) de documento generados")
+        return salida
+
     def leer_adjuntos_forense(self, lista_rutas, carpeta_proyecto):
         """
         Proceso forense completo para todos los adjuntos.
@@ -2924,7 +2952,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
                 )
                 informe_bloques.append(bloque)
                 nombres_leidos.append(nom)
-                if len(texto_extraido) > 800 and len(resumenes_docs) < 8:
+                if os.getenv("RESUMENES_INLINE", "0") == "1" and len(texto_extraido) > 800 and len(resumenes_docs) < 8:
                     _res = self._resumen_documental(nom, texto_extraido)
                     if _res:
                         resumenes_docs.append(_res)
@@ -5481,6 +5509,11 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
         try:
             expediente = agente2.extraer_proyecto_completo(candidato, carpeta_proyecto)
             informes = agente3.auditar_y_redactar_4_informes(expediente)
+            if os.getenv("RESUMENES_IA", "0") == "1":
+                try:
+                    informes['analisis_por_documento'] = agente2.resumenes_diferidos(expediente)
+                except Exception as e_res:
+                    print(f"   [!] Sin resúmenes por documento: {str(e_res)[:70]}")
             try:
                 informes['analisis_por_documento'] = expediente.get('resumenes_documentos') or []
             except Exception:
