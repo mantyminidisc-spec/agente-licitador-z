@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.5"
+VERSION_LICITAIA = "10.6"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4160,9 +4160,19 @@ class Agente5Entregador:
                 cursiva=True,
                 espacio_despues=6,
             )
-            return
+            multas = {"reglas": [], "nivel_riesgo_multas": "NO ANALIZADO EN ESTA CORRIDA"}
 
-        nivel_multas = str(multas.get("nivel_riesgo_multas") or "SIN INFORMACIÓN").upper()
+        # Si la IA no informo el nivel, se deduce del riesgo mas alto de las reglas
+        _nivel_ia = str(multas.get("nivel_riesgo_multas") or "").strip().upper()
+        if not _nivel_ia:
+            _riesgos = [str(r.get("riesgo", "")).strip().upper() for r in (multas.get("reglas") or [])]
+            for _candidato in ("ALTO", "MEDIO", "BAJO"):
+                if _candidato in _riesgos:
+                    _nivel_ia = _candidato
+                    break
+            if not _nivel_ia:
+                _nivel_ia = "SIN INFORMACIÓN"
+        nivel_multas = _nivel_ia
         self._parrafo(doc, f"Nivel de riesgo de multas detectado: {nivel_multas}", 9.5,
                       negrita=True, espacio_despues=6)
         filas_multas = []
