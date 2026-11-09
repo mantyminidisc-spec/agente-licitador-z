@@ -47,6 +47,8 @@ COPY agente_licitador_z.py .
 COPY probar_conexion.py .
 # Portal de entregables (sirve las páginas privadas y las descargas)
 COPY portal.py .
+# Planificador interno: corre el agente a las horas configuradas (sin Coolify)
+COPY planificador.py .
 # Logo corporativo (DOC 1 y DOC 2). Si no lo quieres, bórralo del repo.
 COPY logo.png .
 # Perfiles de clientes (multi-cliente). Se pueden sobrescribir en /data/clientes
@@ -59,7 +61,7 @@ EXPOSE 8090
 
 # El contenedor queda vivo: el portal atiende en 8090 y el agente se ejecuta
 # desde la Terminal de Coolify o con un Scheduled Task.
-CMD ["sh", "-c", "python portal.py & exec sleep infinity"]
+CMD ["sh", "-c", "python portal.py & python planificador.py & exec sleep infinity"]
 
 # -----------------------------------------------------------------------------
 # ALTERNATIVA: que el agente corra solo al arrancar el contenedor.
