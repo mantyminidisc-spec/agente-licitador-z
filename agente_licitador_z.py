@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "12.5"
+VERSION_LICITAIA = "12.6"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -6090,7 +6090,9 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
                 except Exception as e_res:
                     print(f"   [!] Sin resúmenes por documento: {str(e_res)[:70]}")
             try:
-                informes['analisis_por_documento'] = expediente.get('resumenes_documentos') or []
+                # Solo se usa el respaldo extractivo si no hubo resúmenes con IA
+                if not informes.get('analisis_por_documento'):
+                    informes['analisis_por_documento'] = expediente.get('resumenes_documentos') or []
             except Exception:
                 pass
             escenarios = agente4.calcular_matriz_financiera(expediente, informes)
