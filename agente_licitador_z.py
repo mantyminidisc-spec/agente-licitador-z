@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "12.4"
+VERSION_LICITAIA = "12.5"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -366,7 +366,7 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
             if r.status_code == 413 or "too large" in _error_400 or "tokens per minute" in _error_400:
                 ultimo = f"HTTP 413: cupo de tokens por minuto agotado en {IA_MODELO}"
                 if n < intentos:
-                    _espera_tpm = 20 * n
+                    _espera_tpm = min(30 * n, 90)
                     print(f"      [!] Cupo de tokens por minuto agotado; "
                           f"esperando {_espera_tpm}s para reintentar (sin recortar)")
                     time.sleep(_espera_tpm)
@@ -3113,8 +3113,8 @@ Lee y transcribe el contenido completo en formato estructurado."""
             f"DOCUMENTO: {nombre}\n"
             f"CONTENIDO:\n{recorte}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=1500,
-                                            timeout=180, intentos=2)
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=1200,
+                                            timeout=240, intentos=4)
         if not datos:
             print(f"      [!] Sin resumen de {nombre}: {str(error)[:80]}")
             return None
@@ -3418,8 +3418,8 @@ class Agente3AuditorCotizador:
             "Incluye las 8 reglas (M-01 a M-08). Si algo no está en las bases, dilo explícitamente.\n\n"
             f"BASES DEL PROCESO {expediente.get('codigo', '')}:\n{texto}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=2500,
-                                            timeout=240, intentos=2)
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=2200,
+                                            timeout=300, intentos=3)
         if not datos:
             print(f"   [!] Auditoría de multas sin respuesta: {str(error)[:70]}")
             return {}
