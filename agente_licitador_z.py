@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.9"
+VERSION_LICITAIA = "10.10"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4615,155 +4615,263 @@ class Agente5Entregador:
         return wb
 
     def generar_excel_4_pestanas(self, expediente, informes, escenarios, ruta_excel):
+        """Planilla financiera CON FÓRMULAS: el cliente cambia un dato y todo se recalcula."""
         wb = openpyxl.Workbook()
-        eq = escenarios["equilibrado"]
+        wb.calculation.fullCalcOnLoad = True
 
-        fill_navy = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
-        fill_slate = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-        fill_emerald = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
-        fill_zebra = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
-        font_white_bold = Font(name="Calibri", size=11, color="FFFFFF", bold=True)
-        font_bold = Font(name="Calibri", size=10, bold=True)
-        font_normal = Font(name="Calibri", size=10)
-        borde_fino = Border(
-            left=Side(style="thin", color="CBD5E1"),
-            right=Side(style="thin", color="CBD5E1"),
-            top=Side(style="thin", color="CBD5E1"),
-            bottom=Side(style="thin", color="CBD5E1")
-        )
+        eq = escenarios.get("equilibrado", {}) or {}
+        presupuesto = int(expediente.get("presupuesto_estatal_clp") or 0) or 1
+        costo_total = int(eq.get("costo_interno_total_clp") or 0) or 1
+        parametros = (informes or {}).get("parametros_precio") or {}
+        margen_obj = float(parametros.get("margen_objetivo_pct") or 35) / 100.0
+        peso_precio = float(parametros.get("peso_precio_pct") or 40) / 100.0
+        pct_comp = float(parametros.get("pct_competencia") or 85) / 100.0
 
-        # PESTAÑA 1: Dashboard Escenarios
-        ws1 = wb.active
-        ws1.title = "1_Escenarios_Oferta"
-        ws1.views.sheetView[0].showGridLines = True
+        azul = "1F2A44"
+        slate = "1E293B"
+        gris = "64748B"
+        linea = "E2E8F0"
+        verde = "ECFDF5"
+        amarillo = "FEF9C3"
 
-        ws1.merge_cells("A1:I1")
-        ws1["A1"] = f"LICITAIA · DASHBOARD FINANCIERO DE LICITACIÓN: {expediente['codigo']} ({expediente['tipo_portal']})"
-        ws1["A1"].fill = fill_navy
-        ws1["A1"].font = Font(name="Calibri", size=13, color="FFFFFF", bold=True)
-        ws1["A1"].alignment = Alignment(horizontal="center", vertical="center")
-        ws1.row_dimensions[1].height = 28
-
-        ws1.append(["Organismo Comprador:", expediente["organismo"], "", "Fecha Cierre:", expediente["fecha_cierre"], "", "Presupuesto Estado:", expediente["presupuesto_estatal_clp"], ""])
-        ws1["H2"].number_format = "$#,##0"
-        ws1["B2"].font = font_bold
-        ws1["H2"].font = font_bold
-        ws1.append([])
-
-        headers1 = ["Escenario Estratégico", "% Presupuesto", "Oferta Neta (CLP)", "IVA 19% (CLP)", "Total Bruto (CLP)", "Costo Interno (CLP)", "Ganancia Limpia Bolsillo", "Margen Neto %", "ROI %"]
-        ws1.append(headers1)
-        ws1.row_dimensions[4].height = 24
-        for col_num in range(1, len(headers1) + 1):
-            c = ws1.cell(row=4, column=col_num)
-            c.fill = fill_slate
-            c.font = font_white_bold
+        def _titulo(hoja, celda, texto, ancho=8):
+            hoja.merge_cells(start_row=hoja[celda].row, start_column=1,
+                             end_row=hoja[celda].row, end_column=ancho)
+            c = hoja[celda]
+            c.value = texto
+            c.fill = PatternFill("solid", start_color=azul)
+            c.font = Font(name="Calibri", size=13, color="FFFFFF", bold=True)
             c.alignment = Alignment(horizontal="center", vertical="center")
+            hoja.row_dimensions[c.row].height = 28
 
-        for row_idx, key in enumerate(["agresivo", "equilibrado", "conservador"], start=5):
-            es = escenarios[key]
-            ws1.append([
-                es["titulo"],
-                es["porcentaje_presupuesto"] / 100.0,
-                es["oferta_neta_clp"],
-                es["iva_19_clp"],
-                es["oferta_total_bruta_clp"],
-                es["costo_interno_total_clp"],
-                es["ganancia_limpia_bolsillo_clp"],
-                es["margen_rentabilidad_pct"] / 100.0,
-                es["roi_pct"] / 100.0
-            ])
-            ws1.row_dimensions[row_idx].height = 22
-            for col_num in range(1, len(headers1) + 1):
-                cell = ws1.cell(row=row_idx, column=col_num)
-                cell.border = borde_fino
-                cell.font = font_bold if key == "equilibrado" else font_normal
-                if key == "equilibrado":
-                    cell.fill = fill_emerald
-                if col_num in [3, 4, 5, 6, 7]:
-                    cell.number_format = "$#,##0"
-                elif col_num in [2, 8, 9]:
-                    cell.number_format = "0.0%"
+        def _entrada(hoja, fila, etiqueta, valor, formato):
+            hoja.cell(row=fila, column=1, value=etiqueta).font = Font(
+                name="Calibri", size=10, bold=True, color="334155")
+            celda = hoja.cell(row=fila, column=2, value=valor)
+            celda.fill = PatternFill("solid", start_color=amarillo)
+            celda.font = Font(name="Calibri", size=10, bold=True, color="92400E")
+            celda.number_format = formato
+            celda.border = Border(*([Side(style="thin", color="F59E0B")] * 4))
 
-        # PESTAÑA 2: Costos Internos
-        ws2 = wb.create_sheet(title="2_Costos_Internos")
-        ws2.append(["Centro de Costo Interno (Mantytech SpA)", "Monto CLP", "Observación Técnica"])
-        ws2.row_dimensions[1].height = 24
-        for col_num in range(1, 4):
-            c = ws2.cell(row=1, column=col_num)
-            c.fill = fill_navy
-            c.font = font_white_bold
-        filas_costos = [
-            ("Horas de Ingeniería y Desarrollo", eq["costo_hh_clp"], f"{informes.get('horas_ingenieria_estimadas', 40)} HH estimadas"),
-            ("Infraestructura Cloud / VPS / Recursos IA", eq["costo_cloud_clp"], "Servidores y licencias técnicas"),
-            ("Reserva Operativa y Gestión Administrativa (4%)", eq["costo_imprevistos_clp"], "Mitigación de riesgos"),
-            ("TOTAL COSTO INTERNO DIRECTO", eq["costo_interno_total_clp"], "Descontado de la Oferta Neta")
+        # ================================================================ 1) ESCENARIOS
+        esc = wb.active
+        esc.title = "1_Escenarios_Oferta"
+        esc.sheet_view.showGridLines = False
+        esc.sheet_properties.tabColor = azul
+        _titulo(esc, "A1", f"SIMULACIÓN DE ESCENARIOS · {expediente.get('codigo', '')}")
+
+        esc["A2"] = "Datos de entrada (celdas amarillas: cámbialas y todo se recalcula)"
+        esc["A2"].font = Font(name="Calibri", size=9, italic=True, color=gris)
+
+        _entrada(esc, 4, "Presupuesto oficial (tope con IVA)", presupuesto, "$#,##0")
+        _entrada(esc, 5, "IVA", 0.19, "0%")
+        _entrada(esc, 6, "Costo interno total", "='2_Costos_Internos'!$B$9", "$#,##0")
+        _entrada(esc, 7, "Margen objetivo", margen_obj, "0.0%")
+
+        encabezados = ["Escenario", "% del tope", "Oferta neta", "IVA 19%", "Total bruto",
+                       "Costo interno", "Ganancia", "Margen", "ROI"]
+        fila_encabezado = 9
+        for columna, texto in enumerate(encabezados, start=1):
+            c = esc.cell(row=fila_encabezado, column=columna, value=texto)
+            c.fill = PatternFill("solid", start_color=slate)
+            c.font = Font(name="Calibri", size=10, color="FFFFFF", bold=True)
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        esc.row_dimensions[fila_encabezado].height = 30
+
+        escenarios_filas = [
+            ("Competitivo", int((escenarios.get("agresivo") or {}).get("porcentaje_presupuesto") or 78)),
+            ("Recomendado", int(eq.get("porcentaje_presupuesto") or 83)),
+            ("Conservador", int((escenarios.get("conservador") or {}).get("porcentaje_presupuesto") or 85)),
         ]
-        for r_i, fila in enumerate(filas_costos, start=2):
-            ws2.append(list(fila))
-            ws2.row_dimensions[r_i].height = 20
-            ws2.cell(row=r_i, column=2).number_format = "$#,##0"
-            for c_i in range(1, 4):
-                ws2.cell(row=r_i, column=c_i).border = borde_fino
-                if r_i == 5:
-                    ws2.cell(row=r_i, column=c_i).font = font_bold
-                    ws2.cell(row=r_i, column=c_i).fill = fill_emerald
+        for indice, (nombre, porcentaje) in enumerate(escenarios_filas):
+            fila = fila_encabezado + 1 + indice
+            esc.cell(row=fila, column=1, value=nombre).font = Font(
+                name="Calibri", size=10, bold=(nombre == "Recomendado"))
+            porcentaje_celda = esc.cell(row=fila, column=2, value=porcentaje / 100.0)
+            porcentaje_celda.number_format = "0%"
+            porcentaje_celda.fill = PatternFill("solid", start_color=amarillo)
+            porcentaje_celda.font = Font(name="Calibri", size=10, bold=True, color="92400E")
+            esc.cell(row=fila, column=5, value=f"=$B$4*B{fila}").number_format = "$#,##0"
+            esc.cell(row=fila, column=3, value=f"=E{fila}/(1+$B$5)").number_format = "$#,##0"
+            esc.cell(row=fila, column=4, value=f"=E{fila}-C{fila}").number_format = "$#,##0"
+            esc.cell(row=fila, column=6, value="=$B$6").number_format = "$#,##0"
+            esc.cell(row=fila, column=7, value=f"=C{fila}-F{fila}").number_format = "$#,##0"
+            esc.cell(row=fila, column=8, value=f"=IF(C{fila}=0,0,G{fila}/C{fila})").number_format = "0.0%"
+            esc.cell(row=fila, column=9, value=f"=IF(F{fila}=0,0,G{fila}/F{fila})").number_format = "0.0%"
+            for columna in range(1, 10):
+                celda = esc.cell(row=fila, column=columna)
+                celda.border = Border(bottom=Side(style="thin", color=linea))
+                if nombre == "Recomendado":
+                    celda.fill = PatternFill("solid", start_color=verde)
+                    celda.font = Font(name="Calibri", size=10, bold=True)
+            esc.row_dimensions[fila].height = 20
 
-        # PESTAÑA 3: Flujo de Caja
-        ws3 = wb.create_sheet(title="3_Flujo_de_Caja")
-        ws3.append(["Etapa del Flujo Financiero", "Plazo Estimado", "Monto CLP", "Naturaleza del Movimiento"])
-        ws3.row_dimensions[1].height = 24
-        for col_num in range(1, 5):
-            c = ws3.cell(row=1, column=col_num)
-            c.fill = fill_navy
-            c.font = font_white_bold
-        filas_flujo = [
-            ("1. Desembolso Operativo Ejecución", f"Día 1 a {informes.get('plazo_entrega_dias_habiles', 15)}", -eq["costo_interno_total_clp"], "Costo directo ingeniería"),
-            ("2. Facturación Electrónica SII", f"Día {informes.get('plazo_entrega_dias_habiles', 15)}", eq["oferta_total_bruta_clp"], "Cuenta por cobrar Estado"),
-            ("3. Pago IVA F29", "Día 20 mes siguiente", -eq["iva_19_clp"], "Impuesto trasladado"),
-            ("4. Utilidad Neta Final en Cuenta", "Día 45 (Ley 21.131)", eq["ganancia_limpia_bolsillo_clp"], "GANANCIA LIMPIA DE BOLSILLO")
+        esc["A14"] = "Alerta de margen:"
+        esc["A14"].font = Font(name="Calibri", size=9, bold=True, color=gris)
+        esc["B14"] = '=IF(H11<$B$7,"El escenario recomendado NO alcanza el margen objetivo","Cumple el margen objetivo")'
+        esc["B14"].font = Font(name="Calibri", size=9, bold=True, color="B45309")
+        esc.merge_cells("B14:F14")
+        esc.column_dimensions["A"].width = 38
+        for letra in ("B", "C", "D", "E", "F", "G", "H", "I"):
+            esc.column_dimensions[letra].width = 15
+        esc.freeze_panes = "A10"
+
+        # ================================================================ 2) COSTOS
+        costos = wb.create_sheet(title="2_Costos_Internos")
+        costos.sheet_view.showGridLines = False
+        costos.sheet_properties.tabColor = "334155"
+        _titulo(costos, "A1", "DESGLOSE DE COSTOS INTERNOS")
+        costos["A2"] = "Edita las cantidades y valores: el total alimenta toda la planilla."
+        costos["A2"].font = Font(name="Calibri", size=9, italic=True, color=gris)
+
+        cabeceras_costo = ["Concepto", "Monto", "Nota"]
+        for columna, texto in enumerate(cabeceras_costo, start=1):
+            c = costos.cell(row=4, column=columna, value=texto)
+            c.fill = PatternFill("solid", start_color=slate)
+            c.font = Font(name="Calibri", size=10, color="FFFFFF", bold=True)
+            c.alignment = Alignment(horizontal="center")
+
+        detalle = [
+            ("Horas de ingeniería", int(eq.get("costo_hh_clp") or 0),
+             "Desarrollo, diseño, QA y despliegue"),
+            ("Cloud, licencias y dominios", int(eq.get("costo_cloud_clp") or 0),
+             "Hosting, certificados, plugins"),
+            ("Gestión, imprevistos y garantía", int(eq.get("costo_imprevistos_clp") or 0),
+             "Coordinación, soporte y colchón de riesgo"),
         ]
-        for r_i, fila in enumerate(filas_flujo, start=2):
-            ws3.append(list(fila))
-            ws3.row_dimensions[r_i].height = 20
-            ws3.cell(row=r_i, column=3).number_format = "$#,##0"
-            for c_i in range(1, 5):
-                ws3.cell(row=r_i, column=c_i).border = borde_fino
-                if r_i == 5:
-                    ws3.cell(row=r_i, column=c_i).font = font_bold
-                    ws3.cell(row=r_i, column=c_i).fill = fill_emerald
+        for indice, (concepto, monto, nota) in enumerate(detalle):
+            fila = 5 + indice
+            costos.cell(row=fila, column=1, value=concepto).font = Font(name="Calibri", size=10)
+            celda = costos.cell(row=fila, column=2, value=monto)
+            celda.number_format = "$#,##0"
+            celda.fill = PatternFill("solid", start_color=amarillo)
+            celda.font = Font(name="Calibri", size=10, bold=True, color="92400E")
+            costos.cell(row=fila, column=3, value=nota).font = Font(
+                name="Calibri", size=9, color=gris)
+            costos.row_dimensions[fila].height = 18
 
-        # PESTAÑA 4: Matriz 37 Normas
-        ws4 = wb.create_sheet(title="4_Auditoria_37_Normas")
-        ws4.append(["Código", "Norma / Punto de Control Ley 19.886", "Referencia Legal", "Estado"])
-        ws4.row_dimensions[1].height = 24
-        for col_num in range(1, 5):
-            c = ws4.cell(row=1, column=col_num)
-            c.fill = fill_navy
-            c.font = font_white_bold
-        for r_i, (cod_n, desc_n, ley_n) in enumerate(MATRIZ_37_NORMAS, start=2):
-            ws4.append([cod_n, desc_n, ley_n, "✅ CUMPLE"])
-            ws4.row_dimensions[r_i].height = 19
-            for c_i in range(1, 5):
-                cell = ws4.cell(row=r_i, column=c_i)
-                cell.border = borde_fino
-                if r_i % 2 == 1:
-                    cell.fill = fill_zebra
-                if c_i == 4:
-                    cell.fill = fill_emerald
-                    cell.font = font_bold
+        costos["A8"] = "COSTO INTERNO TOTAL"
+        costos["A8"].font = Font(name="Calibri", size=11, bold=True, color=azul)
+        total = costos.cell(row=8, column=2, value="=SUM(B5:B7)")
+        total.number_format = "$#,##0"
+        total.font = Font(name="Calibri", size=12, bold=True, color=azul)
+        total.fill = PatternFill("solid", start_color="E0E7FF")
+        # La fórmula de la hoja 1 apunta a B9, que es donde queda el total visual
+        costos.cell(row=9, column=2, value="=B8").number_format = "$#,##0"
+        costos.cell(row=9, column=2).font = Font(name="Calibri", size=1, color="FFFFFF")
+        costos.row_dimensions[9].hidden = True
+        costos.column_dimensions["A"].width = 40
+        costos.column_dimensions["B"].width = 16
+        costos.column_dimensions["C"].width = 42
+        costos.freeze_panes = "A5"
 
-        for sheet in wb.worksheets:
-            for col in sheet.columns:
-                max_len = max(len(str(cell.value or "")) for cell in col)
-                col_letter = get_column_letter(col[0].column)
-                sheet.column_dimensions[col_letter].width = min(max(max_len + 4, 15), 48)
+        # ================================================================ 3) SENSIBILIDAD
+        sens = wb.create_sheet(title="3_Sensibilidad")
+        sens.sheet_view.showGridLines = False
+        sens.sheet_properties.tabColor = "475569"
+        _titulo(sens, "A1", "SENSIBILIDAD: QUÉ GANAS EN CADA PRECIO", ancho=7)
+        sens["A2"] = "Todo calculado con fórmulas sobre el presupuesto y el costo de las hojas anteriores."
+        sens["A2"].font = Font(name="Calibri", size=9, italic=True, color=gris)
 
-        self._estilizar_excel(wb, expediente, escenarios)
+        _entrada(sens, 4, "Precio estimado de la competencia (% del tope)", pct_comp, "0%")
+        _entrada(sens, 5, "Peso del precio en la evaluación", peso_precio, "0%")
+        sens["D4"] = "Probabilidad = 1/(1+EXP((comp - precio)/0.035))"
+        sens["D4"].font = Font(name="Calibri", size=9, color=gris)
+
+        encabezados_sens = ["% del tope", "Total bruto", "Oferta neta", "Ganancia",
+                            "Margen", "Puntaje estimado", "Prob. adjudicar"]
+        for columna, texto in enumerate(encabezados_sens, start=1):
+            c = sens.cell(row=7, column=columna, value=texto)
+            c.fill = PatternFill("solid", start_color=slate)
+            c.font = Font(name="Calibri", size=9, color="FFFFFF", bold=True)
+            c.alignment = Alignment(horizontal="center", wrap_text=True)
+        sens.row_dimensions[7].height = 30
+
+        for indice, porcentaje in enumerate(range(70, 100, 2)):
+            fila = 8 + indice
+            celda_pct = sens.cell(row=fila, column=1, value=porcentaje / 100.0)
+            celda_pct.number_format = "0%"
+            celda_pct.font = Font(name="Calibri", size=9)
+            sens.cell(row=fila, column=2, value=f"='1_Escenarios_Oferta'!$B$4*A{fila}").number_format = "$#,##0"
+            sens.cell(row=fila, column=3, value=f"=B{fila}/(1+'1_Escenarios_Oferta'!$B$5)").number_format = "$#,##0"
+            sens.cell(row=fila, column=4, value=f"=C{fila}-'1_Escenarios_Oferta'!$B$6").number_format = "$#,##0"
+            sens.cell(row=fila, column=5, value=f"=IF(C{fila}=0,0,D{fila}/C{fila})").number_format = "0.0%"
+            sens.cell(row=fila, column=6,
+                      value=(f"=$B$5*MIN(1,$B$4/A{fila})+(1-$B$5)")).number_format = "0.0"
+            sens.cell(row=fila, column=7,
+                      value=(f"=1/(1+EXP(($B$4-A{fila})/0.035))")).number_format = "0%"
+            for columna in range(1, 8):
+                sens.cell(row=fila, column=columna).border = Border(
+                    bottom=Side(style="thin", color=linea))
+        sens.column_dimensions["A"].width = 14
+        for letra in ("B", "C", "D"):
+            sens.column_dimensions[letra].width = 16
+        sens.column_dimensions["E"].width = 12
+        sens.column_dimensions["F"].width = 16
+        sens.column_dimensions["G"].width = 16
+        sens.freeze_panes = "A8"
+
+        # ================================================================ 4) NORMAS
+        normas = wb.create_sheet(title="4_Auditoria_37_Normas")
+        normas.sheet_view.showGridLines = False
+        normas.sheet_properties.tabColor = "0F766E"
+        _titulo(normas, "A1", "VERIFICACIÓN DE LAS 37 NORMAS DE ADMISIBILIDAD", ancho=4)
+        for columna, texto in enumerate(["Código", "Punto de control", "Referencia", "Estado"], start=1):
+            c = normas.cell(row=3, column=columna, value=texto)
+            c.fill = PatternFill("solid", start_color=slate)
+            c.font = Font(name="Calibri", size=10, color="FFFFFF", bold=True)
+            c.alignment = Alignment(horizontal="center")
+        for indice, (codigo_n, descripcion_n, referencia_n) in enumerate(MATRIZ_37_NORMAS):
+            fila = 4 + indice
+            normas.cell(row=fila, column=1, value=codigo_n).alignment = Alignment(horizontal="center")
+            normas.cell(row=fila, column=2, value=descripcion_n)
+            normas.cell(row=fila, column=3, value=referencia_n)
+            normas.cell(row=fila, column=4, value="Conforme").alignment = Alignment(horizontal="center")
+            for columna in range(1, 5):
+                celda = normas.cell(row=fila, column=columna)
+                celda.font = Font(name="Calibri", size=9)
+                celda.border = Border(bottom=Side(style="thin", color=linea))
+        normas.column_dimensions["A"].width = 10
+        normas.column_dimensions["B"].width = 52
+        normas.column_dimensions["C"].width = 32
+        normas.column_dimensions["D"].width = 12
+        normas.freeze_panes = "A4"
+
+        # ================================================================ 5) CÓMO SE CALCULA
+        notas = wb.create_sheet(title="5_Como_se_calcula")
+        notas.sheet_view.showGridLines = False
+        notas.sheet_properties.tabColor = "B45309"
+        _titulo(notas, "A1", "CÓMO SE CALCULA CADA CIFRA", ancho=3)
+        explicacion = [
+            ("Total bruto ofertado", "Presupuesto oficial (hoja 1, celda B4) × % del tope de cada escenario."),
+            ("Oferta neta", "Total bruto ÷ 1,19 · el presupuesto oficial ya incluye el IVA."),
+            ("IVA", "Total bruto − oferta neta."),
+            ("Costo interno", "Suma de las tres líneas de la hoja 2 (horas, cloud/licencias, gestión)."),
+            ("Ganancia", "Oferta neta − costo interno."),
+            ("Margen", "Ganancia ÷ oferta neta. Es lo que queda por cada $100 facturados."),
+            ("ROI", "Ganancia ÷ costo interno. Es el retorno sobre lo invertido."),
+            ("Probabilidad de adjudicar", "1 ÷ (1 + EXP((precio competencia − tu precio) ÷ 0,035))."),
+            ("Puntaje estimado", "Peso del precio × (precio competencia ÷ tu precio) + peso técnico."),
+            ("% del tope recomendado", "El punto que maximiza ganancia × probabilidad, respetando el margen objetivo."),
+        ]
+        notas.cell(row=3, column=1, value="Concepto").font = Font(name="Calibri", size=10, bold=True)
+        notas.cell(row=3, column=2, value="Cómo se obtiene").font = Font(name="Calibri", size=10, bold=True)
+        for columna in (1, 2):
+            c = notas.cell(row=3, column=columna)
+            c.fill = PatternFill("solid", start_color=slate)
+            c.font = Font(name="Calibri", size=10, color="FFFFFF", bold=True)
+        for indice, (concepto, formula) in enumerate(explicacion):
+            fila = 4 + indice
+            notas.cell(row=fila, column=1, value=concepto).font = Font(name="Calibri", size=10, bold=True)
+            celda = notas.cell(row=fila, column=2, value=formula)
+            celda.font = Font(name="Calibri", size=10)
+            celda.alignment = Alignment(wrap_text=True, vertical="top")
+            notas.row_dimensions[fila].height = 30
+        notas.column_dimensions["A"].width = 32
+        notas.column_dimensions["B"].width = 95
+
         wb.save(ruta_excel)
 
-    # --------------------------------------------------------------------------
-    # GENERADOR DEL TABLERO CRM EJECUTIVO EN EXCEL (CATÁLOGO MAESTRO INTERACTIVO)
-    # --------------------------------------------------------------------------
     def actualizar_catalogo_maestro(self, expediente, escenarios):
         eq = escenarios["equilibrado"]
 
