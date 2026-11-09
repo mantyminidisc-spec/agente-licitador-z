@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.6"
+VERSION_LICITAIA = "11.8"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -765,6 +765,19 @@ def _motor_precios(presupuesto, costo_interno=None):
 
 
 _RESUMEN_ESCANEO = {"ca_fallos": 0, "ca_ok": 0, "lic_abiertas": 0, "lic_candidatos": 0}
+
+
+def _estado_compra_agil_texto():
+    """Texto corto del estado de Compra Ágil para el resumen."""
+    fallos = _RESUMEN_ESCANEO.get("ca_fallos") or 0
+    ok = _RESUMEN_ESCANEO.get("ca_ok") or 0
+    if fallos and not ok:
+        return f"portal sin respuesta ({fallos} consultas con error)"
+    if ok:
+        return f"{ok} de tu giro"
+    if fallos:
+        return f"sin coincidencias (con {fallos} avisos del portal)"
+    return "revisada, sin coincidencias con tu giro"
 
 
 def _mensaje_sin_novedades():
@@ -1335,6 +1348,7 @@ Responde ÚNICAMENTE en formato JSON:
                 print(f"      [!] Nota de consulta en keyword '{kw}': {e}")
 
         _RESUMEN_ESCANEO["ca_fallos"] = fallos_ca
+        _RESUMEN_ESCANEO["ca_ok"] = len(hallazgos_ca)
         if fallos_ca and not hallazgos_ca:
             print(f"      ⚠️ La API v2 de Compra Ágil no respondió ({fallos_ca} consultas).")
             print("         Las compras ágiles se buscarán igualmente en el listado v1 (respaldo).")
@@ -5778,6 +5792,7 @@ class Agente5Entregador:
             )
             lineas.append("----------------------------------------")
         lineas.append("✅ Informe de auditoría, informe financiero, cotización y Excel inteligente listos para descargar.")
+        lineas.append(f"🔎 *Compra Ágil:* {_estado_compra_agil_texto()}")
         mensaje = "\n".join(lineas)
 
         destinos = list(WHATSAPP_INTERNO) or ([WHATSAPP_DESTINO] if WHATSAPP_DESTINO else [])
