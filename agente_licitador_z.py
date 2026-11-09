@@ -56,6 +56,7 @@ import base64
 import hmac
 import hashlib
 import shutil
+import subprocess
 import zipfile
 import datetime
 import webbrowser
@@ -217,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "12.3"
+VERSION_LICITAIA = "12.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -2882,7 +2883,26 @@ class Agente2_5LectorForense:
                         textos.append("  " + " | ".join(celdas))
         except Exception as e:
             print(f"      [!] Word no legible ({os.path.basename(ruta_docx)}): {str(e)[:60]}")
+            textos = self._extraer_texto_doc_antiguo(ruta_docx) or textos
         return "\n".join(textos)
+
+    def _extraer_texto_doc_antiguo(self, ruta_doc):
+        """Lee los .doc de Word 97-2003 con antiword o catdoc."""
+        for comando in (["antiword", "-w", "0", ruta_doc],
+                        ["catdoc", "-w", ruta_doc]):
+            try:
+                r = subprocess.run(comando, capture_output=True, timeout=60)
+                salida = (r.stdout or b"").decode("utf-8", "ignore").strip()
+                if len(salida) > 100:
+                    print(f"      📖 [TEXTO EXTRAÍDO .doc ANTIGUO] "
+                          f"{os.path.basename(ruta_doc)}: {len(salida)} chars")
+                    return salida
+            except FileNotFoundError:
+                continue
+            except Exception:
+                continue
+        print(f"      [!] .doc antiguo sin convertidor: {os.path.basename(ruta_doc)}")
+        return ""
 
     def _extraer_texto_excel(self, ruta_xlsx):
         """Extrae TODAS las hojas y celdas del Excel."""

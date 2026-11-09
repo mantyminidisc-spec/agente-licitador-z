@@ -28,6 +28,8 @@ WORKDIR /app
 
 # Solo lo mínimo: certificados, zona horaria, fuentes y OCR local (Tesseract)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        antiword \
+        catdoc
     ca-certificates curl tzdata fonts-liberation \
     tesseract-ocr tesseract-ocr-spa \
     && rm -rf /var/lib/apt/lists/*
