@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.2"
+VERSION_LICITAIA = "11.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -366,7 +366,8 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
                 for _msg in payload.get("messages", []):
                     if _msg.get("role") == "user":
                         _largo = len(_msg.get("content") or "")
-                        _msg["content"] = _msg["content"][:max(3000, int(_largo * 0.45))]
+                        _msg["content"] = _msg["content"][:max(2500, int(_largo * 0.38))]
+                ultimo = f"HTTP 413: solicitud demasiado grande para {IA_MODELO}"
                 print("      [!] La solicitud excedia el limite del proveedor; se reintenta con menos texto")
                 continue
             if r.status_code == 400 and ("response_format" in _error_400
@@ -1792,6 +1793,15 @@ class Agente2Extractor:
         m = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", disp, re.IGNORECASE)
         sugerido = urllib.parse.unquote(m.group(1).strip()) if m else f"FICHA_OFICIAL_{codigo}.pdf"
         return self._guardar_bytes(r.content, carpeta, sugerido, codigo, origen="(ficha oficial PDF)")
+
+    def resumenes_diferidos(self, expediente):
+        """Delega el resumen por documento en el Agente 2.5."""
+        try:
+            agente25 = Agente2_5LectorForense(getattr(self, "perfil", {}) or {})
+            return agente25.resumenes_diferidos(expediente)
+        except Exception as e:
+            print(f"   [!] Sin resúmenes por documento: {str(e)[:70]}")
+            return []
 
     def _adjuntos_licitacion(self, codigo, carpeta, sesion):
         rutas = []
@@ -3237,7 +3247,7 @@ class Agente3AuditorCotizador:
         """
         texto = (expediente.get("informe_forense_adjuntos")
                  or expediente.get("texto_extraido_adjuntos") or "")
-        texto = texto[:30000]
+        texto = texto[:8000]
         if len(texto.strip()) < 300:
             return {}
         prompt = (
