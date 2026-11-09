@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.0"
+VERSION_LICITAIA = "11.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -729,6 +729,36 @@ def _motor_precios(presupuesto, costo_interno=None):
 
 
 # ==============================================================================
+# PLANES COMERCIALES · qué incluye cada cliente
+# ==============================================================================
+PLAN_ACTIVO = (os.getenv("PLAN") or "").strip().upper()
+PERMITIR_COMPRA_AGIL = True
+PERMITIR_LICITACIONES = True
+
+
+def aplicar_plan(plan):
+    """Activa o desactiva Compra Ágil / Licitaciones según el plan del cliente."""
+    global PLAN_ACTIVO, PERMITIR_COMPRA_AGIL, PERMITIR_LICITACIONES
+    plan = (plan or os.getenv("PLAN") or "").strip().upper()
+    if plan in ("PLAN_COMPRA_AGIL", "COMPRA_AGIL", "CA", "PLAN_CA", "PLAN_1"):
+        PLAN_ACTIVO = "PLAN_COMPRA_AGIL"
+        PERMITIR_COMPRA_AGIL = True
+        PERMITIR_LICITACIONES = False
+    elif plan in ("PLAN_LICITACIONES", "LICITACIONES", "LIC", "PLAN_LIC"):
+        PLAN_ACTIVO = "PLAN_LICITACIONES"
+        PERMITIR_COMPRA_AGIL = False
+        PERMITIR_LICITACIONES = True
+    else:
+        PLAN_ACTIVO = "PLAN_FULL_EMPRESARIAL"
+        PERMITIR_COMPRA_AGIL = True
+        PERMITIR_LICITACIONES = True
+    print(f"   ✓ Plan comercial     : {PLAN_ACTIVO} "
+          f"(Compra Ágil: {'sí' if PERMITIR_COMPRA_AGIL else 'no'} · "
+          f"Licitaciones: {'sí' if PERMITIR_LICITACIONES else 'no'})")
+    return PLAN_ACTIVO
+
+
+# ==============================================================================
 # MULTI-CLIENTE · cada cliente con su perfil, sus números y sus datos aislados
 # ==============================================================================
 CLIENTE_ACTIVO = (os.getenv("CLIENTE") or "").strip().lower()
@@ -834,6 +864,7 @@ def crear_plantilla_cliente(nombre):
         "ciudad_base": "Santiago, Región Metropolitana",
         "ticket_mercado_publico": "",
         "whatsapp_cliente": ["+56900000000"],
+        "plan_activo": "PLAN_FULL_EMPRESARIAL",
         "margen_objetivo": 0.35,
         "costo_hora_ingenieria_clp": 25000,
         "palabras_clave_positivas": ["software", "sitio web", "desarrollo"],
@@ -939,6 +970,7 @@ class Agente0Contexto:
         os.makedirs(CARPETA_LICITACIONES, exist_ok=True)
         print(f"   ✓ Empresa Activa     : {self.perfil['razon_social']} (RUT: {self.perfil['rut']})")
         print(f"   ✓ Representante      : {self.perfil['representante_legal']}")
+        aplicar_plan(os.getenv("PLAN") or self.perfil.get("plan_activo"))
         print(f"   ✓ Plan Configurado   : {self.perfil['plan_activo']} (Micro-lotes de {self.perfil['limite_lote_ciclo']} proyectos)")
         print(f"   ✓ Keywords Positivas : {len(self.perfil['palabras_clave_positivas'])} términos específicos de TI/IA/SEO/Ads")
         print(f"   ✓ Lista Negra Activa : {len(self.perfil['lista_negra_exclusiones'])} términos bloqueados (Regex \\b...\\b)")
@@ -1267,12 +1299,17 @@ Responde ÚNICAMENTE en formato JSON:
             cupo_ca = MAX_CA_BARRIDO_FINAL
         else:
             cupo_ca = limite_total if plan == "PLAN_1" else max(1, limite_total - 1)
-        candidatos_ca = self._buscar_en_api_v2_compra_agil(max_ca=cupo_ca)
-        candidatos.extend(candidatos_ca)
+        if PERMITIR_COMPRA_AGIL:
+            candidatos_ca = self._buscar_en_api_v2_compra_agil(max_ca=cupo_ca)
+            candidatos.extend(candidatos_ca)
+        else:
+            print("   -> [PLAN] Este cliente no incluye Compra Ágil: se omite el barrido CA")
 
         # 2. Completar con Licitaciones Públicas (API v1).
         #    En el barrido final se revisan HOY y AYER, para no perder nada.
-        if len(candidatos) < limite_total:
+        if not PERMITIR_LICITACIONES:
+            print("   -> [PLAN] Este cliente no incluye Licitaciones: se omite el barrido v1")
+        elif len(candidatos) < limite_total:
             print("   -> [1B] Escaneando Portal LICITACIONES PÚBLICAS (API v1 Oficial)...")
             listado = []
             for _fecha in fechas_api:
@@ -6049,7 +6086,15 @@ def mostrar_estado():
               f"-> {', '.join(WHATSAPP_CLIENTE) or 'sin destino'}")
     else:
         print("  WhatsApp            : SIN configurar (falta WHATSAPP_API_URL de Evolution API)")
-    print(f"  Ya entregados       : {len(historial)}")
+    def _contar(carpeta):
+        try:
+            return len([d for d in os.listdir(carpeta)
+                        if os.path.isdir(os.path.join(carpeta, d))])
+        except Exception:
+            return 0
+    _ca = _contar(CARPETA_COMPRAS_AGILES)
+    _lic = _contar(CARPETA_LICITACIONES)
+    print(f"  Ya entregados       : {len(historial)} (Compra Ágil: {_ca} · Licitaciones: {_lic})")
     print(f"  Pendientes          : {len(cola)}")
     try:
         total, usado, libre = shutil.disk_usage(DIRECTORIO_RAIZ)
@@ -6342,6 +6387,12 @@ if __name__ == "__main__":
         sys.exit(diagnostico_visor(argumentos[1]))
     elif argumentos[0] in ("--probar-whatsapp", "probar-whatsapp"):
         sys.exit(probar_whatsapp(argumentos[1] if len(argumentos) > 1 else None))
+    elif argumentos[0] in ("--solo-ca", "solo-ca"):
+        os.environ["PLAN"] = "PLAN_COMPRA_AGIL"
+        ejecutar_pipeline_6_agentes(None)
+    elif argumentos[0] in ("--solo-lic", "solo-lic"):
+        os.environ["PLAN"] = "PLAN_LICITACIONES"
+        ejecutar_pipeline_6_agentes(None)
     elif argumentos[0] in ("--auto", "auto"):
         ejecutar_pipeline_6_agentes(None, auto=True)
     elif argumentos[0] in ("--barrido-final", "barrido-final"):
