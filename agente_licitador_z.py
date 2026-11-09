@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "12.0"
+VERSION_LICITAIA = "12.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -765,6 +765,14 @@ def _motor_precios(presupuesto, costo_interno=None):
 
 
 _RESUMEN_ESCANEO = {"ca_fallos": 0, "ca_ok": 0, "lic_abiertas": 0, "lic_candidatos": 0}
+
+
+NOTIFICAR_ENTREGAS = [True]
+
+
+def _notificaciones_activas():
+    """True si esta corrida debe mandar correo y WhatsApp."""
+    return bool(NOTIFICAR_ENTREGAS[0])
 
 
 def _extracto_para_ia(texto, limite=None):
@@ -5448,7 +5456,7 @@ class Agente5Entregador:
 
         html = self._html_correo_portal(expediente, informes, escenarios, enlace)
         enviado = False
-        if URL_APPS_SCRIPT:
+        if URL_APPS_SCRIPT and _notificaciones_activas():
             payload = {
                 "empresa": "Mantytech_SpA",
                 "email_destino": self.perfil["email_notificaciones"],
@@ -5946,6 +5954,11 @@ def _guardar_cola_pendiente(cola):
 
 
 def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_final=None):
+    if codigo_especifico and os.getenv("NOTIFICAR_REPROCESO", "0").strip() != "1":
+        NOTIFICAR_ENTREGAS[0] = False
+        print("   ℹ️ Regeneración: se actualiza el portal SIN enviar correo ni WhatsApp")
+    else:
+        NOTIFICAR_ENTREGAS[0] = True
     if auto and _ya_corrio_esta_hora():
         print(f"\n⏸ [AUTO] Ya se ejecutó la corrida de esta hora ({_marca_hora()}).")
         print("   Se evita el doble envío de correo y WhatsApp.")
@@ -6067,7 +6080,8 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
                 # Aviso al cliente por WhatsApp (sin márgenes) en cuanto está listo.
                 # Si el WhatsApp falla, NO debe afectar el proyecto (ya está en Drive).
                 try:
-                    agente5.notificar_cliente_whatsapp(expediente, escenarios, estado_nube)
+                    if _notificaciones_activas():
+                        agente5.notificar_cliente_whatsapp(expediente, escenarios, estado_nube)
                 except Exception as e_wa:
                     print(f"   [!] Aviso de WhatsApp no enviado: {e_wa}")
             else:
@@ -6088,7 +6102,8 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
             time.sleep(PAUSA_ENTRE_PROYECTOS)
 
     try:
-        agente5.enviar_resumen_whatsapp_lote(resultados_lote)
+        if _notificaciones_activas():
+            agente5.enviar_resumen_whatsapp_lote(resultados_lote)
     except Exception as e_res:
         print(f"   [!] No se pudo enviar el resumen por WhatsApp: {e_res}")
 
