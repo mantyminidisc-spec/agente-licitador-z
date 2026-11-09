@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.4"
+VERSION_LICITAIA = "11.5"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1250,6 +1250,10 @@ Responde ÚNICAMENTE en formato JSON:
                 if r is None:
                     fallos_ca += 1
                     continue
+                if r.status_code != 200:
+                    fallos_ca += 1
+                    print(f'      [!] Compra Ágil respondió HTTP {r.status_code} · ')
+                    continue
                 if r.status_code == 200:
                     js = r.json()
 
@@ -1310,6 +1314,10 @@ Responde ÚNICAMENTE en formato JSON:
         if fallos_ca and not hallazgos_ca:
             print(f"      ⚠️ La API v2 de Compra Ágil no respondió ({fallos_ca} consultas).")
             print("         Las compras ágiles se buscarán igualmente en el listado v1 (respaldo).")
+        if fallos_ca and not hallazgos_ca:
+            print(f"      ⚠️ La API de Compra Ágil falló en {fallos_ca} consultas "
+                  f"(HTTP 5xx / timeout del portal). NO significa que no haya ofertas:" 
+                  f"el portal no respondió. Se reintentará en la próxima corrida.")
         print(f"      ✓ {len(hallazgos_ca)} Compras Ágiles vigentes detectadas e incorporadas.")
         return hallazgos_ca
 
