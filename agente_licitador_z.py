@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.5"
+VERSION_LICITAIA = "11.6"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -764,7 +764,30 @@ def _motor_precios(presupuesto, costo_interno=None):
     }
 
 
-# ==============================================================================
+_RESUMEN_ESCANEO = {"ca_fallos": 0, "ca_ok": 0, "lic_abiertas": 0, "lic_candidatos": 0}
+
+
+def _mensaje_sin_novedades():
+    """Arma el aviso de 'no hay nada hoy', distinguiendo falla técnica de falta de ofertas."""
+    ahora = _ahora_chile()
+    lineas = [f"🤖 *LICITAIA* · {ahora:%d-%m-%Y} {ahora:%H:%M}", ""]
+    lineas.append("Sin proyectos nuevos para tu giro en esta corrida.")
+    lineas.append("")
+    lineas.append("*Qué se revisó*")
+    if _RESUMEN_ESCANEO.get("ca_fallos"):
+        lineas.append(f"• Compra Ágil: el portal *no respondió* "
+                      f"({_RESUMEN_ESCANEO['ca_fallos']} consultas con error). "
+                      f"No significa que no haya ofertas.")
+    else:
+        lineas.append("• Compra Ágil: revisada, sin coincidencias con tu giro.")
+    lineas.append(f"• Licitaciones: {_RESUMEN_ESCANEO.get('lic_abiertas', 0)} abiertas, "
+                  f"{_RESUMEN_ESCANEO.get('lic_candidatos', 0)} de tu rubro.")
+    lineas.append("")
+    lineas.append("Se vuelve a revisar en la próxima corrida programada.")
+    return "\n".join(lineas)
+
+
+    # ==============================================================================
 # PLANES COMERCIALES · qué incluye cada cliente
 # ==============================================================================
 PLAN_ACTIVO = (os.getenv("PLAN") or "").strip().upper()
@@ -1311,6 +1334,7 @@ Responde ÚNICAMENTE en formato JSON:
             except Exception as e:
                 print(f"      [!] Nota de consulta en keyword '{kw}': {e}")
 
+        _RESUMEN_ESCANEO["ca_fallos"] = fallos_ca
         if fallos_ca and not hallazgos_ca:
             print(f"      ⚠️ La API v2 de Compra Ágil no respondió ({fallos_ca} consultas).")
             print("         Las compras ágiles se buscarán igualmente en el listado v1 (respaldo).")
@@ -1419,6 +1443,8 @@ Responde ÚNICAMENTE en formato JSON:
                 if len(candidatos) >= limite_total:
                     break
 
+        _RESUMEN_ESCANEO["lic_candidatos"] = len(candidatos)
+        _RESUMEN_ESCANEO["ca_ok"] = len(candidatos_ca) if "candidatos_ca" in dir() else 0
         print(f"   -> Lote final seleccionado para auditoría: {len(candidatos)} proyecto(s).")
         return candidatos
 
@@ -6011,6 +6037,16 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
         print(f"   [!] No se pudo enviar el resumen por WhatsApp: {e_res}")
 
     print("\n================================================================================")
+    if not resultados_lote and not fallidos:
+        _es_final = _es_hora_barrido_final()
+        _hubo_falla = bool(_RESUMEN_ESCANEO.get("ca_fallos"))
+        if _es_final or _hubo_falla:
+            try:
+                _destinos = WHATSAPP_INTERNO or ([WHATSAPP_DESTINO] if WHATSAPP_DESTINO else [])
+                if _destinos and agente5._enviar_whatsapp(_destinos, _mensaje_sin_novedades()) > 0:
+                    print("   📲 Aviso de \"sin novedades\" enviado por WhatsApp")
+            except Exception as _e_aviso:
+                print(f"   [!] No se pudo avisar por WhatsApp: {str(_e_aviso)[:60]}")
     print(f"🎉 PIPELINE FINALIZADO: {len(resultados_lote)} procesado(s) | {len(fallidos)} pendiente(s)")
     if fallidos:
         print(f"   ⚠️ Pendientes (se reintentan en la próxima corrida): {', '.join(fallidos)}")
