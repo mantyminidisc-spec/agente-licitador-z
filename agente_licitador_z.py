@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.9"
+VERSION_LICITAIA = "12.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3058,7 +3058,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
         Devuelve dict con: archivo, objeto, requisitos, excluyentes, riesgos,
         preguntas. Si la IA falla, devuelve None (el informe sigue funcionando).
         """
-        recorte = (texto or "")[:24000]
+        recorte = (texto or "")[:6000]
         if len(recorte.strip()) < 400:
             return None
         if os.getenv("RESUMENES_IA", "0").strip() != "1":
@@ -3079,7 +3079,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
             f"DOCUMENTO: {nombre}\n"
             f"CONTENIDO:\n{recorte}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=3000,
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=1500,
                                             timeout=180, intentos=2)
         if not datos:
             print(f"      [!] Sin resumen de {nombre}: {str(error)[:80]}")
@@ -3371,7 +3371,7 @@ class Agente3AuditorCotizador:
         """
         texto = (expediente.get("informe_forense_adjuntos")
                  or expediente.get("texto_extraido_adjuntos") or "")
-        texto = texto[:8000]
+        texto = texto[:4000]
         if len(texto.strip()) < 300:
             return {}
         prompt = (
@@ -3384,7 +3384,7 @@ class Agente3AuditorCotizador:
             "Incluye las 8 reglas (M-01 a M-08). Si algo no está en las bases, dilo explícitamente.\n\n"
             f"BASES DEL PROCESO {expediente.get('codigo', '')}:\n{texto}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=4000,
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=2500,
                                             timeout=240, intentos=2)
         if not datos:
             print(f"   [!] Auditoría de multas sin respuesta: {str(error)[:70]}")
