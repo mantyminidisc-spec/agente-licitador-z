@@ -49,6 +49,8 @@ COPY probar_conexion.py .
 COPY portal.py .
 # Logo corporativo (DOC 1 y DOC 2). Si no lo quieres, bórralo del repo.
 COPY logo.png .
+# Perfiles de clientes (multi-cliente). Se pueden sobrescribir en /data/clientes
+COPY clientes ./clientes
 
 RUN mkdir -p /data
 VOLUME ["/data"]

@@ -1,0 +1,30 @@
+{
+  "slug": "mantytech",
+  "razon_social": "Mantytech SpA",
+  "nombre_fantasia": "Mantytech SpA · Ingeniería de Software, IA & Estrategia Digital B2G",
+  "rut": "78.479.059-2",
+  "representante_legal": "Daniel Andrés Salazar Gavilán",
+  "cargo_representante": "Director de Ingeniería & Representante Legal",
+  "email_corporativo": "mantyminidisc@gmail.com",
+  "email_notificaciones": "booknegocios2015@gmail.com",
+  "telefono_contacto": "+56950901627",
+  "ciudad_base": "Cauquenes, Región del Maule",
+  "ticket_mercado_publico": "BB393A5F-C2F1-4027-95EB-300DE6B49C95",
+  "whatsapp_cliente": ["+56950901627"],
+  "margen_objetivo": 0.35,
+  "costo_hora_ingenieria_clp": 25000,
+  "plan_activo": "PLAN_FULL_EMPRESARIAL",
+  "limite_lote_ciclo": 3,
+  "palabras_clave_positivas": [
+    "desarrollo de software", "software", "pagina web", "página web", "sitio web",
+    "portal web", "sistema informatico", "sistema informático", "plataforma web",
+    "aplicacion movil", "aplicación móvil", "aplicacion web", "aplicación web",
+    "inteligencia artificial", "agente ia", "chatbot", "automatizacion", "automatización",
+    "servidor cloud", "servidores cloud", "cloud computing", "vps", "hosting",
+    "mantenimiento web", "mantencion web", "mantención web",
+    "posicionamiento seo", "seo", "marketing digital",
+    "google ads", "meta ads", "campaña digital", "campana digital",
+    "comunicacion digital", "comunicación digital", "correo corporativo"
+  ],
+  "lista_negra_exclusiones": []
+}

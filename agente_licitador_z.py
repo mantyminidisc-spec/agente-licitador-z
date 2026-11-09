@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.11"
+VERSION_LICITAIA = "11.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -728,6 +728,124 @@ def _motor_precios(presupuesto, costo_interno=None):
     }
 
 
+# ==============================================================================
+# MULTI-CLIENTE · cada cliente con su perfil, sus números y sus datos aislados
+# ==============================================================================
+CLIENTE_ACTIVO = (os.getenv("CLIENTE") or "").strip().lower()
+DIRECTORIO_CLIENTE = ""
+PERFIL_CLIENTE = {}
+
+
+def _carpeta_config_clientes():
+    candidatos = [
+        os.path.join(DIRECTORIO_RAIZ, "clientes"),
+        os.path.join(os.getcwd(), "clientes"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "clientes"),
+    ]
+    for ruta in candidatos:
+        if os.path.isdir(ruta):
+            return ruta
+    return candidatos[0]
+
+
+def listar_clientes():
+    carpeta = _carpeta_config_clientes()
+    if not os.path.isdir(carpeta):
+        return []
+    return sorted(n[:-5] for n in os.listdir(carpeta) if n.endswith(".json"))
+
+
+def activar_cliente(slug):
+    """Carga clientes/<slug>.json y separa carpetas y números por cliente."""
+    global CLIENTE_ACTIVO, DIRECTORIO_CLIENTE, PERFIL_CLIENTE
+    global CARPETA_ENTREGABLES, CARPETA_COMPRAS_AGILES, CARPETA_LICITACIONES
+    global ARCHIVO_HISTORIAL, ARCHIVO_COLA_PENDIENTE, ARCHIVO_CATALOGO_MAESTRO
+    global TICKET_MERCADO_PUBLICO, CORREO_DESTINO, WHATSAPP_DESTINO, WHATSAPP_CLIENTE
+
+    slug = (slug or "").strip().lower()
+    if not slug:
+        return False
+    ruta = os.path.join(_carpeta_config_clientes(), slug + ".json")
+    if not os.path.isfile(ruta):
+        print(f"   [!] No existe el perfil del cliente: {ruta}")
+        print(f"       Créalo con: python agente_licitador_z.py --crear-cliente {slug}")
+        return False
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            datos = json.load(f)
+    except Exception as e:
+        print(f"   [!] El archivo del cliente no es JSON válido: {e}")
+        return False
+
+    CLIENTE_ACTIVO = slug
+    PERFIL_CLIENTE = {k: v for k, v in datos.items()
+                      if k not in ("slug", "carpeta_datos") and v not in (None, "", [], {})}
+
+    base = os.path.join(DIRECTORIO_RAIZ, "datos_clientes", slug)
+    os.makedirs(base, exist_ok=True)
+    DIRECTORIO_CLIENTE = base
+    CARPETA_ENTREGABLES = os.path.join(base, "Entregables")
+    CARPETA_COMPRAS_AGILES = os.path.join(CARPETA_ENTREGABLES, "01_COMPRAS_AGILES")
+    CARPETA_LICITACIONES = os.path.join(CARPETA_ENTREGABLES, "02_LICITACIONES_PUBLICAS")
+    ARCHIVO_HISTORIAL = os.path.join(base, "historial_proyectos_procesados.json")
+    ARCHIVO_COLA_PENDIENTE = os.path.join(base, "cola_pendientes.json")
+    nombre_crm = "".join(c for c in str(datos.get("razon_social") or slug).upper()
+                         if c.isalnum() or c in " -_").strip().replace(" ", "_") or slug.upper()
+    ARCHIVO_CATALOGO_MAESTRO = os.path.join(
+        CARPETA_ENTREGABLES, f"00_CRM_MAESTRO_{nombre_crm}_{FECHA_HOY_STR}.xlsx")
+
+    if datos.get("ticket_mercado_publico"):
+        TICKET_MERCADO_PUBLICO = str(datos["ticket_mercado_publico"]).strip()
+    if datos.get("email_notificaciones"):
+        CORREO_DESTINO = str(datos["email_notificaciones"]).strip()
+    numeros = datos.get("whatsapp_cliente") or datos.get("whatsapp_destinos") or []
+    if isinstance(numeros, str):
+        numeros = [numeros]
+    numeros = [str(n).strip() for n in numeros if str(n).strip()]
+    if numeros:
+        WHATSAPP_CLIENTE = numeros
+        WHATSAPP_DESTINO = numeros[0]
+    if datos.get("margen_objetivo") is not None:
+        os.environ["MARGEN_OBJETIVO"] = str(datos["margen_objetivo"])
+
+    print(f"   ✓ Cliente activo     : {slug} ({datos.get('razon_social', 'sin nombre')})")
+    print(f"   ✓ Datos del cliente  : {base}")
+    return True
+
+
+def crear_plantilla_cliente(nombre):
+    carpeta = _carpeta_config_clientes()
+    os.makedirs(carpeta, exist_ok=True)
+    slug = "".join(c for c in nombre.strip().lower().replace(" ", "-")
+                   if c.isalnum() or c == "-") or "cliente"
+    ruta = os.path.join(carpeta, slug + ".json")
+    if os.path.isfile(ruta):
+        print(f"   [!] Ya existe: {ruta}")
+        return 1
+    plantilla = {
+        "slug": slug,
+        "razon_social": nombre,
+        "rut": "00.000.000-0",
+        "representante_legal": "Nombre del representante",
+        "cargo_representante": "Representante Legal",
+        "email_corporativo": "contacto@empresa.cl",
+        "email_notificaciones": "contacto@empresa.cl",
+        "telefono_contacto": "+56900000000",
+        "ciudad_base": "Santiago, Región Metropolitana",
+        "ticket_mercado_publico": "",
+        "whatsapp_cliente": ["+56900000000"],
+        "margen_objetivo": 0.35,
+        "costo_hora_ingenieria_clp": 25000,
+        "palabras_clave_positivas": ["software", "sitio web", "desarrollo"],
+        "lista_negra_exclusiones": [],
+    }
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(plantilla, f, ensure_ascii=False, indent=2)
+    print(f"   ✓ Plantilla creada: {ruta}")
+    print(f"     Completa los datos y ejecuta: python agente_licitador_z.py --cliente {slug}")
+    return 0
+
+
 class Agente0Contexto:
     def __init__(self):
         self.perfil = {
@@ -806,6 +924,11 @@ class Agente0Contexto:
                 "iluminacion", "iluminación", "mobiliario", "aire acondicionado"
             ]
         }
+        # Multi-cliente: sobrescribe el perfil con los datos del cliente activo
+        if PERFIL_CLIENTE:
+            for _clave_cli, _valor_cli in PERFIL_CLIENTE.items():
+                if _valor_cli not in (None, "", [], {}):
+                    self.perfil[_clave_cli] = _valor_cli
 
     def inicializar_entorno(self):
         print("\n================================================================================")
@@ -5913,6 +6036,7 @@ def mostrar_estado():
     print(" ESTADO DEL AGENTE LICITAIA")
     print("=" * 72)
     print(f"  Versión             : {VERSION_LICITAIA}")
+    print(f"  Cliente activo      : {CLIENTE_ACTIVO or 'perfil por defecto (mantytech)'}")
     print(f"  Entrega             : {ENTREGA_MODO} "
           + (f"(portal: {PORTAL_URL_BASE or 'sin URL base'})" if ENTREGA_MODO == "portal" else ""))
     print(f"  Carpeta de datos    : {DIRECTORIO_RAIZ}")
@@ -6180,6 +6304,9 @@ def probar_whatsapp(destino=None):
 
 if __name__ == "__main__":
     argumentos = [a for a in sys.argv[1:] if str(a).strip()]
+    _cliente_env = (os.getenv('CLIENTE') or '').strip()
+    if _cliente_env and '--cliente' not in argumentos:
+        activar_cliente(_cliente_env)
     if not argumentos:
         ejecutar_pipeline_6_agentes(None)
     elif argumentos[0] in ("-h", "--help", "--ayuda", "ayuda"):
@@ -6190,6 +6317,23 @@ if __name__ == "__main__":
         mostrar_horario()
     elif argumentos[0] in ("--probar-ia", "probar-ia"):
         sys.exit(probar_ia())
+    elif argumentos[0] in ("--cliente", "cliente") and len(argumentos) > 1:
+        if activar_cliente(argumentos[1]):
+            ejecutar_pipeline_6_agentes(None)
+        sys.exit(0)
+    elif argumentos[0] in ("--clientes", "clientes"):
+        disponibles = listar_clientes()
+        print("")
+        print(" CLIENTES CONFIGURADOS")
+        print("=" * 60)
+        if not disponibles:
+            print("  (ninguno) · crea el primero con --crear-cliente NOMBRE")
+        for _cli in disponibles:
+            print(f"  · {_cli}")
+        print("=" * 60)
+        sys.exit(0)
+    elif argumentos[0] in ("--crear-cliente", "crear-cliente") and len(argumentos) > 1:
+        sys.exit(crear_plantilla_cliente(" ".join(argumentos[1:])))
     elif argumentos[0] in ("--limpiar", "limpiar"):
         sys.exit(limpiar_clones())
     elif argumentos[0] in ("--adjuntar", "adjuntar") and len(argumentos) > 2:
