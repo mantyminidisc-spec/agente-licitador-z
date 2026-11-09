@@ -106,13 +106,20 @@ def main():
             if ahora.hour in horas and ahora.minute >= MINUTO_EJECUCION:
                 marca = f"{ahora:%Y-%m-%d}-{ahora.hour:02d}"
                 estado = _leer_estado()
-                if estado.get("ultima_marca") != marca:
-                    estado["ultima_marca"] = marca
-                    estado["ultima_ejecucion"] = ahora.strftime("%Y-%m-%d %H:%M")
-                    _guardar_estado(estado)
+                # NO se marca antes de ejecutar: el agente es quien deja la marca
+                # al arrancar. Si marcáramos aquí, el agente se saltaría su propia
+                # corrida ("ya se ejecutó esta hora").
+                ya_corrio = estado.get("ultima_marca") == marca
+                ya_intento = estado.get("ultimo_intento") == marca
+                if not ya_corrio and not ya_intento:
+                    _log(f"Lanzando el agente para la corrida de las {ahora:%H}:00")
                     _ejecutar()
+                    estado = _leer_estado()
+                    estado["ultimo_intento"] = marca
+                    _guardar_estado(estado)
+                    time.sleep(300)
                 else:
-                    time.sleep(45)
+                    time.sleep(60)
             else:
                 time.sleep(30)
         except KeyboardInterrupt:
