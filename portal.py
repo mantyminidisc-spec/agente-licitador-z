@@ -276,6 +276,8 @@ PLANTILLA = """<!DOCTYPE html>
     <div class="kpi"><div class="et">Cierre</div><div class="va" style="font-size:15px">{cierre}</div><div class="no">plazo fatal</div></div>
   </div>
 
+  {boton_portal}
+
   <div class="tarjeta">
     <h2>Documentos del proyecto</h2>
     <table>
@@ -376,6 +378,24 @@ def _pagina(proyecto, aviso=""):
     elif not aviso:
         aviso = '<div class="ok">Anexos completos: la auditoría técnica está incluida.</div>'
 
+    enlace_oficial = str(proyecto.get("url_portal") or "").strip()
+    boton_portal = ""
+    if enlace_oficial:
+        es_ca = proyecto.get("tipo_portal") == "COMPRA_AGIL"
+        etiqueta = "Ver compra ágil en Mercado Público" if es_ca else "Ver licitación en Mercado Público"
+        boton_portal = (
+            '<div class="tarjeta" style="display:flex;justify-content:space-between;'
+            'align-items:center;gap:16px;flex-wrap:wrap">'
+            '<div><div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;'
+            'color:#6b7280">Proceso oficial</div>'
+            '<div style="font-weight:600;color:#1f2a44;margin-top:4px">Ficha en Mercado Público</div>'
+            '<div style="font-size:12px;color:#6b7280;margin-top:2px">Ahí están las bases, los anexos y el botón para ofertar.</div>'
+            '</div>'
+            f'<a class="boton" href="{enlace_oficial}" target="_blank" rel="noopener noreferrer">'
+            f'{etiqueta} →</a>'
+            '</div>'
+        )
+
     return PLANTILLA.format(
         token=token,
         codigo=proyecto.get("codigo", ""),
@@ -389,6 +409,7 @@ def _pagina(proyecto, aviso=""):
         bloque_adjuntos=bloque_adj,
         checklist=checklist,
         boton_reprocesar=boton_reprocesar,
+        boton_portal=boton_portal,
         aviso=aviso,
     )
 

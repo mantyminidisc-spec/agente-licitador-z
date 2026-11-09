@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.3"
+VERSION_LICITAIA = "11.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -518,6 +518,41 @@ def _ahora_chile():
         return datetime.datetime.now(ZoneInfo("America/Santiago"))
     except Exception:
         return datetime.datetime.now()
+
+
+def _marca_hora(ahora=None):
+    """Identificador de la hora actual, para no correr dos veces la misma."""
+    ahora = ahora or _ahora_chile()
+    return f"{ahora:%Y-%m-%d}-{ahora.hour:02d}"
+
+
+def _estado_planificador(guardar=None):
+    ruta = os.path.join(DIRECTORIO_RAIZ, "planificador_estado.json")
+    datos = {}
+    try:
+        if os.path.isfile(ruta):
+            with open(ruta, encoding="utf-8") as f:
+                datos = json.load(f) or {}
+    except Exception:
+        datos = {}
+    if guardar is not None:
+        try:
+            with open(ruta, "w", encoding="utf-8") as f:
+                json.dump(guardar, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    return datos
+
+
+def _ya_corrio_esta_hora():
+    return _estado_planificador().get("ultima_marca") == _marca_hora()
+
+
+def _marcar_corrida():
+    estado = _estado_planificador()
+    estado["ultima_marca"] = _marca_hora()
+    estado["ultima_ejecucion"] = _ahora_chile().strftime("%Y-%m-%d %H:%M")
+    _estado_planificador(estado)
 
 
 def _hora_de_escanear(ahora=None):
@@ -5256,6 +5291,7 @@ class Agente5Entregador:
             "tipo_portal": expediente.get("tipo_portal", ""),
             "fecha_cierre": expediente.get("fecha_cierre", ""),
             "presupuesto_clp": int(expediente.get("presupuesto_estatal_clp") or 0),
+            "url_portal": expediente.get("url_portal") or "",
             "oferta_bruta_clp": int(eq.get("oferta_total_bruta_clp") or 0),
             "generado": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             "version": VERSION_LICITAIA,
@@ -5707,7 +5743,7 @@ class Agente5Entregador:
                 + f"🔗 {exp.get('url_portal', '')}"
             )
             lineas.append("----------------------------------------")
-        lineas.append("✅ DOC 1, DOC 2, DOC 3, Excel y adjuntos listos en Drive.")
+        lineas.append("✅ Informe de auditoría, informe financiero, cotización y Excel inteligente listos para descargar.")
         mensaje = "\n".join(lineas)
 
         destinos = list(WHATSAPP_INTERNO) or ([WHATSAPP_DESTINO] if WHATSAPP_DESTINO else [])
@@ -5820,6 +5856,10 @@ def _guardar_cola_pendiente(cola):
 
 
 def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_final=None):
+    if auto and _ya_corrio_esta_hora():
+        print(f"\n⏸ [AUTO] Ya se ejecutó la corrida de esta hora ({_marca_hora()}).")
+        print("   Se evita el doble envío de correo y WhatsApp.")
+        return
     if auto and not _hora_de_escanear():
         ahora = _ahora_chile()
         print(f"\n⏸ [AUTO] Son las {ahora:%H:%M} del {ahora:%d-%m-%Y}: no corresponde escanear.")
@@ -5829,6 +5869,8 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
     if barrido_final is None:
         barrido_final = _es_hora_barrido_final()
 
+    if auto:
+        _marcar_corrida()
     print("""
     ╔══════════════════════════════════════════════════════════════════════════╗
     ║   LICITAIA - MOTOR B2G DE 6 AGENTES (VERSIÓN 5.4 · CORREGIDA)        ║
