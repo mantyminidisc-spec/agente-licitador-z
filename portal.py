@@ -132,6 +132,9 @@ def _adjuntos(carpeta):
         for nombre in sorted(archivos):
             if nombre.startswith("."):
                 continue
+            # Archivos internos del agente: no son adjuntos del portal
+            if nombre.upper().startswith(("FICHA_TEXTO_", "CORREO_PENDIENTE", "MANIFEST")):
+                continue
             ruta = os.path.join(raiz, nombre)
             relativo = os.path.relpath(ruta, ruta_adj).replace("\\", "/")
             salida.append({"nombre": relativo, "bytes": os.path.getsize(ruta)})

@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "12.1"
+VERSION_LICITAIA = "12.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4175,7 +4175,15 @@ class Agente5Entregador:
                 candidatas.append((utiles, limpia))
             candidatas.sort(key=lambda x: -x[0])
             elegidas = [f for _, f in candidatas[:3]]
-            return " ".join(elegidas)[:600].strip()
+            unido = " ".join(elegidas).strip()
+            if len(unido) <= 600:
+                return unido
+            corte = unido[:600]
+            ultimo_punto = max(corte.rfind(". "), corte.rfind("; "))
+            if ultimo_punto > 300:
+                return corte[:ultimo_punto + 1].strip()
+            ultimo_espacio = corte.rfind(" ")
+            return (corte[:ultimo_espacio] if ultimo_espacio > 0 else corte).strip() + " …"
 
         salida = []
         for parte in texto.split("=== [LECTURA FORENSE COMPLETA:")[1:]:
