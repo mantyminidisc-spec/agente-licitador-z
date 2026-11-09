@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.8"
+VERSION_LICITAIA = "10.9"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4520,6 +4520,100 @@ class Agente5Entregador:
     # --------------------------------------------------------------------------
     # GENERADOR EXCEL DE PROYECTO (.XLSX DE 4 PESTAÑAS ESTILO DASHBOARD)
     # --------------------------------------------------------------------------
+    def _estilizar_excel(self, wb, expediente, escenarios):
+        """Deja la planilla con aspecto de sistema (CRM/ERP): portada de KPIs,
+        pestañas con color, paneles congelados y anchos legibles."""
+        from openpyxl.utils import get_column_letter
+
+        eq = escenarios.get("equilibrado", {})
+        ag = escenarios.get("agresivo", {})
+        co = escenarios.get("conservador", {})
+
+        # --- Portada de resumen
+        portada = wb.create_sheet(title="0_Resumen", index=0)
+        portada.sheet_view.showGridLines = False
+        portada.sheet_properties.tabColor = "1F2A44"
+
+        portada.merge_cells("A1:F1")
+        portada["A1"] = "LICITAIA · RESUMEN FINANCIERO"
+        portada["A1"].fill = PatternFill("solid", start_color="1F2A44")
+        portada["A1"].font = Font(name="Calibri", size=15, color="FFFFFF", bold=True)
+        portada["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        portada.row_dimensions[1].height = 34
+
+        portada.merge_cells("A2:F2")
+        portada["A2"] = f"{expediente.get('codigo', '')} · {str(expediente.get('nombre', ''))[:70]}"
+        portada["A2"].font = Font(name="Calibri", size=10, italic=True, color="475569")
+        portada["A2"].alignment = Alignment(horizontal="center")
+        portada.row_dimensions[2].height = 20
+
+        kpis = [
+            ("Presupuesto del organismo", expediente.get("presupuesto_estatal_clp", 0), "$#,##0"),
+            ("Oferta recomendada (con IVA)", eq.get("oferta_total_bruta_clp", 0), "$#,##0"),
+            ("Ganancia estimada", eq.get("ganancia_limpia_bolsillo_clp", 0), "$#,##0"),
+            ("Margen sobre la venta", (eq.get("margen_rentabilidad_pct", 0) or 0) / 100.0, "0.0%"),
+        ]
+        fila = 4
+        for etiqueta, valor, formato in kpis:
+            portada.cell(row=fila, column=1, value=etiqueta).font = Font(
+                name="Calibri", size=9, color="64748B", bold=True)
+            celda = portada.cell(row=fila, column=1)
+            celda.alignment = Alignment(vertical="center")
+            portada.merge_cells(start_row=fila, start_column=1, end_row=fila, end_column=2)
+            valor_celda = portada.cell(row=fila, column=3, value=valor)
+            valor_celda.font = Font(name="Calibri", size=12, bold=True, color="0F172A")
+            valor_celda.number_format = formato
+            valor_celda.alignment = Alignment(horizontal="right", vertical="center")
+            portada.row_dimensions[fila].height = 22
+            fila += 1
+
+        fila += 1
+        portada.cell(row=fila, column=1, value="COMPARACIÓN DE ESCENARIOS").font = Font(
+            name="Calibri", size=10, bold=True, color="1F2A44")
+        fila += 1
+        encabezados = ["Escenario", "% del tope", "Oferta con IVA", "Margen"]
+        for columna, texto in enumerate(encabezados, start=1):
+            celda = portada.cell(row=fila, column=columna, value=texto)
+            celda.fill = PatternFill("solid", start_color="1E293B")
+            celda.font = Font(name="Calibri", size=9, color="FFFFFF", bold=True)
+            celda.alignment = Alignment(horizontal="center")
+        fila += 1
+        for etiqueta, datos in (("Competitivo", ag), ("Recomendado", eq), ("Conservador", co)):
+            portada.cell(row=fila, column=1, value=etiqueta).font = Font(name="Calibri", size=9)
+            portada.cell(row=fila, column=2, value=(datos.get("porcentaje_presupuesto", 0) or 0) / 100.0).number_format = "0%"
+            portada.cell(row=fila, column=3, value=datos.get("oferta_total_bruta_clp", 0)).number_format = "$#,##0"
+            portada.cell(row=fila, column=4, value=(datos.get("margen_rentabilidad_pct", 0) or 0) / 100.0).number_format = "0.0%"
+            for columna in range(1, 5):
+                portada.cell(row=fila, column=columna).border = Border(
+                    bottom=Side(style="thin", color="E2E8F0"))
+            if etiqueta == "Recomendado":
+                for columna in range(1, 5):
+                    portada.cell(row=fila, column=columna).fill = PatternFill(
+                        "solid", start_color="ECFDF5")
+                    portada.cell(row=fila, column=columna).font = Font(
+                        name="Calibri", size=9, bold=True)
+            fila += 1
+
+        portada.column_dimensions["A"].width = 34
+        portada.column_dimensions["B"].width = 14
+        portada.column_dimensions["C"].width = 18
+        portada.column_dimensions["D"].width = 12
+
+        # --- Detalles del resto de las hojas
+        colores = {"1_Escenarios_Oferta": "1F2A44", "2_Costos_Internos": "334155",
+                   "3_Sensibilidad": "475569", "4_Conclusiones": "0F766E"}
+        for hoja in wb.worksheets:
+            if hoja.title == "0_Resumen":
+                continue
+            hoja.sheet_view.showGridLines = False
+            hoja.sheet_properties.tabColor = colores.get(hoja.title, "64748B")
+            hoja.freeze_panes = "A5"
+            for indice, columna in enumerate(hoja.iter_cols(min_row=1, max_row=1), start=1):
+                letra = get_column_letter(indice)
+                hoja.column_dimensions[letra].width = 22 if indice == 1 else 16
+
+        return wb
+
     def generar_excel_4_pestanas(self, expediente, informes, escenarios, ruta_excel):
         wb = openpyxl.Workbook()
         eq = escenarios["equilibrado"]
@@ -4664,6 +4758,7 @@ class Agente5Entregador:
                 col_letter = get_column_letter(col[0].column)
                 sheet.column_dimensions[col_letter].width = min(max(max_len + 4, 15), 48)
 
+        self._estilizar_excel(wb, expediente, escenarios)
         wb.save(ruta_excel)
 
     # --------------------------------------------------------------------------
