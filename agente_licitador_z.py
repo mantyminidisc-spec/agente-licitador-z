@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.10"
+VERSION_LICITAIA = "10.11"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4711,6 +4711,30 @@ class Agente5Entregador:
         esc["B14"] = '=IF(H11<$B$7,"El escenario recomendado NO alcanza el margen objetivo","Cumple el margen objetivo")'
         esc["B14"].font = Font(name="Calibri", size=9, bold=True, color="B45309")
         esc.merge_cells("B14:F14")
+        # --- Explicación del cálculo EN LA MISMA HOJA (pedido del cliente)
+        esc["A16"] = "CÓMO SE CALCULA CADA CIFRA DE ESTA HOJA"
+        esc["A16"].font = Font(name="Calibri", size=10, bold=True, color=azul)
+        explicacion_hoja = [
+            ("Total bruto", "= presupuesto (B4) × el % del tope de esa fila. Es lo que el Estado pagaría, IVA incluido."),
+            ("Oferta neta", "= total bruto ÷ (1 + IVA de B5). Es tu ingreso antes de IVA."),
+            ("Ganancia", "= oferta neta − costo interno (B6). Es la plata que efectivamente te queda."),
+            ("Ganancia al bolsillo", "Es la misma ganancia: ya está sin IVA y con todos los costos descontados."),
+            ("Margen neto", "= ganancia ÷ oferta neta. Si dice 11%, de cada $100 facturados te quedan $11."),
+            ("ROI", "= ganancia ÷ costo interno. Si dice 30%, por cada $100 invertidos ganas $30."),
+            ("% del tope", "Puedes cambiarlo en las celdas amarillas: todo lo demás se recalcula solo."),
+        ]
+        fila_expl = 17
+        for concepto, detalle in explicacion_hoja:
+            esc.cell(row=fila_expl, column=1, value=concepto).font = Font(
+                name="Calibri", size=9, bold=True, color="334155")
+            celda_det = esc.cell(row=fila_expl, column=2, value=detalle)
+            celda_det.font = Font(name="Calibri", size=9, color=gris)
+            celda_det.alignment = Alignment(wrap_text=True, vertical="center")
+            esc.merge_cells(start_row=fila_expl, start_column=2,
+                            end_row=fila_expl, end_column=9)
+            esc.row_dimensions[fila_expl].height = 26
+            fila_expl += 1
+
         esc.column_dimensions["A"].width = 38
         for letra in ("B", "C", "D", "E", "F", "G", "H", "I"):
             esc.column_dimensions[letra].width = 15
