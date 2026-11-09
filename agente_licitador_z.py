@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "11.8"
+VERSION_LICITAIA = "11.9"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -765,6 +765,47 @@ def _motor_precios(presupuesto, costo_interno=None):
 
 
 _RESUMEN_ESCANEO = {"ca_fallos": 0, "ca_ok": 0, "lic_abiertas": 0, "lic_candidatos": 0}
+
+
+def _extracto_para_ia(texto, limite=None):
+    """Arma un recorte repartido entre los documentos clave.
+
+    Antes se tomaban los primeros N caracteres del informe, así que la IA leía
+    completo el primer documento y nada de los demás. Ahora se da una cuota a
+    cada documento, priorizando EETT, bases, BAE y formularios.
+    """
+    limite = int(limite or os.getenv("MAX_TEXTO_PROMPT", "8000"))
+    texto = texto or ""
+    partes = texto.split("=== [LECTURA FORENSE COMPLETA:")
+    if len(partes) <= 1:
+        return texto[:limite]
+
+    documentos = []
+    for parte in partes[1:]:
+        cabecera, _, resto = parte.partition("]")
+        nombre = cabecera.strip()
+        if "(Metodo:" in nombre:
+            nombre = nombre.split("(Metodo:")[0].strip()
+        cuerpo = resto.split("=== [FIN ADJUNTO:")[0].strip()
+        if len(cuerpo) < 150:
+            continue
+        nombre_upper = nombre.upper()
+        peso = 0
+        for clave, valor in (("EETT", 3), ("TECNIC", 3), ("BASES", 3), ("BAE", 3),
+                             ("ADMINISTRATIV", 2), ("FORMATO", 2), ("ANEXO", 2)):
+            if clave in nombre_upper:
+                peso = max(peso, valor)
+        documentos.append((peso, nombre, cuerpo))
+
+    if not documentos:
+        return texto[:limite]
+
+    documentos.sort(key=lambda x: -x[0])
+    cuota = max(1200, limite // max(1, min(len(documentos), 4)))
+    bloques = []
+    for peso, nombre, cuerpo in documentos[:4]:
+        bloques.append(f"--- {nombre} ---\n{cuerpo[:cuota]}")
+    return "\n\n".join(bloques)[:limite]
 
 
 def _estado_compra_agil_texto():
@@ -3387,7 +3428,7 @@ DATOS GENERALES DEL PROCESO:
 - DESCRIPCIÓN DE BASES / GLOSA: {expediente['descripcion']}
 - ADJUNTOS OFICIALES LEIDOS (INFORME FORENSE COMPLETO DEL AGENTE 2.5):
   Archivos citados: {', '.join(expediente.get('nombres_adjuntos_leidos', []) or ['Ver adjuntos del proyecto'])}
-{expediente.get('informe_forense_adjuntos', expediente.get('texto_extraido_adjuntos', ''))[:int(os.getenv('MAX_TEXTO_PROMPT', '8000'))]}
+{_extracto_para_ia(expediente.get('informe_forense_adjuntos', expediente.get('texto_extraido_adjuntos', '')))}
 
 {LEY_MULTAS}
 ESTRUCTURA DE AUDITORÍA OBLIGATORIA (DEBES DESARROLLAR LAS 7 SECCIONES):
