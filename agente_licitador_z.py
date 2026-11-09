@@ -217,7 +217,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "10.7"
+VERSION_LICITAIA = "10.8"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -739,7 +739,7 @@ class Agente0Contexto:
             "email_corporativo": "mantyminidisc@gmail.com",
             "email_notificaciones": CORREO_DESTINO,
             "telefono_contacto": WHATSAPP_DESTINO,
-            "ciudad_base": "Cauquenes, Región del Maule (Cobertura Nacional 16 Regiones)",
+            "ciudad_base": "Cauquenes, Región del Maule",
             "banco_datos": "Cuenta Empresa / Pago 30 Días vía Transferencia Electrónica SII",
             "plan_activo": "PLAN_FULL_EMPRESARIAL",  # PLAN_COMPRA_AGIL | PLAN_FULL_EMPRESARIAL
             "limite_lote_ciclo": 3,
@@ -3903,8 +3903,7 @@ class Agente5Entregador:
                 continue
             salida.append({
                 "archivo": nombre,
-                "objeto": f"Documento leído con {metodo or 'lectura automática'}. "
-                          f"Extracto: {extracto}",
+                "objeto": extracto,
                 "requisitos": [], "excluyentes": [], "riesgos": [], "preguntas": [],
                 "_extractivo": True,
             })
