@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "13.1"
+VERSION_LICITAIA = "13.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -851,6 +851,42 @@ def _deduplicar_adjuntos(rutas):
         vistos[firma] = ruta
         limpias.append(ruta)
     return limpias
+
+
+def _lineas_documento(informe, nombre_doc, limite=10):
+    """Devuelve las líneas con contenido real de UN documento del informe forense.
+
+    Sirve para que la sección 7 muestre los ítems exactos que pide el organismo
+    (por ejemplo los de una planilla Excel), sin depender de cómo los reescriba la IA.
+    """
+    informe = informe or ""
+    objetivo = str(nombre_doc or "").strip().lower()
+    if not objetivo:
+        return []
+    for parte in informe.split("=== [LECTURA FORENSE COMPLETA:")[1:]:
+        cabecera, _, resto = parte.partition("]")
+        nombre = cabecera.split("(Metodo:")[0].strip()
+        if nombre.strip().lower() != objetivo:
+            continue
+        cuerpo = resto.split("=== [FIN ADJUNTO:")[0]
+        lineas = []
+        for cruda in cuerpo.split("\n"):
+            limpia = cruda.replace("|", " ").replace("*", " ")
+            limpia = " ".join(limpia.split()).strip(" .-:;")
+            if len(limpia) < 4:
+                continue
+            letras = sum(1 for c in limpia if c.isalpha())
+            if letras < 4 or letras / max(1, len(limpia)) < 0.55:
+                continue
+            if 'metodo:' in limpia.lower() or limpia.startswith('('):
+                continue
+            if limpia.lower() in [x.lower() for x in lineas]:
+                continue
+            lineas.append(limpia)
+            if len(lineas) >= limite:
+                break
+        return lineas
+    return []
 
 
 def _estado_compra_agil_texto():
@@ -4596,6 +4632,36 @@ class Agente5Entregador:
                     for valor in valores[:5]:
                         self._parrafo(doc, f"•  {valor}", 8.5, espacio_despues=1)
                 self._parrafo(doc, "", 6, espacio_despues=4)
+
+        # --- 7b. Detalle textual de los anexos (lo que pide exactamente)
+        try:
+            _forense = (expediente.get("informe_forense_adjuntos")
+                        or expediente.get("texto_extraido_adjuntos") or "")
+            _nombres = []
+            for _parte in _forense.split("=== [LECTURA FORENSE COMPLETA:")[1:]:
+                _cab = _parte.partition("]")[0]
+                _n = _cab.split("(Metodo:")[0].strip()
+                if _n and not _n.upper().startswith("FICHA_TEXTO_") and _n not in _nombres:
+                    _nombres.append(_n)
+            _bloques_con_detalle = []
+            for _n in _nombres[:6]:
+                _lineas = _lineas_documento(_forense, _n, 10)
+                if len(_lineas) >= 2:
+                    _bloques_con_detalle.append((_n, _lineas))
+            if _bloques_con_detalle:
+                self._titulo_seccion(doc, 7, "Detalle textual de los anexos")
+                self._parrafo(
+                    doc,
+                    "Ítems copiados tal cual desde los documentos, para que los revises "
+                    "contra la ficha antes de ofertar.",
+                    9, espacio_despues=8)
+                for _n, _lineas in _bloques_con_detalle:
+                    self._parrafo(doc, _n, 9, negrita=True, espacio_despues=2)
+                    for _l in _lineas:
+                        self._parrafo(doc, f"•  {_l}", 8.5, espacio_despues=1)
+                    self._parrafo(doc, "", 6, espacio_despues=4)
+        except Exception as _e_detalle:
+            print(f"   [!] Sin detalle textual de anexos: {str(_e_detalle)[:60]}")
 
         # --- 8. Auditoría de multas y defensa del proveedor
         self._titulo_seccion(doc, 8, "Auditoría de multas y defensa del proveedor (DS 661/2024)")
