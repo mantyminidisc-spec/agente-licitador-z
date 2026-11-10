@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "14.2"
+VERSION_LICITAIA = "14.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4411,6 +4411,13 @@ class Agente5Entregador:
             if not nombre or nombre.upper().startswith("FICHA_TEXTO_"):
                 continue
             cuerpo = resto.split("=== [FIN ADJUNTO:")[0]
+            # quitar restos del encabezado ("(Metodo: python-docx) ===")
+            cuerpo = re.sub(r"^\(?Metodo:[^)]*\)?\s*=*", " ", cuerpo)
+            cuerpo = cuerpo.replace("===", " ")
+            # separar palabras pegadas típicas de Word/PDF: ")Letra", "palabra1palabra2"
+            cuerpo = re.sub(r"\)(?=[A-ZÁÉÍÓÚÑa-záéíóúñ])", ") ", cuerpo)
+            cuerpo = re.sub(r"(?<=[a-záéíóúñ])(?=[A-ZÁÉÍÓÚÑ])", " ", cuerpo)
+            cuerpo = re.sub(r"[ \t]{2,}", " ", cuerpo)
             extracto = _limpiar(cuerpo)
             if len(extracto) < 80:
                 salida.append({
@@ -4636,6 +4643,16 @@ class Agente5Entregador:
                 espacio_despues=6,
             )
         else:
+            if all(d.get("_extractivo") for d in docs):
+                self._parrafo(
+                    doc,
+                    "Estos documentos se muestran en texto literal: la cuota de IA estaba "
+                    "agotada en esa corrida. Vuelve a generar el informe más tarde para "
+                    "obtener el análisis completo (requisitos, garantías, multas y riesgos).",
+                    8.5,
+                    cursiva=True,
+                    espacio_despues=8,
+                )
             self._parrafo(
                 doc,
                 f"Se analizaron {len(docs)} documento(s) del proceso. Para cada uno se resume "
