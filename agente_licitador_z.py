@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "13.3"
+VERSION_LICITAIA = "13.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -5251,12 +5251,12 @@ class Agente5Entregador:
         esc["A16"] = "CÓMO SE CALCULA CADA CIFRA DE ESTA HOJA"
         esc["A16"].font = Font(name="Calibri", size=10, bold=True, color=azul)
         explicacion_hoja = [
-            ("Total bruto", "= presupuesto (B4) × el % del tope de esa fila. Es lo que el Estado pagaría, IVA incluido."),
-            ("Oferta neta", "= total bruto ÷ (1 + IVA de B5). Es tu ingreso antes de IVA."),
-            ("Ganancia", "= oferta neta − costo interno (B6). Es la plata que efectivamente te queda."),
+            ("Total bruto", "→ presupuesto (B4) × el % del tope de esa fila. Es lo que el Estado pagaría, IVA incluido."),
+            ("Oferta neta", "→ total bruto ÷ (1 + IVA de B5). Es tu ingreso antes de IVA."),
+            ("Ganancia", "→ oferta neta − costo interno (B6). Es la plata que efectivamente te queda."),
             ("Ganancia al bolsillo", "Es la misma ganancia: ya está sin IVA y con todos los costos descontados."),
-            ("Margen neto", "= ganancia ÷ oferta neta. Si dice 11%, de cada $100 facturados te quedan $11."),
-            ("ROI", "= ganancia ÷ costo interno. Si dice 30%, por cada $100 invertidos ganas $30."),
+            ("Margen neto", "→ ganancia ÷ oferta neta. Si dice 11%, de cada $100 facturados te quedan $11."),
+            ("ROI", "→ ganancia ÷ costo interno. Si dice 30%, por cada $100 invertidos ganas $30."),
             ("% del tope", "Puedes cambiarlo en las celdas amarillas: todo lo demás se recalcula solo."),
         ]
         fila_expl = 17
