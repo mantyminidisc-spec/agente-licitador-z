@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "15.0"
+VERSION_LICITAIA = "15.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -6629,6 +6629,41 @@ def _ayuda():
 """)
 
 
+def _probar_premium():
+    """Prueba el proveedor premium, si está configurado."""
+    print("")
+    print("🧪 PRUEBA DEL PROVEEDOR PREMIUM (análisis legal)")
+    if not PREMIUM_ACTIVO:
+        print("   No configurado: se usa el proveedor principal para todo.")
+        print("   Para activarlo agrega IA_PREMIUM_URL, IA_PREMIUM_KEY e IA_PREMIUM_MODELO.")
+        return 0
+    print(f"   URL base  : {IA_PREMIUM_URL}")
+    print(f"   Modelo    : {IA_PREMIUM_MODELO}")
+    print(f"   Contexto  : {IA_PREMIUM_TOPE_TEXTO:,} caracteres por documento")
+    _clave = IA_PREMIUM_KEY or ""
+    print(f"   Clave     : {_clave[:8]}...{_clave[-4:]} ({len(_clave)} caracteres)")
+    try:
+        r = requests.get(IA_PREMIUM_URL.rstrip("/") + "/models",
+                         headers={"Authorization": f"Bearer {_clave}"}, timeout=30)
+        if r.status_code == 200:
+            modelos = [m.get("id", "") for m in (r.json().get("data") or [])]
+            print(f"   ✓ Clave válida. Modelos: {', '.join(modelos[:10])}")
+            if IA_PREMIUM_MODELO not in modelos:
+                print(f"   [!] {IA_PREMIUM_MODELO} no aparece en esa lista.")
+        else:
+            print(f"   [!] HTTP {r.status_code}: {(r.text or '')[:160]}")
+    except Exception as e:
+        print(f"   [!] No se pudo consultar: {str(e)[:120]}")
+    datos, error = _gemini_generar_json(
+        'Responde SOLO este JSON: {"estado": "ok", "mensaje": "premium conectado"}',
+        temperatura=0, max_tokens=200, timeout=120, intentos=1, premium=True)
+    if datos:
+        print(f"   ✓ Respuesta: {datos}")
+        return 0
+    print(f"   [!] Sin respuesta del premium: {str(error)[:160]}")
+    return 1
+
+
 def probar_ia():
     """Prueba el proveedor de IA configurado y muestra el error exacto."""
     print("")
@@ -6853,7 +6888,9 @@ if __name__ == "__main__":
     elif argumentos[0] in ("--horario", "horario"):
         mostrar_horario()
     elif argumentos[0] in ("--probar-ia", "probar-ia"):
-        sys.exit(probar_ia())
+        _codigo_ia = probar_ia()
+        _probar_premium()
+        sys.exit(_codigo_ia)
     elif argumentos[0] in ("--cliente", "cliente") and len(argumentos) > 1:
         if activar_cliente(argumentos[1]):
             ejecutar_pipeline_6_agentes(None)
