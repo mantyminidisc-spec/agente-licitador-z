@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "12.6"
+VERSION_LICITAIA = "12.8"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1403,17 +1403,100 @@ Responde ÚNICAMENTE en formato JSON:
             except Exception as e:
                 print(f"      [!] Nota de consulta en keyword '{kw}': {e}")
 
+        if not hallazgos_ca and fallos_ca:
+            print("      ↪ Respaldo: se recorre el listado de Compra Ágil y se filtra localmente...")
+            try:
+                hallazgos_ca = self._barrido_ca_por_listado(max_ca, codigos_procesados_lote)
+            except Exception as _e_ca:
+                print(f"      [!] El respaldo del listado falló: {str(_e_ca)[:70]}")
         _RESUMEN_ESCANEO["ca_fallos"] = fallos_ca
         _RESUMEN_ESCANEO["ca_ok"] = len(hallazgos_ca)
         if fallos_ca and not hallazgos_ca:
             print(f"      ⚠️ La API v2 de Compra Ágil no respondió ({fallos_ca} consultas).")
-            print("         Las compras ágiles se buscarán igualmente en el listado v1 (respaldo).")
+            print("         Se intentó el respaldo por listado (ver líneas anteriores).")
         if fallos_ca and not hallazgos_ca:
             print(f"      ⚠️ La API de Compra Ágil falló en {fallos_ca} consultas "
                   f"(HTTP 5xx / timeout del portal). NO significa que no haya ofertas:" 
                   f"el portal no respondió. Se reintentará en la próxima corrida.")
         print(f"      ✓ {len(hallazgos_ca)} Compras Ágiles vigentes detectadas e incorporadas.")
         return hallazgos_ca
+
+    def _barrido_ca_por_listado(self, max_ca, codigos_procesados_lote):
+        """Respaldo cuando el buscador por keyword falla (HTTP 504).
+
+        Recorre el listado paginado de compras ágiles publicadas (las más nuevas
+        primero) y aplica acá el filtro de giro, sin depender del parámetro q.
+        """
+        encontrados = []
+        sesion = _crear_sesion_api()
+        max_paginas = int(os.getenv("MAX_PAGINAS_CA_RESPALDO", "12"))
+        for pagina in range(1, max_paginas + 1):
+            if len(encontrados) >= max_ca:
+                break
+            url = ("https://api2.mercadopublico.cl/v2/compra-agil"
+                   f"?estado=publicada&numero_pagina={pagina}")
+            try:
+                r = _get_con_reintento(url, HEADERS_API_COMPRA_AGIL, timeout=60,
+                                       intentos=1, sesion=sesion)
+            except Exception as e:
+                print(f"      [!] Página {pagina} del listado: {str(e)[:60]}")
+                break
+            if r is None:
+                print(f"      [!] Página {pagina} del listado: sin respuesta")
+                break
+            if r.status_code != 200:
+                print(f"      [!] Página {pagina} del listado: HTTP {r.status_code}")
+                break
+            try:
+                carga = (r.json() or {}).get("payload") or {}
+                items = carga.get("items") or []
+            except Exception:
+                break
+            if not items:
+                break
+            print(f"      ↪ Listado de Compra Ágil página {pagina}: {len(items)} publicadas")
+            for item in items:
+                if len(encontrados) >= max_ca:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                codigo = str(item.get("codigo") or "").strip()
+                if not codigo or codigo in self.historial or codigo in codigos_procesados_lote:
+                    continue
+                nombre = str(item.get("nombre") or "").strip()
+                montos = item.get("montos") or {}
+                resumen = item.get("resumen")
+                descripcion = str(montos.get("descripcion") or "")
+                if isinstance(resumen, dict):
+                    descripcion += " " + " ".join(str(v) for v in resumen.values() if v)
+                elif resumen:
+                    descripcion += " " + str(resumen)
+                aprobado, motivo = self.cumple_filtro_quirurgico(f"{nombre} {descripcion}")
+                if not aprobado:
+                    continue
+                aprobado_ia, _motivo_ia = self._prefiltro_semantico_gemini(
+                    codigo=codigo, titulo=nombre, descripcion=descripcion,
+                    tipo_portal="COMPRA_AGIL")
+                if not aprobado_ia:
+                    continue
+                organismo = self._extraer_organismo_comprador(
+                    item, codigo=codigo, tipo_portal="COMPRA_AGIL")
+                fechas = item.get("fechas") or {}
+                print(f"      🎯 [MATCH CA · LISTADO] {codigo} -> {motivo} | "
+                      f"Org: {organismo} | {nombre[:45]}")
+                codigos_procesados_lote.add(codigo)
+                encontrados.append({
+                    "codigo": codigo,
+                    "nombre": nombre or f"Compra Ágil {codigo}",
+                    "organismo_comprador": organismo,
+                    "organismo": organismo,
+                    "tipo_portal": "COMPRA_AGIL",
+                    "keyword_match": motivo,
+                    "fecha_cierre": str(fechas.get("fecha_cierre") or "Abierta"),
+                    "estado": "Publicada",
+                    "resumen_item": item,
+                })
+        return encontrados
 
     def ejecutar_barrido(self, barrido_final=False):
         ahora = _ahora_chile()
