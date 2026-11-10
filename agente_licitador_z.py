@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "13.0"
+VERSION_LICITAIA = "13.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -821,6 +821,36 @@ def _extracto_para_ia(texto, limite=None):
     for peso, nombre, cuerpo in documentos[:4]:
         bloques.append(f"--- {nombre} ---\n{cuerpo[:cuota]}")
     return "\n\n".join(bloques)[:limite]
+
+
+def _deduplicar_adjuntos(rutas):
+    """Quita adjuntos repetidos (mismo contenido) que dejan los reprocesos.
+
+    Cada reproceso vuelve a bajar el anexo con otro nombre (Hosting.xlsx,
+    Hosting_2.xlsx, ...). Se conserva el primero y se borran los clones.
+    """
+    import hashlib as _hl
+    vistos = {}
+    limpias = []
+    for ruta in rutas or []:
+        try:
+            if not os.path.isfile(ruta):
+                continue
+            with open(ruta, "rb") as f:
+                firma = _hl.sha256(f.read()).hexdigest()
+        except Exception:
+            limpias.append(ruta)
+            continue
+        if firma in vistos:
+            try:
+                os.remove(ruta)
+                print(f"      ♻️ Adjunto repetido descartado: {os.path.basename(ruta)}")
+            except Exception:
+                pass
+            continue
+        vistos[firma] = ruta
+        limpias.append(ruta)
+    return limpias
 
 
 def _estado_compra_agil_texto():
@@ -2825,6 +2855,9 @@ class Agente2Extractor:
         except Exception:
             pass
 
+
+        # 1b. Quitar duplicados que dejan los reprocesos (mismo contenido)
+        adjuntos_descargados = _deduplicar_adjuntos(adjuntos_descargados)
 
         # 2. Extracción profunda de texto desde los archivos descargados para el Agente 3
         texto_adjuntos = self._extraer_texto_de_adjuntos_locales(adjuntos_descargados)
