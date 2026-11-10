@@ -46,6 +46,7 @@ URL_BASE = os.getenv("PORTAL_URL_BASE", "").rstrip("/")
 MAX_ZIP = 80 * 1024 * 1024
 MAX_SUBIDA = 60 * 1024 * 1024
 BLOQUEO = os.path.join(RAIZ, "portal_reproceso.lock")
+RUTA_LOGO = os.path.join(RAIZ, "logo.png")
 
 _cache = {"t": 0.0, "proyectos": {}}
 
@@ -287,6 +288,8 @@ PLANTILLA = """<!DOCTYPE html>
 
   {boton_portal}
 
+  {bloque_logo}
+
   <div class="tarjeta">
     <h2>Documentos del proyecto</h2>
     <table>
@@ -416,6 +419,31 @@ def _pagina(proyecto, aviso=""):
             '</form>'
         )
 
+    hay_logo = os.path.isfile(RUTA_LOGO)
+    vista_logo = (
+        f'<img src="/p/{token}/logo?t={int(time.time())}" alt="Logo" '
+        'style="height:64px;max-width:180px;object-fit:contain;'
+        'border:1px solid #e5e7eb;border-radius:8px;padding:6px;background:#fff">'
+        if hay_logo else
+        '<div style="color:#6b7280;font-size:12px">Aún no subes tu logo</div>'
+    )
+    bloque_logo = (
+        '<div class="tarjeta">'
+        '<h2>Logo de tu empresa</h2>'
+        '<p class="ayuda" style="margin:0 0 12px">'
+        'Se usa en la cotización, el informe de auditoría y el informe financiero que '
+        'recibe el organismo. Sube un PNG con fondo transparente (ideal 600 px de ancho).'
+        '</p>'
+        '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">'
+        f'{vista_logo}'
+        f'<form method="post" action="/p/{token}/logo" enctype="multipart/form-data">'
+        '<input type="file" name="logo" accept=".png,.jpg,.jpeg">'
+        '<button class="boton" type="submit" style="margin-left:8px">Subir logo</button>'
+        '</form>'
+        '</div>'
+        '</div>'
+    )
+
     es_compra_agil = proyecto.get("tipo_portal") == "COMPRA_AGIL"
     if es_compra_agil:
         bloque_anexos = (
@@ -451,6 +479,8 @@ def _pagina(proyecto, aviso=""):
     if not aviso and faltan:
         aviso = ('<div class="falta"><b>Falta información para la auditoría técnica.</b> '
                  'Puedes subir: ' + ", ".join(faltan) + '.</div>')
+    elif "logo=1" in str(proyecto.get("_consulta") or ""):
+        aviso = '<div class="ok">Logo actualizado. Se usará en los próximos documentos.</div>'
     elif not aviso:
         aviso = '<div class="ok">Anexos completos: la auditoría técnica está incluida.</div>'
 
@@ -487,6 +517,7 @@ def _pagina(proyecto, aviso=""):
         boton_reprocesar=boton_reprocesar,
         boton_portal=boton_portal,
         bloque_anexos=bloque_anexos,
+        bloque_logo=bloque_logo,
         marca_inicial=_estado_analisis(proyecto["_carpeta"])["doc1"],
         aviso=aviso,
     )
@@ -544,6 +575,14 @@ class Manejador(BaseHTTPRequestHandler):
                 return self._enviar(404, "<h1>Enlace no válido</h1>"
                                          "<p>El proyecto no existe o el enlace fue revocado.</p>")
 
+            if len(partes) == 3 and partes[2] == "logo":
+                if not os.path.isfile(RUTA_LOGO):
+                    return self._enviar(404, "<h1>Sin logo</h1>")
+                with open(RUTA_LOGO, "rb") as f:
+                    datos = f.read()
+                tipo = "image/png" if RUTA_LOGO.lower().endswith(".png") else "image/jpeg"
+                return self._enviar(200, datos, tipo, {"Cache-Control": "no-cache"})
+
             if len(partes) == 3 and partes[2] == "estado":
                 datos = _estado_analisis(proyecto["_carpeta"])
                 return self._enviar(200, json.dumps(datos, ensure_ascii=False),
@@ -581,7 +620,7 @@ class Manejador(BaseHTTPRequestHandler):
     def do_POST(self):
         ruta = self.path.split("?")[0]
         partes = [p for p in ruta.split("/") if p]
-        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar"):
+        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo"):
             return self._enviar(404, "<h1>No encontrado</h1>")
         proyecto = self._buscar(partes[1])
         if not proyecto:
@@ -589,6 +628,33 @@ class Manejador(BaseHTTPRequestHandler):
 
         carpeta = proyecto["_carpeta"]
         codigo = proyecto["_codigo"]
+
+        if partes[2] == "logo":
+            largo = int(self.headers.get("Content-Length") or 0)
+            if largo <= 0 or largo > 5 * 1024 * 1024:
+                return self._enviar(413, "<h1>Archivo demasiado grande (máx 5 MB)</h1>")
+            cuerpo = self.rfile.read(largo)
+            archivos = _leer_multipart(cuerpo, self.headers.get("Content-Type", ""))
+            if not archivos:
+                return self._enviar(400, "<h1>No se recibió el logo</h1>")
+            nombre, datos = archivos[0]
+            extension = os.path.splitext(nombre)[1].lower()
+            if extension not in (".png", ".jpg", ".jpeg"):
+                return self._enviar(400, "<h1>Formato no válido: usa PNG o JPG</h1>")
+            try:
+                os.makedirs(os.path.dirname(RUTA_LOGO) or ".", exist_ok=True)
+                if os.path.exists(RUTA_LOGO):
+                    try:
+                        os.replace(RUTA_LOGO, RUTA_LOGO + ".anterior")
+                    except Exception:
+                        pass
+                with open(RUTA_LOGO, "wb") as f:
+                    f.write(datos)
+                print(f"   [PORTAL] logo del cliente actualizado: {nombre} ({len(datos)} bytes)")
+            except Exception as e:
+                print(f"   [PORTAL] error guardando el logo: {e}")
+                return self._enviar(500, "<h1>No se pudo guardar el logo</h1>")
+            return self._redirigir(f"/p/{partes[1]}?logo=1")
 
         if partes[2] == "reprocesar":
             ok, mensaje = _lanzar_reproceso(codigo)
