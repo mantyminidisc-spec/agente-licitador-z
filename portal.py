@@ -49,11 +49,17 @@ BLOQUEO = os.path.join(RAIZ, "portal_reproceso.lock")
 
 _cache = {"t": 0.0, "proyectos": {}}
 
-# Qué documentos conviene subir para una auditoría técnica completa
+# Qué documentos conviene subir para una auditoría técnica completa.
+# Cada institución entrega las bases con nombres distintos, así que se aceptan
+# muchas variantes (TR, TDR, anexos técnicos, especificaciones, etc.).
 CHECKLIST = [
-    ("Bases administrativas (BAE / BAG)", ("bae", "bases", "bag", "administrativ")),
-    ("Especificaciones técnicas (EETT)", ("eett", "tecnica", "técnica", "especificacion", "especificación")),
-    ("Formularios / anexos editables", ("formato", "anexo", "declaracion", "declaración", "carta")),
+    ("Bases administrativas (BAE / BAG / DAE)",
+     ("bae", "bag", "bases", "administrativ", "dae")),
+    ("Especificaciones o bases técnicas (EETT / TR / TDR)",
+     ("eett", "tecnica", "técnica", "tecnicos", "técnicos", "especificacion",
+      "especificación", "termino", "término", "tr_", "tdr", "referencia")),
+    ("Formularios, anexos y económicos",
+     ("formato", "anexo", "declaracion", "declaración", "carta", "economico", "económico")),
 ]
 
 
@@ -324,9 +330,53 @@ PLANTILLA = """<!DOCTYPE html>
   </div>
 </main>
 <footer>Generado por LICITAIA · documento válido como respaldo de postulación</footer>
+
+<div id="listo" style="display:none;position:fixed;left:50%;top:18px;transform:translateX(-50%);
+     background:#0f766e;color:#fff;padding:14px 22px;border-radius:12px;font-weight:600;
+     box-shadow:0 10px 30px rgba(0,0,0,.25);z-index:99;text-align:center">
+  ✅ Análisis actualizado. Recargando…
+</div>
+<script>
+(function () {{
+  var inicial = "{marca_inicial}";
+  var objetivo = "/p/{token}/estado";
+  var mostrado = false;
+  setInterval(function () {{
+    if (mostrado) return;
+    fetch(objetivo, {{ cache: "no-store" }})
+      .then(function (r) {{ return r.json(); }})
+      .then(function (d) {{
+        if (String(d.doc1) !== inicial && d.doc1) {{
+          mostrado = true;
+          document.getElementById("listo").style.display = "block";
+          setTimeout(function () {{ location.href = "/p/{token}"; }}, 1800);
+        }}
+      }})
+      .catch(function () {{}});
+  }}, 12000);
+}})();
+</script>
 </body>
 </html>
 """
+
+
+def _estado_analisis(carpeta):
+    """Para que la página avise sola cuando el análisis quedó actualizado."""
+    doc1 = 0
+    generado = ""
+    try:
+        for nombre in os.listdir(carpeta):
+            if nombre.upper().startswith("DOC1_") and nombre.upper().endswith(".DOCX"):
+                doc1 = int(os.path.getmtime(os.path.join(carpeta, nombre)))
+    except Exception:
+        doc1 = 0
+    try:
+        with open(os.path.join(carpeta, "manifest.json"), encoding="utf-8") as f:
+            generado = str((json.load(f) or {}).get("generado") or "")
+    except Exception:
+        generado = ""
+    return {"doc1": doc1, "generado": generado}
 
 
 def _pagina(proyecto, aviso=""):
@@ -366,6 +416,14 @@ def _pagina(proyecto, aviso=""):
         else:
             checklist += f'<li><span class="no">○</span> {etiqueta} <span class="ayuda">— pendiente</span></li>'
             faltan.append(etiqueta)
+
+    # Cualquier archivo que suba el cliente es válido: si no calza con una
+    # categoría igual se le avisa que el agente lo va a incorporar.
+    if adjuntos:
+        checklist += (f'<li><span class="si">✔</span> {len(adjuntos)} documento(s) '
+                      f'disponible(s) para el análisis</li>')
+    checklist += ('<li><span class="ayuda">Puedes subir PDF, DOCX, XLSX, ZIP o Word '
+                  'antiguo (.doc). Todos se incorporan al informe.</span></li>')
 
     boton_reprocesar = ""
     if manifest.get("estado") == "anexos_subidos":
@@ -413,6 +471,7 @@ def _pagina(proyecto, aviso=""):
         checklist=checklist,
         boton_reprocesar=boton_reprocesar,
         boton_portal=boton_portal,
+        marca_inicial=_estado_analisis(proyecto["_carpeta"])["doc1"],
         aviso=aviso,
     )
 
@@ -468,6 +527,11 @@ class Manejador(BaseHTTPRequestHandler):
             if not proyecto:
                 return self._enviar(404, "<h1>Enlace no válido</h1>"
                                          "<p>El proyecto no existe o el enlace fue revocado.</p>")
+
+            if len(partes) == 3 and partes[2] == "estado":
+                datos = _estado_analisis(proyecto["_carpeta"])
+                return self._enviar(200, json.dumps(datos, ensure_ascii=False),
+                                    "application/json")
 
             if len(partes) == 3 and partes[2] == "zip":
                 datos = _zip_proyecto(proyecto["_carpeta"])
