@@ -297,24 +297,7 @@ PLANTILLA = """<!DOCTYPE html>
 
   {bloque_adjuntos}
 
-  <div class="tarjeta">
-    <h2>Anexos para auditoría técnica</h2>
-    <p class="ayuda" style="margin:0 0 12px">
-      Estos documentos (EETT, bases especiales, formularios) no se pueden leer
-      automáticamente del portal. Súbelos aquí y el agente los incorpora al informe.
-    </p>
-    <ul class="lista-check">
-      {checklist}
-    </ul>
-    <form method="post" action="/p/{token}/subir" enctype="multipart/form-data">
-      <input type="file" name="archivos" multiple>
-      <button class="boton" type="submit">Subir anexos</button>
-    </form>
-    <p class="ayuda" style="margin:14px 0 0">
-      Acepta PDF, DOCX, XLSX y ZIP (máximo 60 MB por archivo).
-    </p>
-    {boton_reprocesar}
-  </div>
+  {bloque_anexos}
 
   <div class="tarjeta">
     <h2>Cómo se usa</h2>
@@ -433,6 +416,38 @@ def _pagina(proyecto, aviso=""):
             '</form>'
         )
 
+    es_compra_agil = proyecto.get("tipo_portal") == "COMPRA_AGIL"
+    if es_compra_agil:
+        bloque_anexos = (
+            '<div class="ok" style="margin:0 0 18px">'
+            '<b>Compra Ágil: los documentos se descargan solos.</b><br>'
+            'Este tipo de proceso no necesita que subas nada: el agente obtiene los '
+            'archivos desde el servicio oficial de ChileCompra. '
+            'Si el portal no entrega alguno, igual quedará avisado en el informe.'
+            '</div>'
+        )
+        aviso = aviso or ''
+        faltan = []
+    else:
+        bloque_anexos = (
+            '<div class="tarjeta">'
+            '<h2>Anexos para auditoría técnica</h2>'
+            '<p class="ayuda" style="margin:0 0 12px">'
+            'Estos documentos (EETT, bases especiales, formularios) no se pueden leer '
+            'automáticamente del portal oficial. Súbelos aquí y el agente los incorpora '
+            'al informe.</p>'
+            f'<ul class="lista-check">{checklist}</ul>'
+            f'<form method="post" action="/p/{token}/subir" enctype="multipart/form-data">'
+            '<input type="file" name="archivos" multiple>'
+            '<button class="boton" type="submit">Subir anexos</button>'
+            '</form>'
+            '<p class="ayuda" style="margin:14px 0 0">'
+            'Acepta PDF, DOCX, XLSX, ZIP y Word antiguo (.doc) · máximo 60 MB por archivo.'
+            '</p>'
+            f'{boton_reprocesar}'
+            '</div>'
+        )
+
     if not aviso and faltan:
         aviso = ('<div class="falta"><b>Falta información para la auditoría técnica.</b> '
                  'Puedes subir: ' + ", ".join(faltan) + '.</div>')
@@ -471,6 +486,7 @@ def _pagina(proyecto, aviso=""):
         checklist=checklist,
         boton_reprocesar=boton_reprocesar,
         boton_portal=boton_portal,
+        bloque_anexos=bloque_anexos,
         marca_inicial=_estado_analisis(proyecto["_carpeta"])["doc1"],
         aviso=aviso,
     )
