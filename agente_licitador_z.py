@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "12.8"
+VERSION_LICITAIA = "13.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3176,7 +3176,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
         preguntas. Si la IA falla, devuelve None (el informe sigue funcionando).
         """
         recorte = (texto or "")[:6000]
-        if len(recorte.strip()) < 400:
+        if len(recorte.strip()) < 150:
             return None
         if os.getenv("RESUMENES_IA", "0").strip() != "1":
             return None
@@ -3284,7 +3284,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
             if not nombre or nombre.upper().startswith("FICHA_TEXTO_"):
                 continue
             cuerpo = resto.split("=== [FIN ADJUNTO:")[0].strip()
-            if len(cuerpo) < 800 or len(salida) >= 6:
+            if len(cuerpo) < 250 or len(salida) >= 6:
                 continue
             resumen = self._resumen_documental(nombre, cuerpo)
             if resumen:
@@ -4271,7 +4271,7 @@ class Agente5Entregador:
             candidatas = []
             for linea in cuerpo.split("\n"):
                 limpia = " ".join(linea.split())
-                if len(limpia) < 60:
+                if len(limpia) < 12:
                     continue
                 letras = sum(1 for c in limpia if c.isalpha())
                 if letras / max(1, len(limpia)) < 0.65:
@@ -4279,10 +4279,13 @@ class Agente5Entregador:
                 palabras = limpia.split()
                 utiles = sum(1 for p in palabras if len(p) > 3 and
                              sum(1 for v in p if v.lower() in "aeiou") >= 2)
-                if utiles < 6:
+                if utiles < 3:
                     continue  # sin suficientes palabras reales
                 candidatas.append((utiles, limpia))
             candidatas.sort(key=lambda x: -x[0])
+            if not candidatas:
+                # Documentos tabulares (Excel, planillas): texto tal cual
+                return " ".join(cuerpo.split())[:600].strip()
             elegidas = [f for _, f in candidatas[:3]]
             unido = " ".join(elegidas).strip()
             if len(unido) <= 600:
