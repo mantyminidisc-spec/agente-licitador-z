@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "14.1"
+VERSION_LICITAIA = "14.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4681,7 +4681,7 @@ class Agente5Entregador:
                     _nombres.append(_n)
             _bloques_con_detalle = []
             for _n in _nombres[:6]:
-                _lineas = _lineas_documento(_forense, _n, 10)
+                _lineas = _lineas_documento(_forense, _n, 20)
                 if len(_lineas) >= 2:
                     _bloques_con_detalle.append((_n, _lineas))
             if _bloques_con_detalle:
