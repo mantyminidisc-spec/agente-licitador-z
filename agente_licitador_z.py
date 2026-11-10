@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "13.4"
+VERSION_LICITAIA = "13.5"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4956,99 +4956,135 @@ class Agente5Entregador:
     # --------------------------------------------------------------------------
     def generar_doc3_financiero_word(self, expediente, informes, escenarios, ruta_doc3):
         doc = Document()
-        for s in doc.sections:
-            s.top_margin = Inches(0.55)
-            s.bottom_margin = Inches(0.55)
-            s.left_margin = Inches(0.6)
-            s.right_margin = Inches(0.6)
+        self._config_documento(doc, 1.6, 10.5)
 
-        eq = escenarios["equilibrado"]
+        codigo = expediente.get("codigo", "")
+        organismo = expediente.get("organismo", "Organismo público")
+        nombre = str(expediente.get("nombre") or "Proceso")[:120]
+        presupuesto = int(expediente.get("presupuesto_estatal_clp") or 0)
+        eq = escenarios.get("equilibrado", {}) or {}
+        ag = escenarios.get("agresivo", {}) or {}
+        co = escenarios.get("conservador", {}) or {}
 
-        self._agregar_banner_seccion_word(
+        def _clp(valor):
+            try:
+                return "$" + f"{int(valor):,}".replace(",", ".")
+            except Exception:
+                return "$0"
+
+        self._encabezado_empresa(
             doc,
-            f"📈 DOC 3: INGENIERÍA FINANCIERA DE 4 PESTAÑAS · PROCESO {expediente['codigo']}",
-            "0F172A"
+            "Informe financiero",
+            [
+                f"Proceso: {codigo}",
+                f"Organismo: {organismo}",
+                f"Presupuesto oficial: {_clp(presupuesto)} (IVA incluido)",
+            ],
         )
 
-        # PESTAÑA 1: 3 Escenarios
-        self._agregar_banner_seccion_word(doc, "PESTAÑA 1: SIMULACIÓN DE LOS 3 ESCENARIOS DE POSTULACIÓN", "1E293B")
-        t1 = doc.add_table(rows=1, cols=7)
-        t1.style = "Table Grid"
-        for i, h in enumerate(["Escenario", "% Presup.", "Oferta Neta", "IVA 19%", "Total Bruto", "Costo Directo", "Ganancia Bolsillo"]):
-            c = t1.rows[0].cells[i]
-            self._color_celda(c, "0F172A")
-            self._padding_celda(c, 65, 65, 70, 70)
-            r = c.paragraphs[0].add_run(h)
-            r.bold = True
-            r.font.size = Pt(8)
-            r.font.color.rgb = RGBColor(255, 255, 255)
+        self._parrafo(doc, nombre, 9.5, negrita=True, espacio_despues=8)
 
-        for k in ["agresivo", "equilibrado", "conservador"]:
-            es = escenarios[k]
-            row = t1.add_row().cells
-            bg = "D1FAE5" if k == "equilibrado" else "FFFFFF"
-            vals = [
-                es["titulo"], f"{es['porcentaje_presupuesto']}%",
-                f"${es['oferta_neta_clp']:,}", f"${es['iva_19_clp']:,}",
-                f"${es['oferta_total_bruta_clp']:,}", f"${es['costo_interno_total_clp']:,}",
-                f"${es['ganancia_limpia_bolsillo_clp']:,} ({es['margen_rentabilidad_pct']}%)"
-            ]
-            for i, v in enumerate(vals):
-                self._color_celda(row[i], bg)
-                self._padding_celda(row[i], 65, 65, 70, 70)
-                rn = row[i].paragraphs[0].add_run(v)
-                rn.font.size = Pt(8)
-                if k == "equilibrado":
-                    rn.bold = True
+        # 1. Escenarios
+        self._titulo_seccion(doc, 1, "Escenarios de postulación")
+        self._parrafo(
+            doc,
+            "El presupuesto publicado por el organismo corresponde al monto máximo con IVA "
+            "incluido. Las ofertas se calculan hacia atrás desde ese tope, sin superarlo nunca.",
+            9,
+            espacio_despues=6,
+        )
+        filas = []
+        for etiqueta, es in (("Competitivo", ag), ("Recomendado", eq), ("Conservador", co)):
+            filas.append((
+                etiqueta,
+                f"{es.get('porcentaje_presupuesto', 0)}%",
+                _clp(es.get("oferta_neta_clp", 0)),
+                _clp(es.get("iva_19_clp", 0)),
+                _clp(es.get("oferta_total_bruta_clp", 0)),
+                _clp(es.get("costo_interno_total_clp", 0)),
+                f"{es.get('margen_rentabilidad_pct', 0)}%",
+            ))
+        self._tabla(
+            doc,
+            ["Escenario", "% del tope", "Oferta neta", "IVA 19%", "Total bruto",
+             "Costo interno", "Margen"],
+            filas,
+            [2.6, 1.5, 2.7, 2.2, 2.7, 2.7, 1.7],
+            alineaciones=["l", "c", "r", "r", "r", "r", "c"],
+            tam=8.5,
+        )
+        self._parrafo(
+            doc,
+            "El escenario recomendado maximiza la ganancia esperada. El conservador deja más "
+            "margen por si aparecen costos no previstos durante la ejecución.",
+            8.5,
+            cursiva=True,
+            espacio_despues=6,
+        )
 
-        # PESTAÑA 2: Estructura de Costos
-        self._agregar_banner_seccion_word(doc, "PESTAÑA 2: DESGLOSE DE COSTOS INTERNOS DE INGENIERÍA Y OPERACIÓN", "1E293B")
-        t2 = doc.add_table(rows=1, cols=3)
-        t2.style = "Table Grid"
-        for i, h in enumerate(["Centro de Costo Interno (Mantytech SpA)", "Monto CLP", "Detalle Técnico"]):
-            c = t2.rows[0].cells[i]
-            self._color_celda(c, "0F172A")
-            self._padding_celda(c, 65, 65, 80, 80)
-            r = c.paragraphs[0].add_run(h)
-            r.bold = True
-            r.font.size = Pt(8.5)
-            r.font.color.rgb = RGBColor(255, 255, 255)
-
+        # 2. Costos internos
+        self._titulo_seccion(doc, 2, "Costos internos del proyecto")
         filas_c = [
-            ("1. Horas de Ingeniería, Desarrollo y Configuración", f"${eq['costo_hh_clp']:,} CLP", f"{informes.get('horas_ingenieria_estimadas', 40)} HH Senior estimadas"),
-            ("2. Infraestructura Cloud, Servidores VPS y Recursos IA", f"${eq['costo_cloud_clp']:,} CLP", "Despliegue digital y licenciamiento técnico"),
-            ("3. Reserva Técnica y Gestión Administrativa (4%)", f"${eq['costo_imprevistos_clp']:,} CLP", "Mitigación de imprevistos operativos"),
-            ("TOTAL COSTO DIRECTO INTERNO", f"${eq['costo_interno_total_clp']:,} CLP", "Total descontado para utilidad neta de bolsillo")
+            ("Horas de ingeniería, desarrollo y configuración",
+             _clp(eq.get("costo_hh_clp", 0)),
+             f"{informes.get('horas_ingenieria_estimadas', 40)} HH estimadas"),
+            ("Infraestructura cloud y recursos de IA",
+             _clp(eq.get("costo_cloud_clp", 0)),
+             "Despliegue, licencias y operación"),
+            ("Reserva técnica y gestión administrativa",
+             _clp(eq.get("costo_imprevistos_clp", 0)),
+             "Imprevistos operativos"),
+            ("TOTAL COSTO INTERNO",
+             _clp(eq.get("costo_interno_total_clp", 0)),
+             "Se descuenta de la oferta neta"),
         ]
-        for idx_f, (c_nom, c_val, c_obs) in enumerate(filas_c):
-            rf = t2.add_row().cells
-            bg_f = "E2E8F0" if idx_f == 3 else "FFFFFF"
-            for i, tx in enumerate([c_nom, c_val, c_obs]):
-                self._color_celda(rf[i], bg_f)
-                self._padding_celda(rf[i], 60, 60, 80, 80)
-                rn = rf[i].paragraphs[0].add_run(tx)
-                rn.font.size = Pt(8.5)
-                if idx_f == 3:
-                    rn.bold = True
-
-        # PESTAÑA 3: Flujo de Caja
-        self._agregar_banner_seccion_word(doc, "PESTAÑA 3: CRONOGRAMA DE FLUJO DE CAJA Y LIQUIDACIÓN DE IVA", "1E293B")
-        self._agregar_caja_informe_word(
+        self._tabla(
             doc,
-            f"• Etapa 1 (Días 1 al {informes.get('plazo_entrega_dias_habiles', 15)}): Inversión operativa interna de ${eq['costo_interno_total_clp']:,} CLP.\n"
-            f"• Etapa 2 (Día {informes.get('plazo_entrega_dias_habiles', 15)}): Entrega conforme y emisión de Factura Electrónica por ${eq['oferta_total_bruta_clp']:,} CLP.\n"
-            f"• Etapa 3 (Día 20 mes siguiente): Declaración y pago F29 IVA SII por ${eq['iva_19_clp']:,} CLP.\n"
-            f"• Etapa 4 (Pago 30 días Ley 21.131): Ingreso líquido y ganancia limpia de bolsillo por ${eq['ganancia_limpia_bolsillo_clp']:,} CLP.",
-            "F8FAFC"
+            ["Centro de costo", "Monto", "Detalle"],
+            filas_c,
+            [8.0, 3.2, 6.4],
+            alineaciones=["l", "r", "l"],
+            tam=8.5,
+            primera_columna_negrita=True,
         )
 
-        # PESTAÑA 4: Veredicto Financiero
-        self._agregar_banner_seccion_word(doc, "PESTAÑA 4: DICTAMEN DE RENTABILIDAD Y RETORNO SOBRE INVERSIÓN (ROI)", "065F46")
-        self._agregar_caja_informe_word(
+        # 3. Flujo de caja
+        self._titulo_seccion(doc, 3, "Flujo de caja y liquidación de IVA")
+        plazo = informes.get("plazo_entrega_dias_habiles", 15)
+        lineas_caja = (
+            f"Día 1 al {plazo}: inversión interna de {_clp(eq.get('costo_interno_total_clp', 0))}.",
+            f"Día {plazo}: entrega conforme y emisión de factura por "
+            f"{_clp(eq.get('oferta_total_bruta_clp', 0))}.",
+            f"Día 20 del mes siguiente: pago de IVA (F29) por {_clp(eq.get('iva_19_clp', 0))}.",
+            f"Pago a 30 días (Ley 21.131): ingreso líquido y ganancia de "
+            f"{_clp(eq.get('ganancia_limpia_bolsillo_clp', 0))}.",
+        )
+        for linea in lineas_caja:
+            self._parrafo(doc, f"•  {linea}", 9, espacio_despues=3)
+
+        # 4. Dictamen
+        self._titulo_seccion(doc, 4, "Dictamen de rentabilidad")
+        self._tabla(
             doc,
-            f"VEREDICTO AGENTE 4: El proyecto entrega un Retorno sobre Costos (ROI) de {eq['roi_pct']}% y un Margen Neto Limpio de "
-            f"{eq['margen_rentabilidad_pct']}%. Se aprueba su postulación inmediata presentando el DOC 2.",
-            "ECFDF5"
+            ["Indicador", "Valor"],
+            [
+                ("Margen neto sobre la oferta", f"{eq.get('margen_rentabilidad_pct', 0)}%"),
+                ("Retorno sobre el costo (ROI)", f"{eq.get('roi_pct', 0)}%"),
+                ("Ganancia de bolsillo", _clp(eq.get("ganancia_limpia_bolsillo_clp", 0))),
+                ("Escenario recomendado", f"{eq.get('porcentaje_presupuesto', 0)}% del tope"),
+            ],
+            [10.6, 7.0],
+            alineaciones=["l", "r"],
+            tam=8.5,
+            primera_columna_negrita=True,
+        )
+        self._parrafo(
+            doc,
+            f"El proyecto entrega un ROI de {eq.get('roi_pct', 0)}% y un margen neto de "
+            f"{eq.get('margen_rentabilidad_pct', 0)}%. Se recomienda postular presentando el DOC 2.",
+            9,
+            negrita=True,
+            espacio_despues=4,
         )
 
         doc.save(ruta_doc3)
