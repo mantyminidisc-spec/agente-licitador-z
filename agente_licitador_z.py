@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "15.1"
+VERSION_LICITAIA = "15.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3147,6 +3147,92 @@ class Agente2_5LectorForense:
             print(f"      ✅ [2.5] {nombre_archivo}: {len(partes)} bloque(s) leídos")
         return "\n\n".join(partes)
 
+    def _leer_pdf_con_vision(self, ruta_pdf, nombre="", max_paginas=4):
+        """Lee un PDF escaneado enviando las paginas como imagen a un modelo con vision.
+
+        Usa el proveedor compatible con OpenAI (DeepSeek Flash acepta imagenes).
+        Devuelve el texto reconocido o "" si no se pudo.
+        """
+        url = (os.getenv("IA_VISION_URL", "").strip().rstrip("/")
+               or (IA_PREMIUM_URL if PREMIUM_ACTIVO else IA_BASE_URL))
+        clave = (os.getenv("IA_VISION_KEY", "").strip()
+                 or (IA_PREMIUM_KEY if PREMIUM_ACTIVO else IA_API_KEY))
+        modelo = (os.getenv("IA_VISION_MODELO", "").strip()
+                  or (IA_PREMIUM_MODELO if PREMIUM_ACTIVO else IA_MODELO))
+        if not url or not clave or not modelo:
+            return ""
+        try:
+            try:
+                import pymupdf as fitz
+            except Exception:
+                import fitz
+            import base64
+        except Exception as e:
+            print(f"      [!] Vision IA no disponible: {str(e)[:60]}")
+            return ""
+        try:
+            documento = fitz.open(ruta_pdf)
+        except Exception as e:
+            print(f"      [!] Vision IA: no se pudo abrir {nombre}: {str(e)[:50]}")
+            return ""
+
+        imagenes = []
+        try:
+            for indice in range(min(max_paginas, documento.page_count)):
+                pagina = documento.load_page(indice)
+                pix = pagina.get_pixmap(dpi=150)
+                imagenes.append(base64.b64encode(pix.tobytes("png")).decode("ascii"))
+        except Exception as e:
+            print(f"      [!] Vision IA: error renderizando paginas: {str(e)[:50]}")
+            return ""
+        finally:
+            try:
+                documento.close()
+            except Exception:
+                pass
+
+        if not imagenes:
+            return ""
+
+        contenido = [{
+            "type": "text",
+            "text": ("Transcribe este documento en espanol tal como esta escrito. "
+                     "Manten titulos, numeracion, tablas (usa | entre columnas) y cifras. "
+                     "No resumas ni interpretes: solo transcribe el texto que ves."),
+        }]
+        for b64 in imagenes:
+            contenido.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
+            })
+
+        payload = {
+            "model": modelo,
+            "messages": [{"role": "user", "content": contenido}],
+            "temperature": 0.0,
+            "max_tokens": 4096,
+        }
+        try:
+            print(f"      👁️ Vision IA ({modelo}): leyendo {len(imagenes)} pagina(s) de {nombre}...")
+            r = requests.post(url + "/chat/completions", json=payload,
+                              headers={"Authorization": f"Bearer {clave}",
+                                       "Content-Type": "application/json"},
+                              timeout=300)
+            if r.status_code != 200:
+                print(f"      [!] Vision IA HTTP {r.status_code}: {(r.text or '')[:120]}")
+                return ""
+            datos = r.json() or {}
+            opciones = datos.get("choices") or []
+            if not opciones:
+                return ""
+            texto = ((opciones[0].get("message") or {}).get("content") or "").strip()
+            if len(texto) > 100:
+                print(f"      OK Vision IA: {len(texto)} caracteres recuperados")
+                return texto
+        except Exception as e:
+            print(f"      [!] Vision IA fallo: {str(e)[:80]}")
+        return ""
+
     def _leer_pdf_con_gemini_multimodal(self, ruta_pdf, nombre_archivo):
         if _ia_limite_alcanzado():
             print("      [!] Cuota de IA agotada: se extrae el texto sin IA")
@@ -3444,14 +3530,20 @@ Lee y transcribe el contenido completo en formato estructurado."""
                         texto_extraido = texto_ocr
                         metodo_usado = "OCR local (tesseract)"
                     else:
-                        # 3) IA multimodal, ultima opcion
-                        texto_gemini = self._leer_pdf_con_gemini_multimodal(ruta, nom)
-                        if texto_gemini and len(texto_gemini) > 100:
-                            texto_extraido = texto_gemini
-                            metodo_usado = "Gemini-Multimodal"
+                        # 3) Vision IA (DeepSeek Flash acepta imagenes)
+                        texto_vision = self._leer_pdf_con_vision(ruta, nom)
+                        if texto_vision and len(texto_vision) > 100:
+                            texto_extraido = texto_vision
+                            metodo_usado = "Vision IA"
                         else:
-                            texto_extraido = self._extraer_texto_pypdf(ruta)
-                            metodo_usado = "pypdf"
+                            # 4) Respaldo: Gemini multimodal
+                            texto_gemini = self._leer_pdf_con_gemini_multimodal(ruta, nom)
+                            if texto_gemini and len(texto_gemini) > 100:
+                                texto_extraido = texto_gemini
+                                metodo_usado = "Gemini-Multimodal"
+                            else:
+                                texto_extraido = self._extraer_texto_pypdf(ruta)
+                                metodo_usado = "pypdf"
 
             elif ext in [".docx", ".doc"]:
                 texto_extraido = self._extraer_texto_word(ruta)
