@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "15.2"
+VERSION_LICITAIA = "15.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -6662,6 +6662,13 @@ def mostrar_estado():
           + (f"(portal: {PORTAL_URL_BASE or 'sin URL base'})" if ENTREGA_MODO == "portal" else ""))
     print(f"  Carpeta de datos    : {DIRECTORIO_RAIZ}")
     print(f"  Ticket Mercado Pub. : {'configurado' if TICKET_MERCADO_PUBLICO else 'FALTA'}")
+    _prov_ia = IA_MODELO if PROVEEDOR_IA == 'openai' else MODELO_GEMINI
+    _url_ia = IA_BASE_URL if PROVEEDOR_IA == 'openai' else 'google'
+    print(f"  IA principal        : {_prov_ia} ({_url_ia})")
+    if PREMIUM_ACTIVO:
+        print(f"  IA premium          : {IA_PREMIUM_MODELO} · hasta {IA_PREMIUM_TOPE_TEXTO:,} caracteres")
+    else:
+        print("  IA premium          : no configurada")
     print(f"  Modelo Gemini       : {MODELO_GEMINI}"
           f" ({'con API key' if API_KEY_GEMINI else 'SIN API KEY'})")
     print(f"  Horario de escaneo  : {describir_horario()}")
