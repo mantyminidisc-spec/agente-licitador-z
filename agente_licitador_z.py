@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "13.5"
+VERSION_LICITAIA = "14.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3259,7 +3259,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
         Devuelve dict con: archivo, objeto, requisitos, excluyentes, riesgos,
         preguntas. Si la IA falla, devuelve None (el informe sigue funcionando).
         """
-        recorte = (texto or "")[:6000]
+        recorte = (texto or "")[:5000]
         if len(recorte.strip()) < 150:
             return None
         if os.getenv("RESUMENES_IA", "0").strip() != "1":
@@ -3268,20 +3268,29 @@ Lee y transcribe el contenido completo en formato estructurado."""
             print("      [!] Cuota de IA agotada: se usa el resumen extractivo")
             return None
         prompt = (
-            "Eres abogado experto en contratacion publica chilena (Ley 19.886, "
-            "DS 661/2024). Analiza ESTE documento de un proceso de Mercado Publico y "
-            "responde SOLO JSON valido, sin markdown, con esta forma exacta:\n"
-            '{"objeto": "que exige el documento en una frase", '
-            '"requisitos": ["requisito obligatorio 1", "..."], '
-            '"excluyentes": ["causal de inadmisibilidad 1", "..."], '
-            '"riesgos": ["riesgo concreto para el oferente 1", "..."], '
-            '"preguntas": ["pregunta lista para el foro de consultas 1", "..."]}\n'
-            "Maximo 6 elementos por lista. Cita cifras y plazos cuando existan.\n\n"
+            "Eres abogado e ingeniero experto en contratacion publica chilena "
+            "(Ley 19.886, DS 661/2024, Ley 21.634). Analiza ESTE documento de un "
+            "proceso de Mercado Publico con el maximo detalle util para ofertar.\n"
+            "Responde SOLO JSON valido, sin markdown, con esta forma exacta:\n"
+            '{"objeto": "que exige el documento, en dos o tres frases concretas", '
+            '"requisitos": ["requisito obligatorio, con la cifra o plazo que exija"], '
+            '"excluyentes": ["causal de inadmisibilidad, citando la clausula si aparece"], '
+            '"documentos_obligatorios": ["documento que el oferente debe presentar"], '
+            '"criterios_evaluacion": ["criterio y su peso o puntaje si lo indica"], '
+            '"plazos": ["plazo, hito o fecha relevante"], '
+            '"garantias": ["garantia exigida: tipo, monto y vigencia"], '
+            '"multas": ["multa o sancion con su formula o monto si aparece"], '
+            '"riesgos": ["riesgo concreto para el oferente, explicado"], '
+            '"observaciones": ["clausula dudosa, ambigua o contraria a la ley, con el articulo"], '
+            '"preguntas": ["pregunta lista para el foro de consultas"]}\n'
+            "Reglas: hasta 10 elementos por lista; cita cifras, plazos, articulos y "
+            "numeros de clausula cuando existan; si el documento no trata un tema, "
+            "devuelve esa lista vacia; no inventes nada que no este en el texto.\n\n"
             f"DOCUMENTO: {nombre}\n"
             f"CONTENIDO:\n{recorte}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=1200,
-                                            timeout=240, intentos=4)
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=1900,
+                                            timeout=300, intentos=4)
         if not datos:
             print(f"      [!] Sin resumen de {nombre}: {str(error)[:80]}")
             return None
@@ -3290,14 +3299,20 @@ Lee y transcribe el contenido completo en formato estructurado."""
             valor = datos.get(clave) or []
             if isinstance(valor, str):
                 valor = [valor]
-            return [str(v)[:300] for v in valor if str(v).strip()][:6]
+            return [str(v)[:400] for v in valor if str(v).strip()][:10]
 
         salida = {
             "archivo": nombre,
-            "objeto": str(datos.get("objeto") or "")[:400],
+            "objeto": str(datos.get("objeto") or "")[:600],
             "requisitos": _lista("requisitos"),
             "excluyentes": _lista("excluyentes"),
+            "documentos_obligatorios": _lista("documentos_obligatorios"),
+            "criterios_evaluacion": _lista("criterios_evaluacion"),
+            "plazos": _lista("plazos"),
+            "garantias": _lista("garantias"),
+            "multas": _lista("multas"),
             "riesgos": _lista("riesgos"),
+            "observaciones": _lista("observaciones"),
             "preguntas": _lista("preguntas"),
         }
         print(f"      Resumen de {nombre}: {len(salida['requisitos'])} requisitos, "
@@ -4635,16 +4650,22 @@ class Agente5Entregador:
                     self._parrafo(doc, str(documento["objeto"]), 9, cursiva=True,
                                   espacio_despues=3)
                 for clave, etiqueta in (
-                    ("requisitos", "Exige"),
-                    ("excluyentes", "Causal de inadmisibilidad"),
-                    ("riesgos", "Riesgo para el oferente"),
-                    ("preguntas", "Pregunta sugerida al foro"),
+                    ("requisitos", "Requerimientos obligatorios"),
+                    ("excluyentes", "Causales de inadmisibilidad"),
+                    ("documentos_obligatorios", "Documentos que debe presentar"),
+                    ("criterios_evaluacion", "Cómo se evalúa la oferta"),
+                    ("plazos", "Plazos y hitos"),
+                    ("garantias", "Garantías exigidas"),
+                    ("multas", "Multas y sanciones"),
+                    ("riesgos", "Riesgos para el oferente"),
+                    ("observaciones", "Cláusulas observadas"),
+                    ("preguntas", "Preguntas para el foro"),
                 ):
                     valores = documento.get(clave) or []
                     if not valores:
                         continue
                     self._parrafo(doc, etiqueta, 8.5, negrita=True, espacio_despues=1)
-                    for valor in valores[:5]:
+                    for valor in valores[:8]:
                         self._parrafo(doc, f"•  {valor}", 8.5, espacio_despues=1)
                 self._parrafo(doc, "", 6, espacio_despues=4)
 
