@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "14.3"
+VERSION_LICITAIA = "15.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -329,16 +329,18 @@ _ULTIMA_LLAMADA_IA = [0.0]
 _FALLOS_CUOTA = [0]
 
 
-def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3):
+def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3,
+                         base_url=None, api_key=None, modelo=None):
     """Llamada a un proveedor compatible con OpenAI (DeepSeek, Groq, OpenRouter...).
 
     Devuelve (dict, "") o (None, motivo). Misma lógica de reintentos que Gemini.
     """
-    if not IA_API_KEY:
+    _clave = api_key or IA_API_KEY
+    if not _clave:
         return None, "IA_API_KEY no configurada"
-    url = IA_BASE_URL.rstrip("/") + "/chat/completions"
+    url = (base_url or IA_BASE_URL).rstrip("/") + "/chat/completions"
     payload = {
-        "model": IA_MODELO,
+        "model": modelo or IA_MODELO,
         "messages": [
             {"role": "system",
              "content": "Eres un consultor experto en contratacion publica chilena. "
@@ -350,7 +352,7 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
         "response_format": {"type": "json_object"},
     }
     cabeceras = {
-        "Authorization": f"Bearer {IA_API_KEY}",
+        "Authorization": f"Bearer {_clave}",
         "Content-Type": "application/json",
     }
     ultimo = "sin intentos"
@@ -431,13 +433,24 @@ def _ia_limite_alcanzado():
     return _FALLOS_CUOTA[0] >= MAX_FALLOS_CUOTA
 
 
-def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3):
+IA_PREMIUM_URL = os.getenv("IA_PREMIUM_URL", "").strip().rstrip("/")
+IA_PREMIUM_KEY = os.getenv("IA_PREMIUM_KEY", "").strip()
+IA_PREMIUM_MODELO = os.getenv("IA_PREMIUM_MODELO", "").strip()
+IA_PREMIUM_TOPE_TEXTO = int(os.getenv("IA_PREMIUM_TOPE_TEXTO", "60000"))
+PREMIUM_ACTIVO = bool(IA_PREMIUM_URL and IA_PREMIUM_KEY and IA_PREMIUM_MODELO)
+
+
+def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3, premium=False):
     """Devuelve (dict, "") si todo va bien, o (None, motivo_del_fallo).
 
     Por qué existe: con el modelo 1.5-flash (retirado) o con la respuesta truncada,
     json.loads fallaba y TODOS los agentes caían en silencio al texto genérico.
     Aquí el fallo se informa y se reintenta.
     """
+    if premium and PREMIUM_ACTIVO:
+        return _generar_json_openai(prompt, temperatura, max_tokens, timeout, intentos,
+                                    base_url=IA_PREMIUM_URL, api_key=IA_PREMIUM_KEY,
+                                    modelo=IA_PREMIUM_MODELO)
     if PROVEEDOR_IA == "openai":
         return _generar_json_openai(prompt, temperatura, max_tokens, timeout, intentos)
     if not API_KEY_GEMINI:
@@ -804,7 +817,8 @@ def _extracto_para_ia(texto, limite=None):
     completo el primer documento y nada de los demás. Ahora se da una cuota a
     cada documento, priorizando EETT, bases, BAE y formularios.
     """
-    limite = int(limite or os.getenv("MAX_TEXTO_PROMPT", "8000"))
+    _tope_defecto = str(IA_PREMIUM_TOPE_TEXTO) if PREMIUM_ACTIVO else "8000"
+    limite = int(limite or os.getenv("MAX_TEXTO_PROMPT", _tope_defecto))
     texto = texto or ""
     partes = texto.split("=== [LECTURA FORENSE COMPLETA:")
     if len(partes) <= 1:
@@ -3289,8 +3303,8 @@ Lee y transcribe el contenido completo en formato estructurado."""
             f"DOCUMENTO: {nombre}\n"
             f"CONTENIDO:\n{recorte}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=1900,
-                                            timeout=300, intentos=4)
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=2200,
+                                            timeout=360, intentos=3, premium=True)
         if not datos:
             print(f"      [!] Sin resumen de {nombre}: {str(error)[:80]}")
             return None
@@ -3600,8 +3614,8 @@ class Agente3AuditorCotizador:
             "Incluye las 8 reglas (M-01 a M-08). Si algo no está en las bases, dilo explícitamente.\n\n"
             f"BASES DEL PROCESO {expediente.get('codigo', '')}:\n{texto}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=2200,
-                                            timeout=300, intentos=3)
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=2600,
+                                            timeout=360, intentos=3, premium=True)
         if not datos:
             print(f"   [!] Auditoría de multas sin respuesta: {str(error)[:70]}")
             return {}
@@ -3791,7 +3805,8 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
 """
 
         datos_ia, error_ia = _gemini_generar_json(
-            prompt, temperatura=0.2, max_tokens=16384, timeout=300, intentos=3
+            prompt, temperatura=0.2, max_tokens=16384, timeout=420, intentos=3,
+            premium=True
         )
         if datos_ia:
             # QA Matemático determinista sobre los 3 escenarios con IVA incluido
