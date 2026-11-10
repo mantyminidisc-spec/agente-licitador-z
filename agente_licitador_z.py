@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "13.2"
+VERSION_LICITAIA = "13.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -716,6 +716,21 @@ def _motor_precios(presupuesto, costo_interno=None):
     if candidatos[indice_co]["prob_adjudicacion_pct"] < 20.0:
         indice_co = indice_eq
     conservador = candidatos[indice_co]
+
+    # Los tres escenarios deben ser distintos y separados, si no el
+    # cliente ve el mismo precio dos veces (pasaba cuando el optimo caia en 78%).
+    _pct_eq = min(94, int(equilibrado["porcentaje_tope"]))
+    _pct_ag = max(78, _pct_eq - 4)
+    if _pct_eq - _pct_ag < 2:
+        _pct_eq = min(99, _pct_ag + 2)
+    _pct_co = min(99, _pct_eq + 5)
+    if _pct_co - _pct_eq < 3:
+        _pct_co = min(99, _pct_eq + 3)
+    if _pct_co <= _pct_ag:
+        _pct_co = min(99, _pct_ag + 4)
+    agresivo = candidatos[max(0, min(len(candidatos) - 1, _pct_ag - 78))]
+    equilibrado = candidatos[max(0, min(len(candidatos) - 1, _pct_eq - 78))]
+    conservador = candidatos[max(0, min(len(candidatos) - 1, _pct_co - 78))]
 
     def _justificar(nombre, esc):
         return (
