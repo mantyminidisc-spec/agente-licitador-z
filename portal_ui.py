@@ -195,6 +195,20 @@ TECNICOS = ("informe_forense", "texto_extraido", "adjuntos_locales", "resumen_it
             "nombres_adjuntos", "url_portal", "keyword_match")
 
 
+def _formato_celda(v):
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        if abs(v) < 1 and v != 0:
+            return f"{v*100:.1f}%"
+        return f"{v:,.0f}".replace(",", ".")
+    if isinstance(v, int):
+        return f"{v:,}".replace(",", ".")
+    if isinstance(v, (list, dict)):
+        return ""
+    return str(v)
+
+
 def _titulo(clave):
     if clave in TITULOS:
         return TITULOS[clave]
@@ -242,6 +256,23 @@ def _valor_html(valor, nivel=0):
                 partes.append(_valor_html(elemento, nivel + 1))
         return "".join(partes)
     if isinstance(valor, dict):
+        # diccionario de diccionarios (escenarios, estudio financiero) -> tabla
+        if valor and all(isinstance(v, dict) for v in valor.values()):
+            columnas = []
+            for sub in valor.values():
+                for k in sub.keys():
+                    if k not in columnas and not str(k).startswith("_"):
+                        columnas.append(k)
+            cabecera = "<tr><th>Concepto</th>" + "".join(
+                f"<th>{_esc(_titulo(c))}</th>" for c in columnas) + "</tr>"
+            filas = []
+            for nombre_fila, sub in valor.items():
+                celdas = "".join(
+                    f"<td>{_esc(_formato_celda(sub.get(c)))}</td>" for c in columnas)
+                filas.append(f"<tr><td><strong>{_esc(_titulo(nombre_fila))}</strong></td>"
+                             f"{celdas}</tr>")
+            return ('<div class="scroll-x"><table class="tabla-doc">'
+                    + cabecera + "".join(filas) + "</table></div>")
         partes = []
         for clave, contenido in valor.items():
             if clave in TECNICOS:
@@ -401,6 +432,26 @@ def xlsx_a_html(ruta, max_filas=200, max_columnas=14):
                     pass
                 if color_fondo:
                     estilos.append(f"background:{color_fondo}")
+                    # si el fondo es oscuro, el texto debe ser blanco
+                    try:
+                        r = int(color_fondo[1:3], 16)
+                        g = int(color_fondo[3:5], 16)
+                        b = int(color_fondo[5:7], 16)
+                        oscuro = (r * 0.299 + g * 0.587 + b * 0.114) < 140
+                    except Exception:
+                        oscuro = False
+                    color_texto = ""
+                    try:
+                        if celda.font and celda.font.color and celda.font.color.rgb:
+                            rgb_texto = str(celda.font.color.rgb)
+                            if len(rgb_texto) >= 6 and rgb_texto not in ("000000",):
+                                color_texto = "#" + rgb_texto[-6:]
+                    except Exception:
+                        color_texto = ""
+                    if color_texto:
+                        estilos.append(f"color:{color_texto}")
+                    elif oscuro:
+                        estilos.append("color:#ffffff")
                 if celda.font and celda.font.bold:
                     estilos.append("font-weight:700")
                 if isinstance(celda.value, (int, float)):
@@ -422,6 +473,197 @@ def xlsx_a_html(ruta, max_filas=200, max_columnas=14):
     except Exception:
         pass
     return "\n".join(partes) or "<p>La planilla no tiene datos.</p>"
+
+
+
+# ---------------------------------------------------------------------------
+# Simulador financiero (planilla editable)
+# ---------------------------------------------------------------------------
+def calcular_escenarios(presupuesto, iva_pct, costo, pcts):
+    """Repite el cálculo del motor de precios: bruto, neto, IVA, ganancia y ROI."""
+    presupuesto = int(presupuesto or 0)
+    costo = int(costo or 0)
+    iva_pct = float(iva_pct or 0.19)
+    filas = []
+    for nombre, pct in pcts:
+        bruto = int(round(presupuesto * pct))
+        neto = int(round(bruto / (1 + iva_pct))) if (1 + iva_pct) else 0
+        iva = bruto - neto
+        ganancia = neto - costo
+        margen = (ganancia / neto * 100) if neto else 0
+        roi = (ganancia / costo * 100) if costo else 0
+        filas.append({"escenario": nombre, "pct": pct, "bruto": bruto, "neto": neto,
+                      "iva": iva, "costo": costo, "ganancia": ganancia,
+                      "margen": margen, "roi": roi})
+    return filas
+
+
+def _tabla_escenarios(filas):
+    cabecera = ("<tr><th>Escenario</th><th>% del tope</th><th>Oferta neta</th><th>IVA</th>"
+                "<th>Total bruto</th><th>Costo interno</th><th>Ganancia</th>"
+                "<th>Margen</th><th>ROI</th></tr>")
+    cuerpo = []
+    for f in filas:
+        cuerpo.append(
+            "<tr>"
+            f"<td>{_esc(f['escenario'])}</td>"
+            f"<td class='der'>{f['pct']*100:.0f}%</td>"
+            f"<td class='der'>{_clp(f['neto'])}</td>"
+            f"<td class='der'>{_clp(f['iva'])}</td>"
+            f"<td class='der'><strong>{_clp(f['bruto'])}</strong></td>"
+            f"<td class='der'>{_clp(f['costo'])}</td>"
+            f"<td class='der'>{_clp(f['ganancia'])}</td>"
+            f"<td class='der'>{f['margen']:.1f}%</td>"
+            f"<td class='der'>{f['roi']:.1f}%</td>"
+            "</tr>")
+    return ('<div class="scroll-x"><table class="tabla-doc">' + cabecera
+            + "".join(cuerpo) + "</table></div>")
+
+
+def simulador_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel=""):
+    presupuesto = int(valores.get("presupuesto") or 0)
+    iva = float(valores.get("iva") or 0.19)
+    costo = int(valores.get("costo") or 0)
+    pct1 = float(valores.get("pct1") or 0.78)
+    pct2 = float(valores.get("pct2") or 0.80)
+    pct3 = float(valores.get("pct3") or 0.85)
+    nombre = _esc(str(proyecto.get("nombre") or "")[:90])
+    codigo = _esc(proyecto.get("codigo", ""))
+    resultado = _tabla_escenarios(filas) if filas else (
+        '<p class="ayuda">Cambia los datos y aprieta <b>Recalcular</b> para ver la simulación.</p>')
+    aviso = f'<div class="aviso">{_esc(mensaje)}</div>' if mensaje else ""
+    boton_excel = (f'<a class="btn" href="{_esc(enlace_excel)}" download>Descargar Excel simulado</a>'
+                   if enlace_excel else "")
+
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Simulador financiero · {codigo}</title>
+<style>
+@page{{size:A4;margin:14mm}}
+body{{margin:0;background:#eef1f6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",
+Roboto,Arial,sans-serif;color:#1c2536;font-size:13.5px;line-height:1.55}}
+.hoja{{max-width:900px;margin:18px auto;background:#fff;border-radius:14px;
+box-shadow:0 8px 30px rgba(18,33,58,.10);padding:26px 30px 34px}}
+h1{{font-size:16px;margin:0 0 2px;color:#12213a}}
+.sub{{color:#5b6674;font-size:12px;margin-bottom:16px}}
+h3{{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#1e3a5f;
+margin:20px 0 8px;border-bottom:1px solid #e3e7ee;padding-bottom:4px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px 16px}}
+.campo{{display:flex;flex-direction:column;gap:4px}}
+.campo label{{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#5b6674;font-weight:700}}
+.campo input{{border:1px solid #dfe4ec;border-radius:9px;padding:9px 11px;font-size:14px;
+font-family:inherit;background:#fffbeb}}
+.tabla-doc{{border-collapse:collapse;width:100%;font-size:12.5px}}
+.tabla-doc th,.tabla-doc td{{border:1px solid #c3ccd9;padding:7px 9px}}
+.tabla-doc th{{background:#12213a;color:#fff;text-align:left;font-weight:600}}
+.tabla-doc tr:nth-child(even) td{{background:#f8fafc}}
+.der{{text-align:right}}
+.btn{{display:inline-block;background:#12213a;color:#fff;border:0;border-radius:9px;
+padding:10px 18px;font-weight:650;font-size:13.5px;text-decoration:none;cursor:pointer;
+font-family:inherit}}
+.btn-sec{{background:#eef2f8;color:#1e3a5f}}
+.acciones{{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}}
+.aviso{{background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:10px 14px;
+font-size:12.5px;color:#065f46;margin-bottom:14px}}
+.ayuda{{color:#5b6674;font-size:12.5px}}
+@media (max-width:640px){{.hoja{{margin:0;border-radius:0;padding:18px 14px}}}}
+</style></head><body>
+<div class="hoja">
+  <h1>{nombre}</h1>
+  <div class="sub">{codigo} · simulador de la planilla financiera</div>
+  {aviso}
+  <form method="post" action="/p/{token}/simular">
+    <h3>Datos de entrada (puedes cambiarlos)</h3>
+    <div class="grid">
+      <div class="campo"><label>Presupuesto oficial (con IVA)</label>
+        <input name="presupuesto" type="number" value="{presupuesto}"></div>
+      <div class="campo"><label>IVA (%)</label>
+        <input name="iva" type="number" step="0.01" value="{iva}"></div>
+      <div class="campo"><label>Costo interno total</label>
+        <input name="costo" type="number" value="{costo}"></div>
+      <div class="campo"><label>Escenario 1 (%)</label>
+        <input name="pct1" type="number" step="0.01" value="{pct1}"></div>
+      <div class="campo"><label>Escenario 2 (%)</label>
+        <input name="pct2" type="number" step="0.01" value="{pct2}"></div>
+      <div class="campo"><label>Escenario 3 (%)</label>
+        <input name="pct3" type="number" step="0.01" value="{pct3}"></div>
+    </div>
+    <div class="acciones">
+      <button class="btn" type="submit">Recalcular</button>
+      <a class="btn btn-sec" href="/p/{token}">Volver al panel</a>
+      {boton_excel}
+    </div>
+  </form>
+  <h3>Resultado</h3>
+  {resultado}
+  <p class="ayuda" style="margin-top:10px">El cálculo sigue la misma regla que el documento:
+  el total bruto no puede superar el presupuesto oficial, y el IVA se descuenta para obtener la
+  oferta neta.</p>
+</div>
+</body></html>"""
+
+
+def escribir_xlsx_simulado(ruta, valores, filas):
+    """Genera un Excel con los datos usados y el resultado de la simulación."""
+    try:
+        import openpyxl
+        from openpyxl.styles import Alignment, Font, PatternFill
+    except Exception:
+        return False
+    libro = openpyxl.Workbook()
+    hoja = libro.active
+    hoja.title = "1_Escenarios_Oferta"
+    azul = PatternFill("solid", start_color="12213A")
+    amarillo = PatternFill("solid", start_color="FFFBEB")
+    blanco = Font(color="FFFFFF", bold=True)
+
+    hoja.merge_cells("A1:I1")
+    hoja["A1"] = "SIMULACIÓN DE ESCENARIOS"
+    hoja["A1"].font = Font(color="FFFFFF", bold=True, size=13)
+    hoja["A1"].fill = azul
+    hoja["A1"].alignment = Alignment(horizontal="center")
+
+    entradas = [
+        ("Presupuesto oficial (tope con IVA)", int(valores.get("presupuesto") or 0)),
+        ("IVA", float(valores.get("iva") or 0.19)),
+        ("Costo interno total", int(valores.get("costo") or 0)),
+    ]
+    for i, (etiqueta, valor) in enumerate(entradas, 3):
+        hoja.cell(row=i, column=1, value=etiqueta).font = Font(bold=True)
+        celda = hoja.cell(row=i, column=3, value=valor)
+        celda.fill = amarillo
+        if etiqueta == "IVA":
+            celda.number_format = "0%"
+
+    encabezados = ["Escenario", "% del tope", "Oferta neta", "IVA", "Total bruto",
+                   "Costo interno", "Ganancia", "Margen", "ROI"]
+    for i, h in enumerate(encabezados, 1):
+        c = hoja.cell(row=7, column=i, value=h)
+        c.font = blanco
+        c.fill = azul
+
+    for f, fila in enumerate(filas, 8):
+        valores_fila = [fila["escenario"], fila["pct"], fila["neto"], fila["iva"],
+                        fila["bruto"], fila["costo"], fila["ganancia"],
+                        fila["margen"] / 100, fila["roi"] / 100]
+        for i, v in enumerate(valores_fila, 1):
+            c = hoja.cell(row=f, column=i, value=v)
+            if i == 2:
+                c.number_format = "0%"
+            elif i in (8, 9):
+                c.number_format = "0.0%"
+            elif i >= 3:
+                c.number_format = "#,##0"
+
+    hoja.column_dimensions["A"].width = 24
+    for letra in "BCDEFGHI":
+        hoja.column_dimensions[letra].width = 14
+    hoja.freeze_panes = "A8"
+
+    libro.save(ruta)
+    return True
 
 
 def vista_archivo(ruta, nombre):
@@ -497,7 +739,7 @@ iframe.visor{width:100%;height:70vh;min-height:420px;border:0;display:block;back
 .tabla-doc caption{text-align:left;font-weight:700;font-size:12px;color:var(--gris);padding:8px 0}
 .tabla-doc th,.tabla-doc td{border:1px solid var(--linea);padding:6px 8px;vertical-align:top}
 .tabla-doc th{background:#f7f9fc;text-align:left;font-weight:650}
-.doc-img{max-width:100%;height:auto;display:block;margin:8px 0}\n.tabla-xls{border-collapse:collapse;font-size:12px;background:#fff}\n.tabla-xls td{border:1px solid #dfe4ec;padding:5px 8px;white-space:nowrap;\nmin-width:52px;color:#1c2536}\n.tabla-xls tr:first-child td{background:#f3f6fa;font-weight:650}\n.hoja-titulo{font-size:12.5px;color:#1e3a5f;margin:16px 0 6px}
+.doc-img{max-width:100%;height:auto;display:block;margin:8px 0}\n.tabla-xls{border-collapse:collapse;font-size:12px;background:#fff}\n.tabla-xls{border-collapse:collapse;table-layout:fixed;font-size:12px;background:#fff}\n.tabla-xls td{border:1px solid #c3ccd9;padding:6px 8px;white-space:nowrap;\nmin-width:64px;color:#1c2536;height:26px}\n.tabla-xls tr:first-child td{background:#f3f6fa;font-weight:650}\n.hoja-titulo{font-size:12.5px;color:#1e3a5f;margin:16px 0 6px}
 .centrado{text-align:center}
 .cuerpo-doc,iframe.visor{background:#fff}
 .tabla-doc td{font-size:12.5px}
@@ -692,6 +934,10 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
     <div class="titulo">Documentos</div>
     {"".join(menu_docs) if menu_docs else '<button data-seccion="resumen">Sin documentos</button>'}
     <button data-seccion="cotizacion">Editar cotización</button>
+    <a href="/p/{token}/simulador" target="_blank" rel="noopener"
+       style="display:flex;align-items:center;gap:9px;color:#dbe3ee;padding:9px 10px;
+       border-radius:9px;font-size:13.5px;font-weight:550;text-decoration:none">
+       Simulador financiero</a>
 
     <div class="titulo">Anexos</div>
     <button data-seccion="anexos">Anexos<span class="chip">{len(adjuntos)}</span></button>

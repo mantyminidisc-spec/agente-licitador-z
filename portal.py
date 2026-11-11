@@ -408,6 +408,22 @@ def _guardar_cotizacion(carpeta, datos):
     return ruta
 
 
+def _valores_simulador(proyecto):
+    cot = _leer_cotizacion(proyecto["_carpeta"])
+    presupuesto = int(proyecto.get("presupuesto_clp") or 0)
+    oferta = int(cot.get("monto") or proyecto.get("oferta_bruta_clp") or 0)
+    costo = int(cot.get("costo") or (oferta * 0.42) or 0)
+    base = (oferta / presupuesto) if presupuesto else 0.80
+    return {
+        "presupuesto": presupuesto,
+        "iva": 0.19,
+        "costo": costo,
+        "pct1": round(max(0.70, base - 0.02), 2),
+        "pct2": round(base, 2),
+        "pct3": round(min(0.99, base + 0.05), 2),
+    }
+
+
 def _leer_datos_informe(carpeta):
     try:
         with open(os.path.join(carpeta, "datos_informe.json"), encoding="utf-8") as f:
@@ -502,6 +518,13 @@ class Manejador(BaseHTTPRequestHandler):
                     meta_extra=str(proyecto.get("organismo") or ""))
                 return self._enviar(200, html_doc, "text/html; charset=utf-8")
 
+            if len(partes) == 3 and partes[2] == "simulador":
+                if portal_ui is None:
+                    return self._enviar(500, "<h1>UI no disponible</h1>")
+                valores = _valores_simulador(proyecto)
+                return self._enviar(200, portal_ui.simulador_html(
+                    proyecto, partes[1], valores), "text/html; charset=utf-8")
+
             if len(partes) == 3 and partes[2] == "cotizacion":
                 datos = _leer_cotizacion(proyecto["_carpeta"])
                 if portal_ui is None:
@@ -585,7 +608,7 @@ class Manejador(BaseHTTPRequestHandler):
     def do_POST(self):
         ruta = self.path.split("?")[0]
         partes = [p for p in ruta.split("/") if p]
-        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo", "cotizacion"):
+        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo", "cotizacion", "simular"):
             return self._enviar(404, "<h1>No encontrado</h1>")
         proyecto = self._buscar(partes[1])
         if not proyecto:
@@ -593,6 +616,39 @@ class Manejador(BaseHTTPRequestHandler):
 
         carpeta = proyecto["_carpeta"]
         codigo = proyecto["_codigo"]
+
+        if partes[2] == "simular":
+            largo = int(self.headers.get("Content-Length") or 0)
+            if largo <= 0 or largo > 512 * 1024:
+                return self._enviar(413, "<h1>Datos inválidos</h1>")
+            from urllib.parse import parse_qs
+            campos = parse_qs(self.rfile.read(largo).decode("utf-8", "ignore"))
+            valores = {}
+            for clave in ("presupuesto", "iva", "costo", "pct1", "pct2", "pct3"):
+                crudo = (campos.get(clave) or [""])[0]
+                try:
+                    valores[clave] = float(str(crudo).replace(".", "").replace(",", ".") or 0)
+                except Exception:
+                    valores[clave] = 0
+            pcts = [(u"Escenario 1", valores.get("pct1") or 0.78),
+                    (u"Escenario 2", valores.get("pct2") or 0.80),
+                    (u"Escenario 3", valores.get("pct3") or 0.85)]
+            filas = portal_ui.calcular_escenarios(
+                valores.get("presupuesto"), valores.get("iva") or 0.19,
+                valores.get("costo"), pcts)
+            destino = os.path.join(carpeta, "Planilla_Simulada.xlsx")
+            try:
+                portal_ui.escribir_xlsx_simulado(destino, valores, filas)
+                print(f"   [PORTAL] planilla simulada {codigo}: "
+                      f"{int(valores.get('presupuesto') or 0)}")
+            except Exception as e_xls:
+                print(f"   [PORTAL] no se pudo escribir la planilla: {e_xls}")
+            enlace = f"/p/{partes[1]}/f/Planilla_Simulada.xlsx"
+            html_sim = portal_ui.simulador_html(
+                proyecto, partes[1], valores, filas,
+                mensaje="Simulación recalculada y Excel generado.",
+                enlace_excel=enlace)
+            return self._enviar(200, html_sim, "text/html; charset=utf-8")
 
         if partes[2] == "cotizacion":
             largo = int(self.headers.get("Content-Length") or 0)
