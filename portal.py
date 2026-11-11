@@ -404,6 +404,14 @@ def _guardar_cotizacion(carpeta, datos):
     return ruta
 
 
+def _leer_datos_informe(carpeta):
+    try:
+        with open(os.path.join(carpeta, "datos_informe.json"), encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
 def _pagina(proyecto, aviso=""):
     token = _token(proyecto["_codigo"])
     carpeta = proyecto["_carpeta"]
@@ -421,6 +429,7 @@ def _pagina(proyecto, aviso=""):
         logo_url=f"/p/{token}/logo",
         doc1_marca=_estado_analisis(carpeta).get("doc1", 0),
         cotizacion=_leer_cotizacion(carpeta),
+        datos_informe=_leer_datos_informe(carpeta),
     )
 
 
@@ -475,6 +484,19 @@ class Manejador(BaseHTTPRequestHandler):
             if not proyecto:
                 return self._enviar(404, "<h1>Enlace no válido</h1>"
                                          "<p>El proyecto no existe o el enlace fue revocado.</p>")
+
+            if len(partes) == 4 and partes[2] == "docu":
+                if portal_ui is None:
+                    return self._enviar(500, "<h1>UI no disponible</h1>")
+                datos = _leer_datos_informe(proyecto["_carpeta"])
+                nombre_doc = os.path.basename(unquote(partes[3]))
+                titulo = portal_ui.nombre_legible(nombre_doc)
+                html_doc = portal_ui.documento_html(
+                    titulo, datos,
+                    logo_url=f"/p/{partes[1]}/logo",
+                    hay_logo=os.path.isfile(RUTA_LOGO),
+                    meta_extra=str(proyecto.get("organismo") or ""))
+                return self._enviar(200, html_doc, "text/html; charset=utf-8")
 
             if len(partes) == 3 and partes[2] == "cotizacion":
                 datos = _leer_cotizacion(proyecto["_carpeta"])

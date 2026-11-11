@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "18.0"
+VERSION_LICITAIA = "19.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -850,6 +850,34 @@ def _extracto_para_ia(texto, limite=None):
     for peso, nombre, cuerpo in documentos[:4]:
         bloques.append(f"--- {nombre} ---\n{cuerpo[:cuota]}")
     return "\n\n".join(bloques)[:limite]
+
+
+def _dump_informe_json(expediente, informes, carpeta):
+    """Guarda los datos del proyecto para que el portal los muestre como documento."""
+    if not carpeta:
+        return
+    try:
+        os.makedirs(carpeta, exist_ok=True)
+    except Exception:
+        pass
+    datos = {
+        "codigo": expediente.get("codigo"),
+        "nombre": expediente.get("nombre"),
+        "organismo": expediente.get("organismo"),
+        "rut_comprador": expediente.get("rut_comprador"),
+        "tipo_portal": expediente.get("tipo_portal"),
+        "fecha_cierre": expediente.get("fecha_cierre"),
+        "presupuesto_estatal_clp": expediente.get("presupuesto_estatal_clp"),
+        "plazo_entrega_organismo": expediente.get("plazo_entrega_organismo"),
+        "tipo_presupuesto": expediente.get("tipo_presupuesto"),
+        "direccion_entrega": expediente.get("direccion_entrega"),
+        "items": expediente.get("items") or [],
+        "informes": informes,
+    }
+    destino = os.path.join(carpeta, "datos_informe.json")
+    with open(destino, "w", encoding="utf-8") as f:
+        json.dump(datos, f, ensure_ascii=False, indent=1, default=str)
+    print(f"   OK datos del informe guardados: {os.path.basename(destino)}")
 
 
 def _deduplicar_adjuntos(rutas):
@@ -6604,6 +6632,10 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
                     informes['analisis_por_documento'] = expediente.get('resumenes_documentos') or []
             except Exception:
                 pass
+            try:
+                _dump_informe_json(expediente, informes, carpeta_proyecto)
+            except Exception as _e_dump:
+                print(f"   [!] No se pudo guardar el JSON del informe: {str(_e_dump)[:60]}")
             escenarios = agente4.calcular_matriz_financiera(expediente, informes)
             estado_nube = agente5.empaquetar_y_entregar_proyecto(expediente, informes, escenarios)
 

@@ -161,6 +161,175 @@ def docx_a_html(ruta):
     return "\n".join(partes) or "<p>El documento no tiene contenido.</p>"
 
 
+
+# ---------------------------------------------------------------------------
+# Documento renderizado (Informe / Financiero) desde datos_informe.json
+# ---------------------------------------------------------------------------
+TITULOS = {
+    "resumen_ejecutivo": "Resumen ejecutivo",
+    "objeto": "Objeto del requerimiento",
+    "objeto_alcance": "Objeto y alcance",
+    "analisis_consultor": "Análisis del consultor",
+    "admisibilidad": "Admisibilidad de la oferta",
+    "requisitos": "Requisitos obligatorios",
+    "excluyentes": "Causales de inadmisibilidad",
+    "documentos_obligatorios": "Documentos que debe presentar",
+    "criterios_evaluacion": "Criterios de evaluación",
+    "plazos": "Plazos y hitos",
+    "garantias": "Garantías exigidas",
+    "multas": "Multas y sanciones",
+    "riesgos": "Riesgos detectados",
+    "observaciones": "Cláusulas observadas",
+    "preguntas": "Preguntas para el foro",
+    "auditoria_multas_ds661": "Auditoría de multas (DS 661/2024)",
+    "analisis_por_documento": "Análisis documental por anexo",
+    "escenarios": "Escenarios de precio",
+    "plan_contractual": "Plan contractual",
+    "recomendaciones": "Recomendaciones",
+    "conclusion": "Conclusión",
+    "estrategia": "Estrategia comercial",
+    "justificacion_precio": "Justificación del precio",
+}
+
+TECNICOS = ("informe_forense", "texto_extraido", "adjuntos_locales", "resumen_item",
+            "nombres_adjuntos", "url_portal", "keyword_match")
+
+
+def _titulo(clave):
+    if clave in TITULOS:
+        return TITULOS[clave]
+    return str(clave).replace("_", " ").strip().capitalize()
+
+
+def _valor_html(valor, nivel=0):
+    """Convierte cualquier estructura en HTML legible."""
+    if valor is None or valor == "" or valor == [] or valor == {}:
+        return ""
+    if isinstance(valor, bool):
+        return f"<p>{'Sí' if valor else 'No'}</p>"
+    if isinstance(valor, (int, float)):
+        return f"<p>{valor:,}</p>".replace(",", ".")
+    if isinstance(valor, str):
+        texto = valor.strip()
+        if not texto:
+            return ""
+        lineas = [l.strip("•-* ").strip() for l in texto.split("\n") if l.strip()]
+        if len(lineas) > 1:
+            return "<ul>" + "".join(f"<li>{_esc(l)}</li>" for l in lineas) + "</ul>"
+        return f"<p>{_esc(texto)}</p>"
+    if isinstance(valor, list):
+        if all(isinstance(v, (str, int, float)) for v in valor):
+            return "<ul>" + "".join(f"<li>{_esc(v)}</li>" for v in valor) + "</ul>"
+        partes = []
+        for elemento in valor:
+            if isinstance(elemento, dict):
+                titulo = (elemento.get("archivo") or elemento.get("titulo")
+                          or elemento.get("nombre") or elemento.get("escenario") or "")
+                partes.append('<div class="subbloque">')
+                if titulo:
+                    partes.append(f'<h4>{_esc(titulo)}</h4>')
+                for clave, contenido in elemento.items():
+                    if clave in ("archivo", "titulo", "nombre", "escenario", "_extractivo"):
+                        continue
+                    if str(clave).startswith("_"):
+                        continue
+                    trozo = _valor_html(contenido, nivel + 1)
+                    if trozo:
+                        partes.append(f'<div class="campo-doc"><span>{_esc(_titulo(clave))}</span>'
+                                      f'{trozo}</div>')
+                partes.append("</div>")
+            else:
+                partes.append(_valor_html(elemento, nivel + 1))
+        return "".join(partes)
+    if isinstance(valor, dict):
+        partes = []
+        for clave, contenido in valor.items():
+            if clave in TECNICOS:
+                continue
+            trozo = _valor_html(contenido, nivel + 1)
+            if trozo:
+                partes.append(f'<div class="campo-doc"><span>{_esc(_titulo(clave))}</span>'
+                              f'{trozo}</div>')
+        return "".join(partes)
+    return f"<p>{_esc(valor)}</p>"
+
+
+def documento_html(titulo_doc, datos, logo_url="", hay_logo=False, meta_extra=""):
+    proyecto = datos or {}
+    informes = proyecto.get("informes") or {}
+    codigo = _esc(proyecto.get("codigo", ""))
+    organismo = _esc(proyecto.get("organismo", ""))
+    nombre = _esc(proyecto.get("nombre", ""))
+    logo = (f'<img src="{_esc(logo_url)}" alt="Logo">' if hay_logo else "")
+
+    cuerpo = []
+    for clave, contenido in informes.items():
+        if clave in TECNICOS:
+            continue
+        trozo = _valor_html(contenido)
+        if not trozo:
+            continue
+        cuerpo.append(f'<section class="bloque-doc"><h3>{_esc(_titulo(clave))}</h3>{trozo}</section>')
+
+    if not cuerpo:
+        cuerpo.append('<p class="vacio">Este documento todavía no tiene datos guardados. '
+                      'Vuelve a generar el proyecto para verlo aquí.</p>')
+
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{_esc(titulo_doc)} · {codigo}</title>
+<style>
+@page{{size:A4;margin:16mm}}
+body{{margin:0;background:#eef1f6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",
+Roboto,Arial,sans-serif;color:#1c2536;font-size:13px;line-height:1.6}}
+.hoja{{max-width:820px;margin:18px auto;background:#fff;border-radius:14px;
+box-shadow:0 8px 30px rgba(18,33,58,.10);padding:34px 40px 44px}}
+.cab{{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;
+border-bottom:2px solid #12213a;padding-bottom:14px;margin-bottom:20px}}
+.cab img{{height:52px;max-width:180px;object-fit:contain}}
+.cab h1{{font-size:16px;margin:0;color:#12213a;text-transform:uppercase;letter-spacing:.06em}}
+.cab .sub{{font-size:11.5px;color:#5b6674;margin-top:4px}}
+.cab .der{{text-align:right;font-size:11.5px;color:#5b6674}}
+h3{{font-size:12.5px;text-transform:uppercase;letter-spacing:.07em;color:#1e3a5f;
+margin:22px 0 8px;padding-bottom:5px;border-bottom:1px solid #e3e7ee}}
+h4{{font-size:12.5px;margin:12px 0 4px;color:#12213a}}
+p{{margin:0 0 8px}}
+ul{{margin:4px 0 10px 18px;padding:0}}
+li{{margin-bottom:4px}}
+.subbloque{{border-left:3px solid #e3e7ee;padding:2px 0 2px 12px;margin:10px 0}}
+.campo-doc{{margin:6px 0}}
+.campo-doc>span{{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+color:#8b95a4;font-weight:700;margin-bottom:2px}}
+.vacio{{color:#5b6674}}
+.barra{{max-width:820px;margin:14px auto 0;display:flex;justify-content:flex-end;gap:10px}}
+.barra a,.barra button{{background:#12213a;color:#fff;border:0;border-radius:9px;padding:9px 16px;
+font-size:13px;font-weight:650;text-decoration:none;cursor:pointer}}
+.pie{{margin-top:26px;border-top:1px solid #e3e7ee;padding-top:10px;font-size:10.5px;
+color:#8b95a4;text-align:center}}
+@media print{{body{{background:#fff}}.hoja{{box-shadow:none;margin:0;padding:0;border-radius:0}}
+.barra{{display:none}}}}
+@media (max-width:640px){{.hoja{{margin:0;border-radius:0;padding:20px 16px}}}}
+</style></head><body>
+<div class="barra">
+  <button onclick="window.print()">Imprimir / Guardar PDF</button>
+</div>
+<div class="hoja">
+  <div class="cab">
+    <div>{logo}<div class="sub">{meta_extra}</div></div>
+    <div class="der">
+      <strong>{_esc(titulo_doc)}</strong><br>
+      {codigo}<br>{organismo}
+    </div>
+  </div>
+  <h1 style="font-size:15px;margin-bottom:2px">{nombre}</h1>
+  {''.join(cuerpo)}
+  <div class="pie">Documento generado con LICITAIA · {codigo}</div>
+</div>
+</body></html>"""
+
+
 def xlsx_a_html(ruta, max_filas=400):
     try:
         import openpyxl
@@ -315,7 +484,7 @@ JS = """
 # Página principal
 # ---------------------------------------------------------------------------
 def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_url="",
-           doc1_marca=0, cotizacion=None):
+           doc1_marca=0, cotizacion=None, datos_informe=None):
     codigo = proyecto.get("codigo", "")
     nombre = str(proyecto.get("nombre") or "Proyecto")
     organismo = str(proyecto.get("organismo") or "")
@@ -355,10 +524,16 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
         menu_docs.append(
             f'<button data-seccion="{ident}">{_esc(etiqueta)}'
             f'<span class="chip">{_peso(archivo["bytes"])}</span></button>')
-        cuerpo = (f'<iframe class="visor" src="/p/{token}/ver/{_esc(nom)}" loading="lazy" '
-                  f'title="{_esc(nom)}"></iframe>' if es_previble(nom)
-                  else '<div class="cuerpo"><p class="ayuda">Este formato no se puede mostrar aquí. '
-                       'Descárgalo para abrirlo.</p></div>')
+        renderizable = nom.upper().startswith(("DOC1", "DOC3")) and datos_informe
+        if renderizable:
+            cuerpo = (f'<iframe class="visor" src="/p/{token}/docu/{_esc(nom)}" loading="lazy" '
+                      f'title="{_esc(etiqueta)}"></iframe>')
+        elif es_previble(nom):
+            cuerpo = (f'<iframe class="visor" src="/p/{token}/ver/{_esc(nom)}" loading="lazy" '
+                      f'title="{_esc(nom)}"></iframe>')
+        else:
+            cuerpo = ('<div class="cuerpo"><p class="ayuda">Este formato no se puede mostrar aquí. '
+                      'Descárgalo para abrirlo.</p></div>')
         secciones_docs.append(
             f'<section class="seccion oculto" id="sec-{ident}">'
             f'<div class="caja"><h2>{_esc(etiqueta)}'
