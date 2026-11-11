@@ -480,7 +480,7 @@ def xlsx_a_html(ruta, max_filas=200, max_columnas=14):
 # Simulador financiero (planilla editable)
 # ---------------------------------------------------------------------------
 def _normaliza_pct(valor, defecto=0.0, minimo=0.40, maximo=1.00):
-    """Acepta 78 (=78%) o 0.78 (=78%) y devuelve la fracción, acotada al rango válido."""
+    """Acepta 78 (=78%) o 0.78 (=78%). Si queda fuera de rango, usa el valor por defecto."""
     try:
         v = float(valor)
     except Exception:
@@ -489,10 +489,8 @@ def _normaliza_pct(valor, defecto=0.0, minimo=0.40, maximo=1.00):
         return defecto
     if v > 1.5:
         v = v / 100.0
-    if v > maximo:
-        v = maximo
-    if v < minimo:
-        v = minimo
+    if v > maximo or v < minimo:
+        return defecto
     return v
 
 
@@ -755,6 +753,8 @@ ul.explica b{{color:var(--azul2)}}
         <button class="btn" type="submit">Guardar y recalcular</button>
         <a class="btn btn-sec" href="/p/{token}/cotizacion" target="_blank" rel="noopener">
           Ver cotización</a>
+        <button class="btn btn-sec" type="submit" formaction="/p/{token}/planilla?reset=1"
+                formnovalidate>Restablecer del documento</button>
       </div>
     </form>
   </div>

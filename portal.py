@@ -432,17 +432,15 @@ def _sensibilidad(presupuesto, iva, costo, desde=0.70, hasta=0.99, paso=0.02,
 
 
 def _pct_seguro(valor, defecto):
-    """Devuelve siempre una fracción entre 0.40 y 1.00."""
+    """Devuelve una fracción válida; si el dato guardado es basura, usa el valor del documento."""
     try:
         v = float(valor)
     except Exception:
         return round(float(defecto), 4)
     if v > 1.5:
         v = v / 100.0
-    if v > 1.0:
-        v = 1.0
-    if v < 0.40:
-        v = 0.40
+    if v > 1.0 or v < 0.40:
+        return round(float(defecto), 4)
     return round(v, 4)
 
 
@@ -452,6 +450,8 @@ def _valores_planilla(proyecto):
     presupuesto = int(proyecto.get("presupuesto_clp") or 0)
     oferta = int(cot.get("monto") or proyecto.get("oferta_bruta_clp") or 0)
     base = (oferta / presupuesto) if presupuesto else 0.80
+    if base > 1.0 or base < 0.50:
+        base = 0.80  # el monto guardado no es coherente: se usa el escenario estándar
     horas = int(cot.get("horas") or 40)
     valor_hora = int(cot.get("valor_hora") or 25000)
     cloud = int(cot.get("cloud") or 390000)
@@ -463,9 +463,9 @@ def _valores_planilla(proyecto):
         "valor_hora": valor_hora,
         "cloud": cloud,
         "gestion": gestion,
-        "pct1": _pct_seguro(cot.get("pct1"), max(0.70, base - 0.02)),
+        "pct1": _pct_seguro(cot.get("pct1"), min(0.98, max(0.45, base - 0.02))),
         "pct2": _pct_seguro(cot.get("pct2"), base),
-        "pct3": _pct_seguro(cot.get("pct3"), min(0.99, base + 0.05)),
+        "pct3": _pct_seguro(cot.get("pct3"), min(0.99, max(0.50, base + 0.05))),
     }
 
 
@@ -715,6 +715,17 @@ class Manejador(BaseHTTPRequestHandler):
         codigo = proyecto["_codigo"]
 
         if partes[2] == "planilla":
+            import re as _re_reset
+            if _re_reset.search(r"(^|&)reset=1", self.path.split("?")[1] if "?" in self.path else ""):
+                try:
+                    ruta_cot = _ruta_cotizacion(carpeta)
+                    if os.path.isfile(ruta_cot):
+                        os.remove(ruta_cot)
+                    print(f"   [PORTAL] planilla {codigo}: valores restablecidos del documento")
+                except Exception as e_reset:
+                    print(f"   [PORTAL] no se pudo restablecer: {e_reset}")
+                return self._redirigir(f"/p/{partes[1]}/planilla")
+
             largo = int(self.headers.get("Content-Length") or 0)
             if largo <= 0 or largo > 512 * 1024:
                 return self._enviar(413, "<h1>Datos inválidos</h1>")
