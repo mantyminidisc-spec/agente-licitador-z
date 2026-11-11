@@ -218,12 +218,12 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.0"
+VERSION_LICITAIA = "19.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
 # drive  = comportamiento anterior (Apps Script + Google Drive)
-ENTREGA_MODO = os.getenv("ENTREGA_MODO", "portal").strip().lower()
+ENTREGA_MODO = "portal"  # v19.1: Drive desactivado; el portal es la unica entrega
 PORTAL_URL_BASE = os.getenv("PORTAL_URL_BASE", "").rstrip("/")
 PORTAL_SECRETO = os.getenv("PORTAL_SECRETO", "licitaia-cambia-este-secreto")
 PORTAL_PUERTO = int(os.getenv("PORTAL_PUERTO", "8090"))
@@ -1268,7 +1268,9 @@ class Agente0Contexto:
         print(f"   ✓ Plan Configurado   : {self.perfil['plan_activo']} (Micro-lotes de {self.perfil['limite_lote_ciclo']} proyectos)")
         print(f"   ✓ Keywords Positivas : {len(self.perfil['palabras_clave_positivas'])} términos específicos de TI/IA/SEO/Ads")
         print(f"   ✓ Lista Negra Activa : {len(self.perfil['lista_negra_exclusiones'])} términos bloqueados (Regex \\b...\\b)")
-        print(f"   ✓ Puente Drive/Mail  : CONECTADO ({URL_APPS_SCRIPT[:60]}...)")
+        print("   ✓ Entrega            : portal propio (Google Drive desactivado)")
+        if URL_APPS_SCRIPT:
+            print("   ✓ Avisos por correo  : conectado")
         return self.perfil
 
 
@@ -6374,7 +6376,7 @@ class Agente5Entregador:
         for idx, item in enumerate(resultados_lote, 1):
             exp = item["expediente"]
             eq = item["escenarios"]["equilibrado"]
-            enlace_drive = str((item.get("nube") or {}).get("url_carpeta_drive") or "")
+            enlace_drive = ""  # v19.1: sin Drive
             lineas.append(
                 f"*{idx}. [{exp['codigo']}] ({exp['tipo_portal']})*\n"
                 f"📌 {str(exp['nombre'])[:55]}\n"
