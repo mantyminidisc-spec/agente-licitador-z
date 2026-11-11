@@ -431,6 +431,21 @@ def _sensibilidad(presupuesto, iva, costo, desde=0.70, hasta=0.99, paso=0.02,
     return filas
 
 
+def _pcts_coherentes(p1, p2, p3):
+    """Los tres escenarios deben ir en orden ascendente y dentro de rango razonable."""
+    try:
+        valores = [float(p1), float(p2), float(p3)]
+    except Exception:
+        return False
+    if not all(0.50 <= v <= 0.99 for v in valores):
+        return False
+    if not (valores[0] < valores[1] < valores[2]):
+        return False
+    if (valores[2] - valores[0]) < 0.02:
+        return False
+    return True
+
+
 def _pct_seguro(valor, defecto):
     """Devuelve una fracción válida; si el dato guardado es basura, usa el valor del documento."""
     try:
@@ -456,6 +471,18 @@ def _valores_planilla(proyecto):
     valor_hora = int(cot.get("valor_hora") or 25000)
     cloud = int(cot.get("cloud") or 390000)
     gestion = int(cot.get("gestion") or 260000)
+    defecto_1 = min(0.98, max(0.50, round(base - 0.02, 2)))
+    defecto_2 = min(0.99, max(0.55, round(base, 2)))
+    defecto_3 = min(0.99, max(0.60, round(base + 0.05, 2)))
+
+    p1 = _pct_seguro(cot.get("pct1"), defecto_1)
+    p2 = _pct_seguro(cot.get("pct2"), defecto_2)
+    p3 = _pct_seguro(cot.get("pct3"), defecto_3)
+    if not _pcts_coherentes(p1, p2, p3):
+        print(f"   [PORTAL] escenarios incoherentes ({p1}/{p2}/{p3}): "
+              f"se usan los del documento {defecto_1}/{defecto_2}/{defecto_3}")
+        p1, p2, p3 = defecto_1, defecto_2, defecto_3
+
     return {
         "presupuesto": presupuesto,
         "iva": 0.19,
@@ -463,9 +490,9 @@ def _valores_planilla(proyecto):
         "valor_hora": valor_hora,
         "cloud": cloud,
         "gestion": gestion,
-        "pct1": _pct_seguro(cot.get("pct1"), min(0.98, max(0.45, base - 0.02))),
-        "pct2": _pct_seguro(cot.get("pct2"), base),
-        "pct3": _pct_seguro(cot.get("pct3"), min(0.99, max(0.50, base + 0.05))),
+        "pct1": p1,
+        "pct2": p2,
+        "pct3": p3,
     }
 
 
@@ -745,6 +772,10 @@ class Manejador(BaseHTTPRequestHandler):
 
             crudos = {c: _num(c, 0) for c in ("pct1", "pct2", "pct3")}
             invalidos = [c for c, v in crudos.items() if not (1 <= v <= 100)]
+            if not invalidos:
+                _v = [crudos["pct1"] / 100.0, crudos["pct2"] / 100.0, crudos["pct3"] / 100.0]
+                if not _pcts_coherentes(*_v):
+                    invalidos = ["orden"]
             if invalidos:
                 valores_prev = _valores_planilla(proyecto)
                 costo_prev = (valores_prev["horas"] * valores_prev["valor_hora"]
@@ -754,8 +785,12 @@ class Manejador(BaseHTTPRequestHandler):
                     [(u"Competitivo", valores_prev["pct1"]),
                      (u"Recomendado", valores_prev["pct2"]),
                      (u"Conservador", valores_prev["pct3"])])
-                aviso = ("El porcentaje debe estar entre 1 y 100. Corrige los campos marcados "
-                         "y vuelve a guardar (no se guardó nada).")
+                if invalidos == ["orden"]:
+                    aviso = ("Los escenarios deben ir en orden ascendente y con al menos 3 puntos "
+                             "de diferencia (por ejemplo 78, 80, 85). No se guardó nada.")
+                else:
+                    aviso = ("El porcentaje debe estar entre 1 y 100. Corrige los campos marcados "
+                             "y vuelve a guardar (no se guardó nada).")
                 return self._enviar(200, portal_ui.planilla_html(
                     proyecto, partes[1], valores_prev, filas_prev, mensaje=aviso,
                     sensibilidad=_sensibilidad(valores_prev["presupuesto"], valores_prev["iva"],
