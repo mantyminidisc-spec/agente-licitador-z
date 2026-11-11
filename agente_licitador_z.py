@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "15.3"
+VERSION_LICITAIA = "16.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -916,6 +916,46 @@ def _lineas_documento(informe, nombre_doc, limite=10):
                 break
         return lineas
     return []
+
+
+def _montos_del_proceso(informe, presupuesto, tipo_pre=""):
+    """Junta los montos que aparecen en el proceso y explica qué significa cada uno."""
+    filas = []
+    if presupuesto:
+        tipo = str(tipo_pre or "").strip().lower()
+        if "estimado" in tipo or "referencial" in tipo:
+            expl = ("Monto estimado por el organismo para esta compra. Es el tope de la "
+                    "oferta; no es el presupuesto anual de la institución.")
+        else:
+            expl = ("Tope máximo de esta compra, con IVA incluido. Ninguna oferta "
+                    "puede superarlo.")
+        filas.append((f"${int(presupuesto):,}".replace(",", "."),
+                      "Ficha oficial del proceso", expl))
+    texto = informe or ""
+    reglas = (
+        ("disponibilidad presupuestaria", "Certificado de disponibilidad",
+         "Monto máximo que la entidad certifica para ESTE contrato. Si es menor que el "
+         "tope publicado, el límite real es este."),
+        ("monto comprometido", "Presupuesto comprometido",
+         "Recursos ya comprometidos en otros contratos. NO es el monto de esta compra."),
+        ("contemplado en el presupuesto", "Presupuesto institucional",
+         "Presupuesto global de la entidad. No equivale al monto de este proceso."),
+        ("presupuesto total", "Presupuesto institucional",
+         "Presupuesto global de la entidad. No equivale al monto de este proceso."),
+        ("presupuesto anual", "Presupuesto institucional",
+         "Presupuesto global de la entidad. No equivale al monto de este proceso."),
+    )
+    vistos = set()
+    for frase in re.split(r"(?<=[.;:])\s+", texto):
+        baja = frase.lower()
+        for clave, origen, expl in reglas:
+            if clave in baja:
+                montos = re.findall(r"\$\s?[\d\.]{3,}", frase)[:1]
+                if montos and (montos[0], origen) not in vistos:
+                    vistos.add((montos[0], origen))
+                    filas.append((montos[0].strip(" ."), origen, expl))
+                break
+    return filas[:6]
 
 
 def _estado_compra_agil_texto():
@@ -2821,6 +2861,9 @@ class Agente2Extractor:
         descripcion = candidato["nombre"]
         items = []
         presupuesto = 0
+        tipo_presupuesto = ""
+        plazo_entrega_organismo = ""
+        direccion_entrega = ""
 
         if tipo_portal == "COMPRA_AGIL":
             # Consulta oficial a /v2/compra-agil/{codigo} con header ticket
@@ -2842,6 +2885,19 @@ class Agente2Extractor:
                     pres_obj = datos_api.get("presupuesto") or {}
                     if isinstance(pres_obj, dict):
                         presupuesto = int(pres_obj.get("monto_disponible_clp") or pres_obj.get("monto") or 0)
+                    tipo_presupuesto = str(pres_obj.get("tipo_presupuesto") or "").strip()
+
+                    _entrega = datos_api.get("entrega") or {}
+                    if isinstance(_entrega, dict):
+                        _dias = _entrega.get("plazo_entrega_dias")
+                        if _dias:
+                            try:
+                                _n_dias = int(_dias)
+                                plazo_entrega_organismo = (
+                                    f"{_n_dias} día" + ("s" if _n_dias != 1 else ""))
+                            except Exception:
+                                plazo_entrega_organismo = f"{_dias}"
+                        direccion_entrega = str(_entrega.get("direccion_entrega") or "").strip()
 
                     descripcion = str(datos_api.get("descripcion") or datos_api.get("glosa") or candidato["nombre"])
                     fecha_cie = str(datos_api.get("fecha_cierre") or fecha_cie)
@@ -2980,6 +3036,9 @@ class Agente2Extractor:
             "descripcion": descripcion,
             "items": items,
             "presupuesto_estatal_clp": int(presupuesto),
+            "tipo_presupuesto": tipo_presupuesto,
+            "plazo_entrega_organismo": plazo_entrega_organismo,
+            "direccion_entrega": direccion_entrega,
             "origen_presupuesto": origen_presupuesto,
             "adjuntos_locales": adjuntos_descargados,
             "texto_extraido_adjuntos": texto_adjuntos,
@@ -4642,6 +4701,36 @@ class Agente5Entregador:
 
         # --- 2. Objeto y alcance
         self._titulo_seccion(doc, 2, "Objeto y alcance del requerimiento")
+        try:
+            _plazo_org = str(expediente.get("plazo_entrega_organismo") or "").strip()
+            _direccion = str(expediente.get("direccion_entrega") or "").strip()
+            _datos_proceso = []
+            if _plazo_org:
+                _datos_proceso.append(f"Plazo de entrega exigido: {_plazo_org}")
+            if _direccion:
+                _datos_proceso.append(f"Lugar de entrega: {_direccion[:160]}")
+            if _datos_proceso:
+                self._parrafo(doc, "  |  ".join(_datos_proceso), 8.5,
+                              cursiva=True, espacio_despues=6)
+        except Exception as _e_datos:
+            print(f"   [!] Sin datos del proceso: {str(_e_datos)[:60]}")
+        try:
+            _filas_montos = _montos_del_proceso(
+                expediente.get("informe_forense_adjuntos") or "",
+                int(expediente.get("presupuesto_estatal_clp") or 0),
+                expediente.get("tipo_presupuesto") or "")
+            if len(_filas_montos) > 1:
+                self._parrafo(doc, "MONTOS QUE APARECEN EN EL PROCESO", 9,
+                              negrita=True, espacio_despues=3)
+                self._tabla(doc, ["Monto", "Donde aparece", "Que significa"],
+                            _filas_montos, [3.0, 4.4, 9.2],
+                            alineaciones=["r", "l", "l"], tam=8)
+                self._parrafo(doc, "Si un monto del certificado es menor que el tope publicado, ese es el limite real a ofertar.",
+                              8, cursiva=True, espacio_despues=6)
+        except Exception as _e_montos:
+            print(f"   [!] Sin tabla de montos: {str(_e_montos)[:60]}")
+
+
         self._parrafo(doc, expediente.get("descripcion") or expediente.get("nombre", ""), 10.5)
         resumen = informes.get("resumen_ejecutivo_gerencial") or informes.get("informe_1_factibilidad", "")
         if resumen:
@@ -5047,7 +5136,9 @@ class Agente5Entregador:
         # --- 3. Condiciones
         self._titulo_seccion(doc, 3, "Condiciones comerciales")
         condiciones = [
-            f"Plazo de entrega: {informes.get('plazo_entrega_dias_habiles', 15)} días hábiles desde la orden de compra.",
+            ("Plazo de entrega: " + (expediente.get("plazo_entrega_organismo") or
+             f"{informes.get('plazo_entrega_dias_habiles', 15)} días hábiles") +
+             " desde la orden de compra, conforme a la ficha del proceso."),
             "Forma de pago: 30 días contra recepción conforme y factura electrónica (Ley 21.131).",
             "Garantía técnica: 12 meses desde la recepción, con soporte preferente y respuesta en menos de 4 horas hábiles.",
             "La presente oferta no supera el presupuesto máximo informado por el organismo requirente.",
