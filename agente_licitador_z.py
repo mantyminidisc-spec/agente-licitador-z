@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "16.1"
+VERSION_LICITAIA = "18.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -958,6 +958,9 @@ def _montos_del_proceso(informe, presupuesto, tipo_pre=""):
     return filas[:6]
 
 
+PERFIL_BARRIDO = {"nombre": "normal", "limite": 3, "ca_paginas": 12}
+
+
 def _estado_compra_agil_texto():
     """Texto corto del estado de Compra Ágil para el resumen."""
     fallos = _RESUMEN_ESCANEO.get("ca_fallos") or 0
@@ -1564,7 +1567,9 @@ Responde ÚNICAMENTE en formato JSON:
         """
         encontrados = []
         sesion = _crear_sesion_api()
-        max_paginas = int(os.getenv("MAX_PAGINAS_CA_RESPALDO", "12"))
+        max_paginas = int(PERFIL_BARRIDO.get("ca_paginas")
+                          or os.getenv("MAX_PAGINAS_CA_RESPALDO", "12"))
+
         for pagina in range(1, max_paginas + 1):
             if len(encontrados) >= max_ca:
                 break
@@ -1635,8 +1640,16 @@ Responde ÚNICAMENTE en formato JSON:
 
     def ejecutar_barrido(self, barrido_final=False):
         ahora = _ahora_chile()
-        limite_total = (LIMITE_BARRIDO_FINAL if barrido_final
-                        else self.perfil.get("limite_lote_ciclo", 3))
+        _perfil = _perfil_barrido(ahora)
+        if barrido_final:
+            limite_total = LIMITE_BARRIDO_FINAL
+        else:
+            limite_total = max(int(self.perfil.get("limite_lote_ciclo", 3)),
+                               _perfil["limite"])
+        globals()["PERFIL_BARRIDO"] = _perfil
+        print(f"   Alcance de esta corrida: {_perfil['nombre']} "
+              f"(hasta {limite_total} proyectos, {_perfil['ca_paginas']} paginas de Compra Agil)")
+
         plan = self.perfil.get("plan_activo", "PLAN_FULL_EMPRESARIAL")
         fecha_api = ahora.strftime("%d%m%Y")
         fechas_api = [fecha_api]
@@ -6434,6 +6447,30 @@ def _obtener_titulo_oficial(codigo, tipo_portal):
     except Exception as e:
         print(f"   [!] No se pudo consultar el título oficial: {e}")
     return ""
+
+
+def _perfil_barrido(ahora=None):
+    """Cuánto revisar según la hora: barridos acumulativos a las 13 y 19.
+
+    - 09 y 11: alcance normal (solo lo nuevo de la última hora).
+    - 13: barrido medio (recupera la mañana; más cupo y más páginas de CA).
+    - 15 y 17: normal.
+    - 19: barrido final (hoy y ayer, cupo máximo).
+    """
+    ahora = ahora or _ahora_chile()
+    hora = ahora.hour
+    base = int(os.getenv("LIMITE_PROYECTOS", "3"))
+    if hora >= max(HORARIO_ESCANEO):
+        return {"nombre": "final", "limite": LIMITE_BARRIDO_FINAL,
+                "ca_paginas": int(os.getenv("MAX_PAGINAS_CA_FINAL", "30")),
+                "fechas": 2}
+    if hora >= 13:
+        return {"nombre": "medio", "limite": max(base + 2, 5),
+                "ca_paginas": int(os.getenv("MAX_PAGINAS_CA_MEDIO", "20")),
+                "fechas": 1}
+    return {"nombre": "normal", "limite": base,
+            "ca_paginas": int(os.getenv("MAX_PAGINAS_CA_RESPALDO", "12")),
+            "fechas": 1}
 
 
 def _leer_cola_pendiente():
