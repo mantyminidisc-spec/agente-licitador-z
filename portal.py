@@ -408,6 +408,29 @@ def _guardar_cotizacion(carpeta, datos):
     return ruta
 
 
+def _valores_planilla(proyecto):
+    """Datos de entrada de la planilla: ficha + lo que el cliente ya editó."""
+    cot = _leer_cotizacion(proyecto["_carpeta"])
+    presupuesto = int(proyecto.get("presupuesto_clp") or 0)
+    oferta = int(cot.get("monto") or proyecto.get("oferta_bruta_clp") or 0)
+    base = (oferta / presupuesto) if presupuesto else 0.80
+    horas = int(cot.get("horas") or 40)
+    valor_hora = int(cot.get("valor_hora") or 25000)
+    cloud = int(cot.get("cloud") or 390000)
+    gestion = int(cot.get("gestion") or 260000)
+    return {
+        "presupuesto": presupuesto,
+        "iva": 0.19,
+        "horas": horas,
+        "valor_hora": valor_hora,
+        "cloud": cloud,
+        "gestion": gestion,
+        "pct1": float(cot.get("pct1") or round(max(0.70, base - 0.02), 2)),
+        "pct2": float(cot.get("pct2") or round(base, 2)),
+        "pct3": float(cot.get("pct3") or round(min(0.99, base + 0.05), 2)),
+    }
+
+
 def _valores_simulador(proyecto):
     cot = _leer_cotizacion(proyecto["_carpeta"])
     presupuesto = int(proyecto.get("presupuesto_clp") or 0)
@@ -518,6 +541,23 @@ class Manejador(BaseHTTPRequestHandler):
                     meta_extra=str(proyecto.get("organismo") or ""))
                 return self._enviar(200, html_doc, "text/html; charset=utf-8")
 
+            if len(partes) == 3 and partes[2] == "planilla":
+                if portal_ui is None:
+                    return self._enviar(500, "<h1>UI no disponible</h1>")
+                valores = _valores_planilla(proyecto)
+                costo = (int(valores["horas"]) * int(valores["valor_hora"])
+                         + int(valores["cloud"]) + int(valores["gestion"]))
+                filas = portal_ui.calcular_escenarios(
+                    valores["presupuesto"], valores["iva"], costo,
+                    [(u"Competitivo", valores["pct1"]),
+                     (u"Recomendado", valores["pct2"]),
+                     (u"Conservador", valores["pct3"])])
+                return self._enviar(200, portal_ui.planilla_html(
+                    proyecto, partes[1], valores, filas,
+                    enlace_excel=f"/p/{partes[1]}/f/Planilla_Simulada.xlsx"
+                    if os.path.isfile(os.path.join(carpeta, "Planilla_Simulada.xlsx")) else ""),
+                    "text/html; charset=utf-8")
+
             if len(partes) == 3 and partes[2] == "simulador":
                 if portal_ui is None:
                     return self._enviar(500, "<h1>UI no disponible</h1>")
@@ -608,7 +648,7 @@ class Manejador(BaseHTTPRequestHandler):
     def do_POST(self):
         ruta = self.path.split("?")[0]
         partes = [p for p in ruta.split("/") if p]
-        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo", "cotizacion", "simular"):
+        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo", "cotizacion", "simular", "planilla"):
             return self._enviar(404, "<h1>No encontrado</h1>")
         proyecto = self._buscar(partes[1])
         if not proyecto:
@@ -616,6 +656,68 @@ class Manejador(BaseHTTPRequestHandler):
 
         carpeta = proyecto["_carpeta"]
         codigo = proyecto["_codigo"]
+
+        if partes[2] == "planilla":
+            largo = int(self.headers.get("Content-Length") or 0)
+            if largo <= 0 or largo > 512 * 1024:
+                return self._enviar(413, "<h1>Datos inválidos</h1>")
+            from urllib.parse import parse_qs
+            campos = parse_qs(self.rfile.read(largo).decode("utf-8", "ignore"))
+
+            def _num(clave, defecto=0):
+                crudo = (campos.get(clave) or [""])[0]
+                try:
+                    return float(str(crudo).replace(".", "").replace(",", ".") or defecto)
+                except Exception:
+                    return float(defecto)
+
+            valores = {
+                "presupuesto": int(_num("presupuesto", 0)),
+                "iva": _num("iva", 0.19) or 0.19,
+                "horas": int(_num("horas", 40)),
+                "valor_hora": int(_num("valor_hora", 25000)),
+                "cloud": int(_num("cloud", 0)),
+                "gestion": int(_num("gestion", 0)),
+                "pct1": _num("pct1", 0.78) or 0.78,
+                "pct2": _num("pct2", 0.80) or 0.80,
+                "pct3": _num("pct3", 0.85) or 0.85,
+            }
+            costo = (valores["horas"] * valores["valor_hora"]
+                     + valores["cloud"] + valores["gestion"])
+            filas = portal_ui.calcular_escenarios(
+                valores["presupuesto"], valores["iva"], costo,
+                [(u"Competitivo", valores["pct1"]),
+                 (u"Recomendado", valores["pct2"]),
+                 (u"Conservador", valores["pct3"])])
+            try:
+                destino = os.path.join(carpeta, "Planilla_Simulada.xlsx")
+                portal_ui.escribir_xlsx_simulado(destino, {
+                    "presupuesto": valores["presupuesto"],
+                    "iva": valores["iva"],
+                    "costo": costo}, filas)
+                # la cotización toma el monto del escenario recomendado
+                cot = _leer_cotizacion(carpeta)
+                cot.update({
+                    "monto": filas[1]["bruto"],
+                    "horas": valores["horas"],
+                    "valor_hora": valores["valor_hora"],
+                    "cloud": valores["cloud"],
+                    "gestion": valores["gestion"],
+                    "pct1": valores["pct1"],
+                    "pct2": valores["pct2"],
+                    "pct3": valores["pct3"],
+                    "costo": costo,
+                })
+                _guardar_cotizacion(carpeta, cot)
+                print(f"   [PORTAL] planilla {codigo}: monto recomendado "
+                      f"{filas[1]['bruto']} y cotizacion actualizada")
+            except Exception as e_plan:
+                print(f"   [PORTAL] error guardando la planilla: {e_plan}")
+            html_plan = portal_ui.planilla_html(
+                proyecto, partes[1], valores, filas,
+                mensaje="Planilla recalculada. La cotización formal ya tiene el nuevo monto.",
+                enlace_excel=f"/p/{partes[1]}/f/Planilla_Simulada.xlsx")
+            return self._enviar(200, html_plan, "text/html; charset=utf-8")
 
         if partes[2] == "simular":
             largo = int(self.headers.get("Content-Length") or 0)

@@ -520,6 +520,88 @@ def _tabla_escenarios(filas):
             + "".join(cuerpo) + "</table></div>")
 
 
+
+# ---------------------------------------------------------------------------
+# Planilla financiera editable (dentro del panel)
+# ---------------------------------------------------------------------------
+def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel=""):
+    presupuesto = int(valores.get("presupuesto") or 0)
+    iva = float(valores.get("iva") or 0.19)
+    horas = int(valores.get("horas") or 0)
+    valor_hora = int(valores.get("valor_hora") or 0)
+    cloud = int(valores.get("cloud") or 0)
+    gestion = int(valores.get("gestion") or 0)
+    costo = horas * valor_hora + cloud + gestion
+    pct1 = float(valores.get("pct1") or 0.78)
+    pct2 = float(valores.get("pct2") or 0.80)
+    pct3 = float(valores.get("pct3") or 0.85)
+    codigo = _esc(proyecto.get("codigo", ""))
+    aviso = f'<div class="aviso">{_esc(mensaje)}</div>' if mensaje else ""
+
+    cuerpo_filas = []
+    if filas:
+        for f in filas:
+            cuerpo_filas.append(
+                "<tr>"
+                f"<td><strong>{_esc(f['escenario'])}</strong></td>"
+                f"<td class='der'>{f['pct']*100:.0f}%</td>"
+                f"<td class='der'>{_clp(f['bruto'])}</td>"
+                f"<td class='der'>{_clp(f['neto'])}</td>"
+                f"<td class='der'>{_clp(f['iva'])}</td>"
+                f"<td class='der'>{_clp(f['costo'])}</td>"
+                f"<td class='der'>{_clp(f['ganancia'])}</td>"
+                f"<td class='der'>{f['margen']:.1f}%</td>"
+                f"<td class='der'>{f['roi']:.1f}%</td>"
+                "</tr>")
+    tabla = ("<div class='scroll-x'><table class='tabla-edit'>"
+             "<tr><th>Escenario</th><th>% del tope</th><th>Total bruto</th><th>Oferta neta</th>"
+             "<th>IVA</th><th>Costo interno</th><th>Ganancia</th><th>Margen</th><th>ROI</th></tr>"
+             + "".join(cuerpo_filas) + "</table></div>") if cuerpo_filas else ""
+
+    return f"""<div class="caja">
+  <h2>Planilla financiera<span class="der">
+    {f'<a class="btn-mini" href="{_esc(enlace_excel)}" download>Descargar Excel</a>' if enlace_excel else ''}
+  </span></h2>
+  <div class="cuerpo">
+    {aviso}
+    <p class="ayuda">Edita las celdas amarillas. Al guardar se recalculan los escenarios
+    y la <strong>cotización formal se actualiza sola</strong> con el monto recomendado.</p>
+    <form method="post" action="/p/{token}/planilla">
+      <div class="grid-entrada">
+        <div class="campo"><label>Presupuesto oficial (con IVA)</label>
+          <input name="presupuesto" type="number" value="{presupuesto}"></div>
+        <div class="campo"><label>IVA</label>
+          <input name="iva" type="number" step="0.01" value="{iva}"></div>
+        <div class="campo"><label>Horas de ingeniería</label>
+          <input name="horas" type="number" value="{horas}"></div>
+        <div class="campo"><label>Valor por hora</label>
+          <input name="valor_hora" type="number" value="{valor_hora}"></div>
+        <div class="campo"><label>Cloud, licencias y dominios</label>
+          <input name="cloud" type="number" value="{cloud}"></div>
+        <div class="campo"><label>Gestión, imprevistos y garantía</label>
+          <input name="gestion" type="number" value="{gestion}"></div>
+        <div class="campo"><label>Escenario 1 (%)</label>
+          <input name="pct1" type="number" step="0.01" value="{pct1}"></div>
+        <div class="campo"><label>Escenario 2 (%)</label>
+          <input name="pct2" type="number" step="0.01" value="{pct2}"></div>
+        <div class="campo"><label>Escenario 3 (%)</label>
+          <input name="pct3" type="number" step="0.01" value="{pct3}"></div>
+      </div>
+      <p class="ayuda" style="margin-top:12px">Costo interno total calculado:
+        <strong>{_clp(costo)}</strong></p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+        <button class="btn" type="submit">Guardar y recalcular</button>
+        <a class="btn btn-sec" href="/p/{token}/simulador" target="_blank" rel="noopener">
+          Abrir en pantalla completa</a>
+      </div>
+    </form>
+    <h3 style="margin-top:20px;font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;
+        color:#1e3a5f;border-bottom:1px solid #e3e7ee;padding-bottom:4px">Resultado</h3>
+    {tabla}
+  </div>
+</div>"""
+
+
 def simulador_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel=""):
     presupuesto = int(valores.get("presupuesto") or 0)
     iva = float(valores.get("iva") or 0.19)
@@ -739,7 +821,7 @@ iframe.visor{width:100%;height:70vh;min-height:420px;border:0;display:block;back
 .tabla-doc caption{text-align:left;font-weight:700;font-size:12px;color:var(--gris);padding:8px 0}
 .tabla-doc th,.tabla-doc td{border:1px solid var(--linea);padding:6px 8px;vertical-align:top}
 .tabla-doc th{background:#f7f9fc;text-align:left;font-weight:650}
-.doc-img{max-width:100%;height:auto;display:block;margin:8px 0}\n.tabla-xls{border-collapse:collapse;font-size:12px;background:#fff}\n.tabla-xls{border-collapse:collapse;table-layout:fixed;font-size:12px;background:#fff}\n.tabla-xls td{border:1px solid #c3ccd9;padding:6px 8px;white-space:nowrap;\nmin-width:64px;color:#1c2536;height:26px}\n.tabla-xls tr:first-child td{background:#f3f6fa;font-weight:650}\n.hoja-titulo{font-size:12.5px;color:#1e3a5f;margin:16px 0 6px}
+.doc-img{max-width:100%;height:auto;display:block;margin:8px 0}\n.grid-entrada{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));\ngap:12px 16px;margin-top:6px}\n.tabla-edit{border-collapse:collapse;width:100%;font-size:12.5px;margin-top:8px}\n.tabla-edit th{background:#12213a;color:#fff;text-align:left;padding:8px 9px;\nfont-weight:600;font-size:11.5px}\n.tabla-edit td{border:1px solid #c3ccd9;padding:7px 9px}\n.tabla-edit tr:nth-child(even) td{background:#f8fafc}\n.tabla-edit .der{text-align:right}\n.tabla-xls{border-collapse:collapse;font-size:12px;background:#fff}\n.tabla-xls{border-collapse:collapse;table-layout:fixed;font-size:12px;background:#fff}\n.tabla-xls td{border:1px solid #c3ccd9;padding:6px 8px;white-space:nowrap;\nmin-width:64px;color:#1c2536;height:26px}\n.tabla-xls tr:first-child td{background:#f3f6fa;font-weight:650}\n.hoja-titulo{font-size:12.5px;color:#1e3a5f;margin:16px 0 6px}
 .centrado{text-align:center}
 .cuerpo-doc,iframe.visor{background:#fff}
 .tabla-doc td{font-size:12.5px}
@@ -832,9 +914,13 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
         menu_docs.append(
             f'<button data-seccion="{ident}">{_esc(etiqueta)}'
             f'<span class="chip">{_peso(archivo["bytes"])}</span></button>')
+        es_planilla = nom.upper().startswith("PLANILLA")
         es_cotizacion = nom.upper().startswith("DOC2")
         renderizable = nom.upper().startswith(("DOC1", "DOC3")) and datos_informe
-        if es_cotizacion:
+        if es_planilla:
+            cuerpo = (f'<iframe class="visor" src="/p/{token}/planilla" loading="lazy" '
+                      f'title="Planilla financiera"></iframe>')
+        elif es_cotizacion:
             cuerpo = (f'<iframe class="visor" src="/p/{token}/cotizacion" loading="lazy" '
                       f'title="Cotización formal"></iframe>')
         elif renderizable:
