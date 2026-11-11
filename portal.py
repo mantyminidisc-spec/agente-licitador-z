@@ -611,6 +611,12 @@ class Manejador(BaseHTTPRequestHandler):
                 with open(RUTA_LOGO, "wb") as f:
                     f.write(datos)
                 print(f"   [PORTAL] logo del cliente actualizado: {nombre} ({len(datos)} bytes)")
+                # Regenerar los documentos para que salgan con el logo nuevo
+                try:
+                    ok_repro, msg_repro = _lanzar_reproceso(codigo)
+                    print(f"   [PORTAL] regenerando con el logo nuevo: {msg_repro}")
+                except Exception as e_repro:
+                    print(f"   [PORTAL] no se pudo regenerar: {str(e_repro)[:70]}")
             except Exception as e:
                 print(f"   [PORTAL] error guardando el logo: {e}")
                 return self._enviar(500, "<h1>No se pudo guardar el logo</h1>")

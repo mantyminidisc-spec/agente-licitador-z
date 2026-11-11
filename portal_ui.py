@@ -71,23 +71,52 @@ def es_previble(nombre):
 # Conversión de documentos a HTML
 # ---------------------------------------------------------------------------
 def docx_a_html(ruta):
+    """Convierte un Word a HTML respetando el orden real: párrafos, tablas e imágenes."""
     try:
         from docx import Document
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+        from docx.oxml.ns import qn
+    except Exception as e:
+        return f"<p>No se pudo abrir el Word: {_esc(e)[:120]}</p>"
+    try:
         documento = Document(ruta)
     except Exception as e:
         return f"<p>No se pudo abrir el Word: {_esc(e)[:120]}</p>"
-    partes = []
-    for p in documento.paragraphs:
-        texto = p.text.strip()
-        if not texto:
-            continue
-        estilo = (p.style.name or "").lower()
-        if estilo.startswith("heading") or estilo.startswith("título"):
+
+    def imagen_de_run(tramo):
+        """Devuelve un <img> en base64 si el tramo tiene una imagen incrustada."""
+        try:
+            blips = tramo._element.findall(".//" + qn("a:blip"))
+            for blip in blips:
+                rid = blip.get(qn("r:embed"))
+                if not rid:
+                    continue
+                parte = documento.part.related_parts.get(rid)
+                if not parte:
+                    continue
+                tipo = str(getattr(parte, "content_type", ""))
+                if "emf" in tipo or "wmf" in tipo:
+                    continue
+                import base64
+                datos = base64.b64encode(parte.blob).decode("ascii")
+                return (f'<img class="doc-img" src="data:{tipo or "image/png"};base64,{datos}" '
+                        f'alt="imagen">')
+        except Exception:
+            return ""
+        return ""
+
+    def parrafo_a_html(parrafo):
+        texto = parrafo.text.strip()
+        imagenes = "".join(imagen_de_run(r) for r in parrafo.runs)
+        if not texto and not imagenes:
+            return ""
+        estilo = (parrafo.style.name or "").lower()
+        if texto and (estilo.startswith("heading") or estilo.startswith("título")):
             nivel = "h3" if ("1" in estilo or "2" in estilo) else "h4"
-            partes.append(f"<{nivel}>{_esc(texto)}</{nivel}>")
-            continue
+            return f"<{nivel}>{_esc(texto)}</{nivel}>{imagenes}"
         marcado = ""
-        for tramo in p.runs:
+        for tramo in parrafo.runs:
             if not tramo.text:
                 continue
             trozo = _esc(tramo.text)
@@ -96,17 +125,40 @@ def docx_a_html(ruta):
             if tramo.italic:
                 trozo = f"<em>{trozo}</em>"
             marcado += trozo
-        partes.append(f"<p>{marcado or _esc(texto)}</p>")
-    for i, tabla in enumerate(documento.tables, 1):
+        alineado = ""
+        try:
+            if parrafo.alignment is not None and str(parrafo.alignment).startswith("CENTER"):
+                alineado = ' class="centrado"'
+        except Exception:
+            pass
+        cuerpo = f"<p{alignedo}>{marcado}</p>" if marcado else ""
+        return f"{imagenes}{cuerpo}"
+
+    def tabla_a_html(tabla):
         filas = []
         for pos, fila in enumerate(tabla.rows):
             etiqueta = "th" if pos == 0 else "td"
-            celdas = "".join(f"<{etiqueta}>{_esc(c.text.strip())}</{etiqueta}>"
-                             for c in fila.cells)
-            filas.append(f"<tr>{celdas}</tr>")
-        partes.append(f'<div class="scroll-x"><table class="tabla-doc"><caption>Tabla {i}</caption>'
-                      f'{"".join(filas)}</table></div>')
-    return "\n".join(partes) or "<p>El documento no tiene texto.</p>"
+            celdas = []
+            for celda in fila.cells:
+                contenido = "".join(parrafo_a_html(p) for p in celda.paragraphs).strip()
+                celdas.append(f"<{etiqueta}>{contenido or '&nbsp;'}</{etiqueta}>")
+            filas.append("<tr>" + "".join(celdas) + "</tr>")
+        return f'<div class="scroll-x"><table class="tabla-doc">{"".join(filas)}</table></div>'
+
+    partes = []
+    try:
+        for elemento in documento.element.body.iterchildren():
+            etiqueta = elemento.tag.split("}")[-1]
+            if etiqueta == "p":
+                html_par = parrafo_a_html(Paragraph(elemento, documento))
+                if html_par:
+                    partes.append(html_par)
+            elif etiqueta == "tbl":
+                partes.append(tabla_a_html(Table(elemento, documento)))
+    except Exception as e:
+        return f"<p>No se pudo convertir el documento: {_esc(e)[:120]}</p>"
+
+    return "\n".join(partes) or "<p>El documento no tiene contenido.</p>"
 
 
 def xlsx_a_html(ruta, max_filas=400):
@@ -209,7 +261,11 @@ iframe.visor{width:100%;height:70vh;min-height:420px;border:0;display:block;back
 .tabla-doc{border-collapse:collapse;font-size:13px;width:100%}
 .tabla-doc caption{text-align:left;font-weight:700;font-size:12px;color:var(--gris);padding:8px 0}
 .tabla-doc th,.tabla-doc td{border:1px solid var(--linea);padding:6px 8px;vertical-align:top}
-.tabla-doc th{background:#f7f9fc;text-align:left}
+.tabla-doc th{background:#f7f9fc;text-align:left;font-weight:650}
+.doc-img{max-width:100%;height:auto;display:block;margin:8px 0}
+.centrado{text-align:center}
+.cuerpo-doc,iframe.visor{background:#fff}
+.tabla-doc td{font-size:12.5px}
 table.lista{width:100%;border-collapse:collapse;font-size:13.5px}
 table.lista th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
 color:var(--gris);padding:10px 8px;border-bottom:1px solid var(--linea)}
