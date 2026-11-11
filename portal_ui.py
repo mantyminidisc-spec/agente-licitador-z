@@ -330,36 +330,93 @@ color:#8b95a4;text-align:center}}
 </body></html>"""
 
 
-def xlsx_a_html(ruta, max_filas=400):
+def xlsx_a_html(ruta, max_filas=200, max_columnas=14):
+    """Muestra el Excel como una grilla real: celdas combinadas, colores y alineación."""
     try:
         import openpyxl
-        libro = openpyxl.load_workbook(ruta, data_only=True, read_only=True)
+        from openpyxl.utils import column_index_from_string
+        libro = openpyxl.load_workbook(ruta, data_only=True)
     except Exception as e:
         return f"<p>No se pudo abrir el Excel: {_esc(e)[:120]}</p>"
+
+    def _valor(celda):
+        v = celda.value
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            formato = str(celda.number_format or "")
+            if "%" in formato:
+                return f"{v*100:.0f}%"
+            if abs(v) < 1 and v != 0:
+                return f"{v*100:.0f}%"
+            return f"{v:,.0f}".replace(",", ".")
+        if isinstance(v, int):
+            return f"{v:,}".replace(",", ".")
+        return _esc(v)
+
     partes = []
     for hoja in libro.worksheets:
-        filas = []
-        for numero, fila in enumerate(hoja.iter_rows(values_only=True), 1):
-            if numero > max_filas:
-                filas.append("<tr><td colspan='12'>… (vista truncada)</td></tr>")
-                break
-            if not any(v not in (None, "") for v in fila):
-                continue
-            etiqueta = "th" if numero == 1 else "td"
-            def _celda(v):
-                if v is None:
-                    return ""
-                if isinstance(v, float):
-                    if abs(v) < 1 and v != 0:
-                        return f"{v*100:.0f}%"
-                    return f"{v:,.0f}".replace(",", ".")
-                if isinstance(v, int):
-                    return f"{v:,}".replace(",", ".")
-                return _esc(v)
-            celdas = "".join(f"<{etiqueta}>{_celda(v)}</{etiqueta}>" for v in fila)
-            filas.append(f"<tr>{celdas}</tr>")
-        partes.append(f'<h4>{_esc(hoja.title)}</h4><div class="scroll-x">'
-                      f'<table class="tabla-doc">{"".join(filas)}</table></div>')
+        combinadas = {}
+        cubiertas = set()
+        for rango in hoja.merged_cells.ranges:
+            filas_span = rango.max_row - rango.min_row + 1
+            cols_span = rango.max_col - rango.min_col + 1
+            combinadas[(rango.min_row, rango.min_col)] = (filas_span, cols_span)
+            for f in range(rango.min_row, rango.max_row + 1):
+                for c in range(rango.min_col, rango.max_col + 1):
+                    if (f, c) != (rango.min_row, rango.min_col):
+                        cubiertas.add((f, c))
+
+        ocultas = set()
+        for letra, dim in hoja.column_dimensions.items():
+            if getattr(dim, "hidden", False):
+                try:
+                    ocultas.add(column_index_from_string(letra))
+                except Exception:
+                    pass
+
+        filas_html = []
+        total_filas = min(hoja.max_row or 0, max_filas)
+        total_cols = min(hoja.max_column or 0, max_columnas)
+        for f in range(1, total_filas + 1):
+            celdas_html = []
+            for c in range(1, total_cols + 1):
+                if c in ocultas or (f, c) in cubiertas:
+                    continue
+                celda = hoja.cell(row=f, column=c)
+                span = ""
+                if (f, c) in combinadas:
+                    fs, cs = combinadas[(f, c)]
+                    if fs > 1 or cs > 1:
+                        span = f' rowspan="{fs}" colspan="{cs}"'
+                estilos = []
+                color_fondo = ""
+                try:
+                    relleno = celda.fill
+                    if relleno and relleno.fgColor and relleno.patternType:
+                        rgb = str(relleno.fgColor.rgb or "")
+                        if rgb and rgb not in ("00000000", "None"):
+                            color_fondo = "#" + rgb[-6:]
+                except Exception:
+                    pass
+                if color_fondo:
+                    estilos.append(f"background:{color_fondo}")
+                if celda.font and celda.font.bold:
+                    estilos.append("font-weight:700")
+                if isinstance(celda.value, (int, float)):
+                    estilos.append("text-align:right")
+                etiqueta = "td"
+                if f <= 3 and celda.font and celda.font.bold:
+                    etiqueta = "td"
+                estilo = f' style="{";".join(estilos)}"' if estilos else ""
+                celdas_html.append(f"<{etiqueta}{span}{estilo}>{_valor(celda)}</{etiqueta}>")
+            filas_html.append("<tr>" + "".join(celdas_html) + "</tr>")
+
+        nombre_hoja = _esc(hoja.title).replace("_", " ")
+        partes.append(
+            f'<h4 class="hoja-titulo">{nombre_hoja}</h4>'
+            '<div class="scroll-x"><table class="tabla-xls">'
+            + "".join(filas_html) + "</table></div>")
     try:
         libro.close()
     except Exception:
@@ -440,7 +497,7 @@ iframe.visor{width:100%;height:70vh;min-height:420px;border:0;display:block;back
 .tabla-doc caption{text-align:left;font-weight:700;font-size:12px;color:var(--gris);padding:8px 0}
 .tabla-doc th,.tabla-doc td{border:1px solid var(--linea);padding:6px 8px;vertical-align:top}
 .tabla-doc th{background:#f7f9fc;text-align:left;font-weight:650}
-.doc-img{max-width:100%;height:auto;display:block;margin:8px 0}
+.doc-img{max-width:100%;height:auto;display:block;margin:8px 0}\n.tabla-xls{border-collapse:collapse;font-size:12px;background:#fff}\n.tabla-xls td{border:1px solid #dfe4ec;padding:5px 8px;white-space:nowrap;\nmin-width:52px;color:#1c2536}\n.tabla-xls tr:first-child td{background:#f3f6fa;font-weight:650}\n.hoja-titulo{font-size:12.5px;color:#1e3a5f;margin:16px 0 6px}
 .centrado{text-align:center}
 .cuerpo-doc,iframe.visor{background:#fff}
 .tabla-doc td{font-size:12.5px}
