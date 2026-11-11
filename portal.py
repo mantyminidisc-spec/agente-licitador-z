@@ -509,6 +509,14 @@ class Manejador(BaseHTTPRequestHandler):
         return proyecto
 
     def do_GET(self):
+        try:
+            return self._do_get_interno()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._enviar(500, f"<h1>Error en la vista</h1><pre>{e}</pre>")
+
+    def _do_get_interno(self):
         ruta = self.path.split("?")[0]
         consulta = self.path.split("?")[1] if "?" in self.path else ""
         partes = [p for p in ruta.split("/") if p]
@@ -555,7 +563,7 @@ class Manejador(BaseHTTPRequestHandler):
                 return self._enviar(200, portal_ui.planilla_html(
                     proyecto, partes[1], valores, filas,
                     enlace_excel=f"/p/{partes[1]}/f/Planilla_Simulada.xlsx"
-                    if os.path.isfile(os.path.join(carpeta, "Planilla_Simulada.xlsx")) else ""),
+                    if os.path.isfile(os.path.join(proyecto["_carpeta"], "Planilla_Simulada.xlsx")) else ""),
                     "text/html; charset=utf-8")
 
             if len(partes) == 3 and partes[2] == "simulador":
@@ -646,6 +654,14 @@ class Manejador(BaseHTTPRequestHandler):
         return self._enviar(404, "<h1>No encontrado</h1>")
 
     def do_POST(self):
+        try:
+            return self._do_post_interno()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._enviar(500, f"<h1>Error al procesar</h1><pre>{e}</pre>")
+
+    def _do_post_interno(self):
         ruta = self.path.split("?")[0]
         partes = [p for p in ruta.split("/") if p]
         if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo", "cotizacion", "simular", "planilla"):
