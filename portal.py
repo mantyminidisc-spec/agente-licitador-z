@@ -408,6 +408,17 @@ def _guardar_cotizacion(carpeta, datos):
     return ruta
 
 
+def _monto_recomendado(proyecto):
+    """Monto con IVA del escenario recomendado, coherente con la planilla."""
+    try:
+        valores = _valores_planilla(proyecto)
+        presupuesto = int(valores.get("presupuesto") or 0)
+        pct = float(valores.get("pct2") or 0.80)
+        return int(round(presupuesto * pct))
+    except Exception:
+        return int(proyecto.get("oferta_bruta_clp") or 0)
+
+
 def _sensibilidad(presupuesto, iva, costo, desde=0.70, hasta=0.99, paso=0.02,
                   pct_competencia=0.85, peso_precio=0.40):
     """Tabla de sensibilidad igual a la del Excel: puntaje y probabilidad por precio."""
@@ -537,6 +548,8 @@ def _pagina(proyecto, aviso=""):
         logo_url=f"/p/{token}/logo",
         doc1_marca=_estado_analisis(carpeta).get("doc1", 0),
         cotizacion=_leer_cotizacion(carpeta),
+        # el KPI de oferta se calcula igual que la cotización
+        oferta_vigente=_monto_recomendado(proyecto),
         datos_informe=_leer_datos_informe(carpeta),
     )
 
@@ -643,6 +656,7 @@ class Manejador(BaseHTTPRequestHandler):
 
             if len(partes) == 3 and partes[2] == "cotizacion":
                 datos = _leer_cotizacion(proyecto["_carpeta"])
+                datos["monto"] = _monto_recomendado(proyecto)
                 if portal_ui is None:
                     return self._enviar(500, "<h1>UI no disponible</h1>")
                 html_cot = portal_ui.cotizacion_html(

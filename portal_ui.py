@@ -1060,7 +1060,7 @@ JS = """
 # Página principal
 # ---------------------------------------------------------------------------
 def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_url="",
-           doc1_marca=0, cotizacion=None, datos_informe=None):
+           doc1_marca=0, cotizacion=None, datos_informe=None, oferta_vigente=None):
     codigo = proyecto.get("codigo", "")
     nombre = str(proyecto.get("nombre") or "Proyecto")
     organismo = str(proyecto.get("organismo") or "")
@@ -1076,7 +1076,7 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
         "representante": cot.get("representante") or "Daniel Andrés Salazar Gavilán",
         "email": cot.get("email") or "contacto@mantytech.cl",
         "telefono": cot.get("telefono") or "+56 9 5090 1627",
-        "monto": cot.get("monto") or oferta,
+        "monto": oferta_vigente or cot.get("monto") or oferta,
         "plazo": cot.get("plazo") or proyecto.get("plazo_entrega_organismo") or "",
         "validez": cot.get("validez") or "60 días",
         "observaciones": cot.get("observaciones") or "",
