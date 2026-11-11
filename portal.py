@@ -33,6 +33,11 @@ import subprocess
 import sys
 import time
 import zipfile
+
+try:
+    import portal_ui
+except Exception:
+    portal_ui = None
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -370,162 +375,20 @@ def _pagina(proyecto, aviso=""):
     carpeta = proyecto["_carpeta"]
     archivos = _archivos(carpeta)
     adjuntos = _adjuntos(carpeta)
-    manifest = _leer_manifest(carpeta)
-
-    filas = "".join(
-        f'<tr><td><a class="link" href="/p/{token}/f/{quote(a["nombre"])}">{a["nombre"]}</a></td>'
-        f'<td class="n">{a["bytes"] // 1024} KB</td></tr>'
-        for a in archivos
-    ) or '<tr><td colspan="2">Todavía no hay documentos en esta carpeta.</td></tr>'
-
-    filas_adj = "".join(
-        f'<tr><td><a class="link" href="/p/{token}/a/{quote(a["nombre"])}">{a["nombre"]}</a></td>'
-        f'<td class="n">{a["bytes"] // 1024} KB</td></tr>'
-        for a in adjuntos
-    )
-    bloque_adj = ""
-    if filas_adj:
-        bloque_adj = (
-            '<div class="tarjeta"><h2>Adjuntos originales del portal (' + str(len(adjuntos)) + ')</h2>'
-            '<p class="ayuda" style="margin:0 0 10px">'
-            'Documentos oficiales tal como los publicó el organismo (PDF, DOCX, XLSX).</p>'
-            '<table>' + filas_adj + '</table></div>'
-        )
-
-    nombres = " ".join(a["nombre"].lower() for a in adjuntos)
-    checklist = ""
-    faltan = []
-    for etiqueta, claves in CHECKLIST:
-        presente = any(clave in nombres for clave in claves)
-        if presente:
-            checklist += f'<li><span class="si">✔</span> {etiqueta}</li>'
-        else:
-            checklist += f'<li><span class="no">○</span> {etiqueta} <span class="ayuda">— pendiente</span></li>'
-            faltan.append(etiqueta)
-
-    # Cualquier archivo que suba el cliente es válido: si no calza con una
-    # categoría igual se le avisa que el agente lo va a incorporar.
-    if adjuntos:
-        checklist += (f'<li><span class="si">✔</span> {len(adjuntos)} documento(s) '
-                      f'disponible(s) para el análisis</li>')
-    checklist += ('<li><span class="ayuda">Puedes subir PDF, DOCX, XLSX, ZIP o Word '
-                  'antiguo (.doc). Todos se incorporan al informe.</span></li>')
-
-    boton_reprocesar = ""
-    if manifest.get("estado") == "anexos_subidos":
-        boton_reprocesar = (
-            f'<form method="post" action="/p/{token}/reprocesar" style="margin-top:16px">'
-            f'<button class="boton" type="submit">Regenerar auditoría con estos anexos</button>'
-            '</form>'
-        )
-
-    hay_logo = os.path.isfile(RUTA_LOGO)
-    vista_logo = (
-        f'<img src="/p/{token}/logo?t={int(time.time())}" alt="Logo" '
-        'style="height:64px;max-width:180px;object-fit:contain;'
-        'border:1px solid #e5e7eb;border-radius:8px;padding:6px;background:#fff">'
-        if hay_logo else
-        '<div style="color:#6b7280;font-size:12px">Aún no subes tu logo</div>'
-    )
-    bloque_logo = (
-        '<div class="tarjeta">'
-        '<h2>Logo de tu empresa</h2>'
-        '<p class="ayuda" style="margin:0 0 12px">'
-        'Se usa en la cotización, el informe de auditoría y el informe financiero que '
-        'recibe el organismo. Sube un PNG con fondo transparente (ideal 600 px de ancho).'
-        '</p>'
-        '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">'
-        f'{vista_logo}'
-        f'<form method="post" action="/p/{token}/logo" enctype="multipart/form-data">'
-        '<input type="file" name="logo" accept=".png,.jpg,.jpeg">'
-        '<button class="boton" type="submit" style="margin-left:8px">Subir logo</button>'
-        '</form>'
-        '</div>'
-        '</div>'
-    )
-
-    es_compra_agil = proyecto.get("tipo_portal") == "COMPRA_AGIL"
-    if es_compra_agil:
-        bloque_anexos = (
-            '<div class="ok" style="margin:0 0 18px">'
-            '<b>Compra Ágil: los documentos se descargan solos.</b><br>'
-            'Este tipo de proceso no necesita que subas nada: el agente obtiene los '
-            'archivos desde el servicio oficial de ChileCompra. '
-            'Si el portal no entrega alguno, igual quedará avisado en el informe.'
-            '</div>'
-        )
-        aviso = aviso or ''
-        faltan = []
-    else:
-        bloque_anexos = (
-            '<div class="tarjeta">'
-            '<h2>Anexos para auditoría técnica</h2>'
-            '<p class="ayuda" style="margin:0 0 12px">'
-            'Estos documentos (EETT, bases especiales, formularios) no se pueden leer '
-            'automáticamente del portal oficial. Súbelos aquí y el agente los incorpora '
-            'al informe.</p>'
-            f'<ul class="lista-check">{checklist}</ul>'
-            f'<form method="post" action="/p/{token}/subir" enctype="multipart/form-data">'
-            '<input type="file" name="archivos" multiple>'
-            '<button class="boton" type="submit">Subir anexos</button>'
-            '</form>'
-            '<p class="ayuda" style="margin:14px 0 0">'
-            'Acepta PDF, DOCX, XLSX, ZIP y Word antiguo (.doc) · máximo 60 MB por archivo.'
-            '</p>'
-            f'{boton_reprocesar}'
-            '</div>'
-        )
-
-    if not aviso and faltan:
-        aviso = ('<div class="falta"><b>Falta información para la auditoría técnica.</b> '
-                 'Puedes subir: ' + ", ".join(faltan) + '.</div>')
-    elif "logo=1" in str(proyecto.get("_consulta") or ""):
-        aviso = '<div class="ok">Logo actualizado. Se usará en los próximos documentos.</div>'
-    elif not aviso:
-        aviso = '<div class="ok">Anexos completos: la auditoría técnica está incluida.</div>'
-
-    enlace_oficial = str(proyecto.get("url_portal") or "").strip()
-    boton_portal = ""
-    if enlace_oficial:
-        es_ca = proyecto.get("tipo_portal") == "COMPRA_AGIL"
-        etiqueta = "Ver compra ágil en Mercado Público" if es_ca else "Ver licitación en Mercado Público"
-        boton_portal = (
-            '<div class="tarjeta" style="display:flex;justify-content:space-between;'
-            'align-items:center;gap:16px;flex-wrap:wrap">'
-            '<div><div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;'
-            'color:#6b7280">Proceso oficial</div>'
-            '<div style="font-weight:600;color:#1f2a44;margin-top:4px">Ficha en Mercado Público</div>'
-            '<div style="font-size:12px;color:#6b7280;margin-top:2px">Ahí están las bases, los anexos y el botón para ofertar.</div>'
-            '</div>'
-            f'<a class="boton" href="{enlace_oficial}" target="_blank" rel="noopener noreferrer">'
-            f'{etiqueta} →</a>'
-            '</div>'
-        )
-
-    return PLANTILLA.format(
+    if portal_ui is None:
+        return "<h1>Panel no disponible</h1><p>Falta portal_ui.py en la imagen.</p>"
+    return portal_ui.pagina(
+        proyecto=proyecto,
         token=token,
-        codigo=proyecto.get("codigo", ""),
-        nombre=str(proyecto.get("nombre", "Proyecto"))[:140],
-        organismo=str(proyecto.get("organismo", ""))[:90],
-        tipo="Compra Ágil" if proyecto.get("tipo_portal") == "COMPRA_AGIL" else "Licitación pública",
-        presupuesto=_formato_clp(proyecto.get("presupuesto_clp", 0)),
-        oferta=_formato_clp(proyecto.get("oferta_bruta_clp", 0)),
-        cierre=proyecto.get("fecha_cierre", "ver ficha"),
-        filas=filas,
-        bloque_adjuntos=bloque_adj,
-        checklist=checklist,
-        boton_reprocesar=boton_reprocesar,
-        boton_portal=boton_portal,
-        bloque_anexos=bloque_anexos,
-        bloque_logo=bloque_logo,
-        marca_inicial=_estado_analisis(proyecto["_carpeta"])["doc1"],
+        archivos=archivos,
+        adjuntos=adjuntos,
         aviso=aviso,
+        hay_logo=os.path.isfile(RUTA_LOGO),
+        logo_url=f"/p/{token}/logo",
+        doc1_marca=_estado_analisis(carpeta).get("doc1", 0),
     )
 
 
-# ---------------------------------------------------------------------------
-# Servidor
-# ---------------------------------------------------------------------------
 class Manejador(BaseHTTPRequestHandler):
     server_version = "LicitaiaPortal/2.0"
 
@@ -593,6 +456,33 @@ class Manejador(BaseHTTPRequestHandler):
                 nombre = f"{proyecto['_codigo']}.zip"
                 return self._enviar(200, datos, "application/zip",
                                     {"Content-Disposition": f'attachment; filename="{nombre}"'})
+
+            if len(partes) == 4 and partes[2] in ("ver", "va"):
+                seguro = os.path.basename(unquote(partes[3]))
+                base = proyecto["_carpeta"] if partes[2] == "ver" else os.path.join(
+                    proyecto["_carpeta"], "adjuntos")
+                ruta_archivo = os.path.join(base, seguro)
+                if not os.path.isfile(ruta_archivo):
+                    return self._enviar(404, "<h1>Archivo no encontrado</h1>")
+                contenido, es_html = (portal_ui.vista_archivo(ruta_archivo, seguro)
+                                     if portal_ui else (None, False))
+                if contenido is None:
+                    with open(ruta_archivo, "rb") as f:
+                        datos = f.read()
+                    return self._enviar(200, datos, "application/pdf",
+                                        {"Content-Disposition": f'inline; filename="{seguro}"'})
+                marco = ("<!DOCTYPE html><html lang='es'><head><meta charset='utf-8'>"
+                         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                         f"<title>{seguro}</title><style>body{{margin:0;padding:20px;"
+                         "font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;"
+                         "color:#1c2536;line-height:1.55}}table{{border-collapse:collapse;width:100%}}"
+                         "th,td{{border:1px solid #e3e7ee;padding:6px 8px;font-size:13px}}"
+                         "th{{background:#f7f9fc;text-align:left}}h3{{color:#12213a}}"
+                         "h4{{color:#1e3a5f}}pre{{white-space:pre-wrap}}"
+                         "caption{{text-align:left;font-weight:700;color:#5b6674;padding:6px 0}}"
+                         "</style></head><body>"
+                         f"{contenido}</body></html>")
+                return self._enviar(200, marco, "text/html; charset=utf-8")
 
             if len(partes) == 4 and partes[2] in ("f", "a"):
                 seguro = os.path.basename(unquote(partes[3]))

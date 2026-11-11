@@ -48,6 +48,7 @@ COPY agente_licitador_z.py .
 COPY probar_conexion.py .
 # Portal de entregables (sirve las páginas privadas y las descargas)
 COPY portal.py .
+COPY portal_ui.py .
 # Planificador interno: corre el agente a las horas configuradas (sin Coolify)
 COPY planificador.py .
 # Logo corporativo (DOC 1 y DOC 2). Si no lo quieres, bórralo del repo.
