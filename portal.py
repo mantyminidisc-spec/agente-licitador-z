@@ -146,6 +146,8 @@ def _archivos(carpeta):
             continue
         if nombre.startswith("."):
             continue
+        if nombre.lower().endswith((".json", ".log", ".tmp", ".lock")):
+            continue
         salida.append({"nombre": nombre, "bytes": os.path.getsize(ruta)})
     return salida
 

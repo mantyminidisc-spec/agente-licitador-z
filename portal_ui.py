@@ -125,13 +125,13 @@ def docx_a_html(ruta):
             if tramo.italic:
                 trozo = f"<em>{trozo}</em>"
             marcado += trozo
-        alineado = ""
+        estilo_p = ""
         try:
-            if parrafo.alignment is not None and str(parrafo.alignment).startswith("CENTER"):
-                alineado = ' class="centrado"'
+            if parrafo.alignment is not None and "CENTER" in str(parrafo.alignment):
+                estilo_p = ' style="text-align:center"'
         except Exception:
-            pass
-        cuerpo = f"<p{alignedo}>{marcado}</p>" if marcado else ""
+            estilo_p = ""
+        cuerpo = f"<p{estilo_p}>{marcado}</p>" if marcado else ""
         return f"{imagenes}{cuerpo}"
 
     def tabla_a_html(tabla):
@@ -346,8 +346,17 @@ def xlsx_a_html(ruta, max_filas=400):
             if not any(v not in (None, "") for v in fila):
                 continue
             etiqueta = "th" if numero == 1 else "td"
-            celdas = "".join(f"<{etiqueta}>{_esc('' if v is None else v)}</{etiqueta}>"
-                             for v in fila)
+            def _celda(v):
+                if v is None:
+                    return ""
+                if isinstance(v, float):
+                    if abs(v) < 1 and v != 0:
+                        return f"{v*100:.0f}%"
+                    return f"{v:,.0f}".replace(",", ".")
+                if isinstance(v, int):
+                    return f"{v:,}".replace(",", ".")
+                return _esc(v)
+            celdas = "".join(f"<{etiqueta}>{_celda(v)}</{etiqueta}>" for v in fila)
             filas.append(f"<tr>{celdas}</tr>")
         partes.append(f'<h4>{_esc(hoja.title)}</h4><div class="scroll-x">'
                       f'<table class="tabla-doc">{"".join(filas)}</table></div>')
@@ -524,8 +533,12 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
         menu_docs.append(
             f'<button data-seccion="{ident}">{_esc(etiqueta)}'
             f'<span class="chip">{_peso(archivo["bytes"])}</span></button>')
+        es_cotizacion = nom.upper().startswith("DOC2")
         renderizable = nom.upper().startswith(("DOC1", "DOC3")) and datos_informe
-        if renderizable:
+        if es_cotizacion:
+            cuerpo = (f'<iframe class="visor" src="/p/{token}/cotizacion" loading="lazy" '
+                      f'title="Cotización formal"></iframe>')
+        elif renderizable:
             cuerpo = (f'<iframe class="visor" src="/p/{token}/docu/{_esc(nom)}" loading="lazy" '
                       f'title="{_esc(etiqueta)}"></iframe>')
         elif es_previble(nom):
@@ -537,7 +550,8 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
         secciones_docs.append(
             f'<section class="seccion oculto" id="sec-{ident}">'
             f'<div class="caja"><h2>{_esc(etiqueta)}'
-            f'<span class="der"><a class="btn-mini" href="/p/{token}/f/{_esc(nom)}" download>Descargar</a></span>'
+            f'<span class="der">{"<a class=\"btn-mini\" href=\"#cotizacion\" data-ir=\"cotizacion\">Editar</a> " if es_cotizacion else ""}'\
+            f'<a class="btn-mini" href="/p/{token}/f/{_esc(nom)}" download>Descargar</a></span>'
             f'</h2>{cuerpo}</div></section>')
 
     # --- anexos
