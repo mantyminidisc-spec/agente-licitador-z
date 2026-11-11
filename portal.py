@@ -370,6 +370,25 @@ def _estado_analisis(carpeta):
     return {"doc1": doc1, "generado": generado}
 
 
+def _ruta_cotizacion(carpeta):
+    return os.path.join(carpeta, "cotizacion_editada.json")
+
+
+def _leer_cotizacion(carpeta):
+    try:
+        with open(_ruta_cotizacion(carpeta), encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _guardar_cotizacion(carpeta, datos):
+    ruta = _ruta_cotizacion(carpeta)
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(datos, f, ensure_ascii=False, indent=2)
+    return ruta
+
+
 def _pagina(proyecto, aviso=""):
     token = _token(proyecto["_codigo"])
     carpeta = proyecto["_carpeta"]
@@ -386,6 +405,7 @@ def _pagina(proyecto, aviso=""):
         hay_logo=os.path.isfile(RUTA_LOGO),
         logo_url=f"/p/{token}/logo",
         doc1_marca=_estado_analisis(carpeta).get("doc1", 0),
+        cotizacion=_leer_cotizacion(carpeta),
     )
 
 
@@ -437,6 +457,17 @@ class Manejador(BaseHTTPRequestHandler):
             if not proyecto:
                 return self._enviar(404, "<h1>Enlace no válido</h1>"
                                          "<p>El proyecto no existe o el enlace fue revocado.</p>")
+
+            if len(partes) == 3 and partes[2] == "cotizacion":
+                datos = _leer_cotizacion(proyecto["_carpeta"])
+                if portal_ui is None:
+                    return self._enviar(500, "<h1>UI no disponible</h1>")
+                html_cot = portal_ui.cotizacion_html(
+                    proyecto, partes[1], datos,
+                    hay_logo=os.path.isfile(RUTA_LOGO),
+                    logo_url=f"/p/{partes[1]}/logo",
+                    cot=datos)
+                return self._enviar(200, html_cot, "text/html; charset=utf-8")
 
             if len(partes) == 3 and partes[2] == "logo":
                 if not os.path.isfile(RUTA_LOGO):
@@ -510,7 +541,7 @@ class Manejador(BaseHTTPRequestHandler):
     def do_POST(self):
         ruta = self.path.split("?")[0]
         partes = [p for p in ruta.split("/") if p]
-        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo"):
+        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo", "cotizacion"):
             return self._enviar(404, "<h1>No encontrado</h1>")
         proyecto = self._buscar(partes[1])
         if not proyecto:
@@ -518,6 +549,27 @@ class Manejador(BaseHTTPRequestHandler):
 
         carpeta = proyecto["_carpeta"]
         codigo = proyecto["_codigo"]
+
+        if partes[2] == "cotizacion":
+            largo = int(self.headers.get("Content-Length") or 0)
+            if largo <= 0 or largo > 1024 * 1024:
+                return self._enviar(413, "<h1>Datos demasiado grandes</h1>")
+            cuerpo = self.rfile.read(largo).decode("utf-8", "ignore")
+            from urllib.parse import parse_qs
+            campos = parse_qs(cuerpo)
+            datos = {clave: (valores[0] if valores else "")
+                     for clave, valores in campos.items()}
+            try:
+                datos["monto"] = int(str(datos.get("monto") or "0").replace(".", "").strip() or 0)
+            except Exception:
+                datos["monto"] = 0
+            try:
+                _guardar_cotizacion(carpeta, datos)
+                print(f"   [PORTAL] cotización editada {codigo}: monto {datos.get('monto')}")
+            except Exception as e:
+                print(f"   [PORTAL] error guardando cotización: {e}")
+                return self._enviar(500, "<h1>No se pudo guardar</h1>")
+            return self._redirigir(f"/p/{partes[1]}#cotizacion")
 
         if partes[2] == "logo":
             largo = int(self.headers.get("Content-Length") or 0)
