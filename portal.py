@@ -408,6 +408,29 @@ def _guardar_cotizacion(carpeta, datos):
     return ruta
 
 
+def _sensibilidad(presupuesto, iva, costo, desde=0.70, hasta=0.99, paso=0.02,
+                  pct_competencia=0.85, peso_precio=0.40):
+    """Tabla de sensibilidad igual a la del Excel: puntaje y probabilidad por precio."""
+    import math
+    filas = []
+    pct = desde
+    while pct <= hasta + 0.0001:
+        bruto = int(round(presupuesto * pct))
+        neto = int(round(bruto / (1 + iva))) if (1 + iva) else 0
+        ganancia = neto - costo
+        margen = (ganancia / neto * 100) if neto else 0
+        puntaje = (peso_precio * 100) * min(1.0, pct_competencia / pct) + (1 - peso_precio) * 100
+        x = (pct_competencia - pct) / 0.035
+        try:
+            prob = 1.0 / (1.0 + math.exp(-x))
+        except Exception:
+            prob = 0.0
+        filas.append({"pct": pct, "bruto": bruto, "neto": neto, "ganancia": ganancia,
+                      "margen": margen, "puntaje": puntaje, "prob": prob * 100})
+        pct = round(pct + paso, 4)
+    return filas
+
+
 def _valores_planilla(proyecto):
     """Datos de entrada de la planilla: ficha + lo que el cliente ya editó."""
     cot = _leer_cotizacion(proyecto["_carpeta"])
@@ -560,11 +583,14 @@ class Manejador(BaseHTTPRequestHandler):
                     [(u"Competitivo", valores["pct1"]),
                      (u"Recomendado", valores["pct2"]),
                      (u"Conservador", valores["pct3"])])
+                sens = _sensibilidad(valores["presupuesto"], valores["iva"], costo,
+                                     valores["pct1"] - 0.08, min(0.99, valores["pct3"] + 0.10))
+                enlace = (f"/p/{partes[1]}/f/Planilla_Simulada.xlsx"
+                          if os.path.isfile(os.path.join(proyecto["_carpeta"],
+                                                         "Planilla_Simulada.xlsx")) else "")
                 return self._enviar(200, portal_ui.planilla_html(
-                    proyecto, partes[1], valores, filas,
-                    enlace_excel=f"/p/{partes[1]}/f/Planilla_Simulada.xlsx"
-                    if os.path.isfile(os.path.join(proyecto["_carpeta"], "Planilla_Simulada.xlsx")) else ""),
-                    "text/html; charset=utf-8")
+                    proyecto, partes[1], valores, filas, enlace_excel=enlace,
+                    sensibilidad=sens), "text/html; charset=utf-8")
 
             if len(partes) == 3 and partes[2] == "simulador":
                 if portal_ui is None:
@@ -729,10 +755,13 @@ class Manejador(BaseHTTPRequestHandler):
                       f"{filas[1]['bruto']} y cotizacion actualizada")
             except Exception as e_plan:
                 print(f"   [PORTAL] error guardando la planilla: {e_plan}")
+            sens = _sensibilidad(valores["presupuesto"], valores["iva"], costo,
+                                 valores["pct1"] - 0.08, min(0.99, valores["pct3"] + 0.10))
             html_plan = portal_ui.planilla_html(
                 proyecto, partes[1], valores, filas,
                 mensaje="Planilla recalculada. La cotización formal ya tiene el nuevo monto.",
-                enlace_excel=f"/p/{partes[1]}/f/Planilla_Simulada.xlsx")
+                enlace_excel=f"/p/{partes[1]}/f/Planilla_Simulada.xlsx",
+                sensibilidad=sens)
             return self._enviar(200, html_plan, "text/html; charset=utf-8")
 
         if partes[2] == "simular":
