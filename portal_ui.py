@@ -479,11 +479,25 @@ def xlsx_a_html(ruta, max_filas=200, max_columnas=14):
 # ---------------------------------------------------------------------------
 # Simulador financiero (planilla editable)
 # ---------------------------------------------------------------------------
+def _normaliza_pct(valor, defecto=0.0):
+    """Acepta 78 (=78%) o 0.78 (=78%) y devuelve siempre la fracción."""
+    try:
+        v = float(valor)
+    except Exception:
+        return defecto
+    if v <= 0:
+        return defecto
+    if v > 1.5:
+        v = v / 100.0
+    return v
+
+
 def calcular_escenarios(presupuesto, iva_pct, costo, pcts):
     """Repite el cálculo del motor de precios: bruto, neto, IVA, ganancia y ROI."""
     presupuesto = int(presupuesto or 0)
     costo = int(costo or 0)
-    iva_pct = float(iva_pct or 0.19)
+    iva_pct = _normaliza_pct(iva_pct, 0.19)
+    pcts = [(nombre, _normaliza_pct(pct, 0.80)) for nombre, pct in pcts]
     filas = []
     for nombre, pct in pcts:
         bruto = int(round(presupuesto * pct))
@@ -672,14 +686,14 @@ ul.explica b{{color:var(--azul2)}}
         <div class="grid">
           <div class="campo"><label>Presupuesto oficial (con IVA)</label>
             <input name="presupuesto" type="number" value="{presupuesto}"></div>
-          <div class="campo"><label>IVA</label>
-            <input name="iva" type="number" step="0.01" value="{iva}"></div>
+          <div class="campo"><label>IVA (%)</label>
+            <input name="iva" type="number" step="0.01" value="{iva*100:g}"></div>
           <div class="campo"><label>Escenario 1 (%)</label>
-            <input name="pct1" type="number" step="0.01" value="{pct1}"></div>
+            <input name="pct1" type="number" step="0.01" value="{pct1*100:g}"></div>
           <div class="campo"><label>Escenario 2 (%)</label>
-            <input name="pct2" type="number" step="0.01" value="{pct2}"></div>
+            <input name="pct2" type="number" step="0.01" value="{pct2*100:g}"></div>
           <div class="campo"><label>Escenario 3 (%)</label>
-            <input name="pct3" type="number" step="0.01" value="{pct3}"></div>
+            <input name="pct3" type="number" step="0.01" value="{pct3*100:g}"></div>
           <div class="campo" style="justify-content:flex-end">
             <span class="ayuda" style="margin:0">Los costos se editan en la pestaña 2.</span></div>
         </div>

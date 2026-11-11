@@ -713,16 +713,20 @@ class Manejador(BaseHTTPRequestHandler):
                 except Exception:
                     return float(defecto)
 
+            def _pct(clave, defecto):
+                v = _num(clave, defecto * 100) or (defecto * 100)
+                return v / 100.0 if v > 1.5 else v
+
             valores = {
                 "presupuesto": int(_num("presupuesto", 0)),
-                "iva": _num("iva", 0.19) or 0.19,
+                "iva": (lambda v: v / 100.0 if v > 1 else v)(_num("iva", 19) or 19),
                 "horas": int(_num("horas", 40)),
                 "valor_hora": int(_num("valor_hora", 25000)),
                 "cloud": int(_num("cloud", 0)),
                 "gestion": int(_num("gestion", 0)),
-                "pct1": _num("pct1", 0.78) or 0.78,
-                "pct2": _num("pct2", 0.80) or 0.80,
-                "pct3": _num("pct3", 0.85) or 0.85,
+                "pct1": _pct("pct1", 0.78),
+                "pct2": _pct("pct2", 0.80),
+                "pct3": _pct("pct3", 0.85),
             }
             costo = (valores["horas"] * valores["valor_hora"]
                      + valores["cloud"] + valores["gestion"])
@@ -777,6 +781,11 @@ class Manejador(BaseHTTPRequestHandler):
                     valores[clave] = float(str(crudo).replace(".", "").replace(",", ".") or 0)
                 except Exception:
                     valores[clave] = 0
+            for clave in ("pct1", "pct2", "pct3"):
+                if valores[clave] > 1.5:
+                    valores[clave] = valores[clave] / 100.0
+            if valores.get("iva", 0) > 1:
+                valores["iva"] = valores["iva"] / 100.0
             pcts = [(u"Escenario 1", valores.get("pct1") or 0.78),
                     (u"Escenario 2", valores.get("pct2") or 0.80),
                     (u"Escenario 3", valores.get("pct3") or 0.85)]
