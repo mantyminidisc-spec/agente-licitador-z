@@ -479,8 +479,8 @@ def xlsx_a_html(ruta, max_filas=200, max_columnas=14):
 # ---------------------------------------------------------------------------
 # Simulador financiero (planilla editable)
 # ---------------------------------------------------------------------------
-def _normaliza_pct(valor, defecto=0.0):
-    """Acepta 78 (=78%) o 0.78 (=78%) y devuelve siempre la fracción."""
+def _normaliza_pct(valor, defecto=0.0, minimo=0.40, maximo=1.00):
+    """Acepta 78 (=78%) o 0.78 (=78%) y devuelve la fracción, acotada al rango válido."""
     try:
         v = float(valor)
     except Exception:
@@ -489,6 +489,10 @@ def _normaliza_pct(valor, defecto=0.0):
         return defecto
     if v > 1.5:
         v = v / 100.0
+    if v > maximo:
+        v = maximo
+    if v < minimo:
+        v = minimo
     return v
 
 
@@ -687,13 +691,13 @@ ul.explica b{{color:var(--azul2)}}
           <div class="campo"><label>Presupuesto oficial (con IVA)</label>
             <input name="presupuesto" type="number" value="{presupuesto}"></div>
           <div class="campo"><label>IVA (%)</label>
-            <input name="iva" type="number" step="0.01" value="{iva*100:g}"></div>
+            <input name="iva" type="number" step="0.01" min="0" max="30" value="{iva*100:g}"></div>
           <div class="campo"><label>Escenario 1 (%)</label>
-            <input name="pct1" type="number" step="0.01" value="{pct1*100:g}"></div>
+            <input name="pct1" type="number" step="0.01" min="1" max="100" value="{pct1*100:g}"></div>
           <div class="campo"><label>Escenario 2 (%)</label>
-            <input name="pct2" type="number" step="0.01" value="{pct2*100:g}"></div>
+            <input name="pct2" type="number" step="0.01" min="1" max="100" value="{pct2*100:g}"></div>
           <div class="campo"><label>Escenario 3 (%)</label>
-            <input name="pct3" type="number" step="0.01" value="{pct3*100:g}"></div>
+            <input name="pct3" type="number" step="0.01" min="1" max="100" value="{pct3*100:g}"></div>
           <div class="campo" style="justify-content:flex-end">
             <span class="ayuda" style="margin:0">Los costos se editan en la pestaña 2.</span></div>
         </div>

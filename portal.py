@@ -431,6 +431,21 @@ def _sensibilidad(presupuesto, iva, costo, desde=0.70, hasta=0.99, paso=0.02,
     return filas
 
 
+def _pct_seguro(valor, defecto):
+    """Devuelve siempre una fracción entre 0.40 y 1.00."""
+    try:
+        v = float(valor)
+    except Exception:
+        return round(float(defecto), 4)
+    if v > 1.5:
+        v = v / 100.0
+    if v > 1.0:
+        v = 1.0
+    if v < 0.40:
+        v = 0.40
+    return round(v, 4)
+
+
 def _valores_planilla(proyecto):
     """Datos de entrada de la planilla: ficha + lo que el cliente ya editó."""
     cot = _leer_cotizacion(proyecto["_carpeta"])
@@ -448,9 +463,9 @@ def _valores_planilla(proyecto):
         "valor_hora": valor_hora,
         "cloud": cloud,
         "gestion": gestion,
-        "pct1": float(cot.get("pct1") or round(max(0.70, base - 0.02), 2)),
-        "pct2": float(cot.get("pct2") or round(base, 2)),
-        "pct3": float(cot.get("pct3") or round(min(0.99, base + 0.05), 2)),
+        "pct1": _pct_seguro(cot.get("pct1"), max(0.70, base - 0.02)),
+        "pct2": _pct_seguro(cot.get("pct2"), base),
+        "pct3": _pct_seguro(cot.get("pct3"), min(0.99, base + 0.05)),
     }
 
 
@@ -717,6 +732,26 @@ class Manejador(BaseHTTPRequestHandler):
                 v = _num(clave, defecto * 100) or (defecto * 100)
                 return v / 100.0 if v > 1.5 else v
 
+            crudos = {c: _num(c, 0) for c in ("pct1", "pct2", "pct3")}
+            invalidos = [c for c, v in crudos.items() if not (1 <= v <= 100)]
+            if invalidos:
+                valores_prev = _valores_planilla(proyecto)
+                costo_prev = (valores_prev["horas"] * valores_prev["valor_hora"]
+                              + valores_prev["cloud"] + valores_prev["gestion"])
+                filas_prev = portal_ui.calcular_escenarios(
+                    valores_prev["presupuesto"], valores_prev["iva"], costo_prev,
+                    [(u"Competitivo", valores_prev["pct1"]),
+                     (u"Recomendado", valores_prev["pct2"]),
+                     (u"Conservador", valores_prev["pct3"])])
+                aviso = ("El porcentaje debe estar entre 1 y 100. Corrige los campos marcados "
+                         "y vuelve a guardar (no se guardó nada).")
+                return self._enviar(200, portal_ui.planilla_html(
+                    proyecto, partes[1], valores_prev, filas_prev, mensaje=aviso,
+                    sensibilidad=_sensibilidad(valores_prev["presupuesto"], valores_prev["iva"],
+                                               costo_prev, valores_prev["pct1"] - 0.08,
+                                               min(0.99, valores_prev["pct3"] + 0.10))),
+                    "text/html; charset=utf-8")
+
             valores = {
                 "presupuesto": int(_num("presupuesto", 0)),
                 "iva": (lambda v: v / 100.0 if v > 1 else v)(_num("iva", 19) or 19),
@@ -724,9 +759,9 @@ class Manejador(BaseHTTPRequestHandler):
                 "valor_hora": int(_num("valor_hora", 25000)),
                 "cloud": int(_num("cloud", 0)),
                 "gestion": int(_num("gestion", 0)),
-                "pct1": _pct("pct1", 0.78),
-                "pct2": _pct("pct2", 0.80),
-                "pct3": _pct("pct3", 0.85),
+                "pct1": _pct_seguro(_pct("pct1", 0.78), 0.78),
+                "pct2": _pct_seguro(_pct("pct2", 0.80), 0.80),
+                "pct3": _pct_seguro(_pct("pct3", 0.85), 0.85),
             }
             costo = (valores["horas"] * valores["valor_hora"]
                      + valores["cloud"] + valores["gestion"])
