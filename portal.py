@@ -473,7 +473,16 @@ def _pct_seguro(valor, defecto):
 def _valores_planilla(proyecto):
     """Datos de entrada de la planilla: ficha + lo que el cliente ya editó."""
     cot = _leer_cotizacion(proyecto["_carpeta"])
-    presupuesto = int(proyecto.get("presupuesto_clp") or 0)
+    try:
+        presupuesto = int(cot.get("presupuesto") or proyecto.get("presupuesto_clp") or 0)
+    except Exception:
+        presupuesto = int(proyecto.get("presupuesto_clp") or 0)
+    try:
+        iva_guardado = float(cot.get("iva") or 0.19)
+    except Exception:
+        iva_guardado = 0.19
+    if iva_guardado > 1:
+        iva_guardado = iva_guardado / 100.0
     oferta = int(cot.get("monto") or proyecto.get("oferta_bruta_clp") or 0)
     base = (oferta / presupuesto) if presupuesto else 0.80
     if base > 1.0 or base < 0.50:
@@ -496,7 +505,7 @@ def _valores_planilla(proyecto):
 
     return {
         "presupuesto": presupuesto,
-        "iva": 0.19,
+        "iva": iva_guardado,
         "horas": horas,
         "valor_hora": valor_hora,
         "cloud": cloud,
@@ -840,6 +849,8 @@ class Manejador(BaseHTTPRequestHandler):
                 cot = _leer_cotizacion(carpeta)
                 cot.update({
                     "monto": filas[1]["bruto"],
+                    "presupuesto": valores["presupuesto"],
+                    "iva": valores["iva"],
                     "horas": valores["horas"],
                     "valor_hora": valores["valor_hora"],
                     "cloud": valores["cloud"],
