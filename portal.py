@@ -72,6 +72,21 @@ CHECKLIST = [
 # ---------------------------------------------------------------------------
 # Utilidades
 # ---------------------------------------------------------------------------
+def _version_agente():
+    """Lee la versión del agente desde el archivo del contenedor."""
+    import re as _re
+    for ruta in ("/app/agente_licitador_z.py",
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "agente_licitador_z.py")):
+        try:
+            with open(ruta, encoding="utf-8") as f:
+                for linea in f:
+                    if linea.startswith("VERSION_LICITAIA"):
+                        return linea.split("=")[-1].strip().strip('\"').strip(chr(39))
+        except Exception:
+            continue
+    return "desconocida"
+
+
 def _token(codigo):
     firma = hmac.new(SECRETO, str(codigo).encode("utf-8"), hashlib.sha256).hexdigest()
     return firma[:20]
@@ -447,7 +462,10 @@ class Manejador(BaseHTTPRequestHandler):
         partes = [p for p in ruta.split("/") if p]
 
         if ruta in ("/salud", "/"):
-            datos = {"servicio": "licitaia-portal", "estado": "ok", "version": "2.0",
+            datos = {"servicio": "licitaia-portal", "estado": "ok", "version": "2.1",
+                     "version_agente": _version_agente(),
+                     "ia_principal": os.getenv("IA_MODELO", ""),
+                     "ia_premium": os.getenv("IA_PREMIUM_MODELO", ""),
                      "proyectos": len(_proyectos()), "carpeta": ENTREGABLES}
             return self._enviar(200, json.dumps(datos, ensure_ascii=False), "application/json")
 
