@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.1"
+VERSION_LICITAIA = "19.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -6191,96 +6191,17 @@ class Agente5Entregador:
         }
         ok, url, detalle = self._enviar_lote_apps_script(payload)
         if ok:
-            print(f"   ✅ CRM Maestro actualizado en Drive: {url}")
+            print("   ✅ CRM Maestro actualizado en el servidor")
         else:
             print(f"   [!] CRM Maestro no se pudo subir: {detalle}")
 
     def sincronizar_drive_y_correo(self, carpeta_proyecto, expediente, informes, escenarios):
-        # Entrega por portal: guarda en el servidor y devuelve el link privado.
-        if ENTREGA_MODO == "portal":
-            return self._entregar_por_portal(carpeta_proyecto, expediente, informes, escenarios)
+        """Entrega del proyecto por el portal propio (Google Drive desactivado)."""
+        return self._entregar_por_portal(carpeta_proyecto, expediente, informes,
+                                         escenarios)
 
-        eq = escenarios["equilibrado"]
-        codigo = expediente["codigo"]
-        subcarpeta = "01_COMPRAS_AGILES" if expediente["tipo_portal"] == "COMPRA_AGIL" else "02_LICITACIONES_PUBLICAS"
-
-        archivos = self._recopilar_archivos_proyecto(carpeta_proyecto)
-        if not archivos:
-            print("   [!] No hay archivos para subir en esta carpeta.")
-            return {"subido_drive": False, "url_carpeta_drive": ""}
-
-        # Lotes: por defecto TODO el proyecto en UN solo envío (un solo correo).
-        # Solo se divide si de verdad es enorme, porque el Apps Script manda un
-        # correo por cada petición que recibe (de ahí los correos duplicados).
-        lotes, actual, peso = [], [], 0
-        for ruta, tam in archivos:
-            peso_b64 = int(tam * 4 / 3)
-            if actual and (peso + peso_b64 > DRIVE_MAX_BYTES or len(actual) >= DRIVE_MAX_ARCHIVOS):
-                lotes.append(actual)
-                actual, peso = [], 0
-            actual.append((ruta, tam))
-            peso += peso_b64
-        if actual:
-            lotes.append(actual)
-
-        html_correo = self._html_correo_ejecutivo(expediente, informes, escenarios)
-        id_envio = f"{codigo}-{datetime.datetime.now().strftime('%Y%m%d%H%M')}"
-        print(f"   ☁️ [Agente 5] Subiendo {len(archivos)} archivo(s) en {len(lotes)} envío(s) a Google Drive...")
-
-        todo_ok, url_drive, fallos = True, "", []
-        for idx, lote in enumerate(lotes, 1):
-            es_primero = (idx == 1)
-            payload = {
-                "empresa": "Mantytech_SpA",
-                "email_destino": self.perfil["email_notificaciones"],
-                # El correo sale SOLO con el primer envío. Los demás van sin datos
-                # de correo para no duplicarlo.
-                "asunto_email": (
-                    f"✅ [LICITAIA] {codigo} ({expediente['tipo_portal']}) | "
-                    f"Ganancia: ${eq['ganancia_limpia_bolsillo_clp']:,} CLP"
-                ) if es_primero else "",
-                "html_resumen": html_correo if es_primero else "",
-                "enviar_correo": es_primero,
-                "id_envio": id_envio,
-                "subcarpeta_portal": subcarpeta,
-                "codigo_id": codigo,
-                "lote": f"{idx}/{len(lotes)}",
-                "archivos": [
-                    {
-                        "subcarpeta_portal": subcarpeta,
-                        "codigo_id": codigo,
-                        "nombre_archivo": (
-                            "ADJUNTO_ORIGINAL_" if "adjuntos" in os.path.relpath(r, carpeta_proyecto)
-                            else ""
-                        ) + os.path.basename(r),
-                        "contenido_base64": self._a_base64(r),
-                    }
-                    for r, _ in lote
-                ],
-            }
-            ok, carpeta_url, detalle = self._enviar_lote_apps_script(payload)
-            if ok:
-                url_drive = carpeta_url or url_drive
-                print(f"   ✅ Envío {idx}/{len(lotes)} entregado -> {carpeta_url}")
-            else:
-                todo_ok = False
-                fallos.append(f"lote {idx}: {detalle}")
-                print(f"   ❌ Envío {idx}/{len(lotes)} NO entregado -> {detalle}")
-
-        self._subir_crm_maestro()
-
-        if todo_ok:
-            print(f"   ✅ [DRIVE OK] {len(archivos)} archivo(s) en {subcarpeta}/{codigo}")
-            print(f"   📂 Carpeta Drive: {url_drive}")
-            return {"subido_drive": True, "url_carpeta_drive": url_drive}
-
-        print("   ❌ [DRIVE INCOMPLETO] El proyecto NO se marcará como procesado y quedará en cola.")
-        return {"subido_drive": False, "url_carpeta_drive": url_drive, "detalle": " | ".join(fallos)}
-
-    # ------------------------------------------------------------------
-    # WHATSAPP: aviso al cliente + resumen interno
-    # ------------------------------------------------------------------
     @staticmethod
+
     def _clp(valor):
         """Formato chileno: $25.000.000 (punto de miles, no coma)."""
         try:
@@ -6349,8 +6270,7 @@ class Agente5Entregador:
             f"💰 Presupuesto: {self._clp(presupuesto)} CLP",
             f"⏳ Cierre: {expediente.get('fecha_cierre', 'ver ficha')}",
         ]
-        if estado_nube and estado_nube.get("url_carpeta_drive"):
-            lineas.append(f"📂 Carpeta: {estado_nube['url_carpeta_drive']}")
+
         if expediente.get("url_portal"):
             lineas.append(f"🔗 {expediente['url_portal']}")
         return "\n".join(lineas)
@@ -6550,7 +6470,7 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
     print("""
     ╔══════════════════════════════════════════════════════════════════════════╗
     ║   LICITAIA - MOTOR B2G DE 6 AGENTES (VERSIÓN 5.4 · CORREGIDA)        ║
-    ║   Orden estricto CA -> Licitaciones + Cola persistente + Drive honesto   ║
+    ║   Orden estricto CA -> Licitaciones + Cola persistente + portal honesto   ║
     ╚══════════════════════════════════════════════════════════════════════════╝
     """)
     print(f"   Modo     : {'BARRIDO FINAL DEL DÍA' if barrido_final else 'escaneo normal'}")
@@ -6586,7 +6506,7 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
 
     # 1) Recuperar lo que quedó pendiente de corridas anteriores
     cola = _leer_cola_pendiente()
-    # Si ya está entregado en Drive, no se reintenta aunque haya quedado anotado
+    # Si ya está entregado, no se reintenta aunque haya quedado anotado
     # en la cola por un error posterior (por ejemplo, un fallo de WhatsApp).
     cola = {c: v for c, v in cola.items() if c not in agente1.historial}
     for cand in candidatos:
@@ -6651,13 +6571,13 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
                 "nube": estado_nube,
             })
 
-            # 3) SOLO se marca como procesado si llegó a Drive
+            # 3) SOLO se marca como procesado si quedó entregado en el portal
             if estado_nube.get("subido_drive"):
                 agente1.registrar_procesado(codigo)
                 cola.pop(codigo, None)
                 _guardar_cola_pendiente(cola)
                 # Aviso al cliente por WhatsApp (sin márgenes) en cuanto está listo.
-                # Si el WhatsApp falla, NO debe afectar el proyecto (ya está en Drive).
+                # Si el WhatsApp falla, NO debe afectar el proyecto (ya está entregado).
                 try:
                     if _notificaciones_activas():
                         agente5.notificar_cliente_whatsapp(expediente, escenarios, estado_nube)
@@ -6666,7 +6586,7 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
             else:
                 fallidos.append(codigo)
                 _anotar_fallo(cola, codigo, candidato,
-                              estado_nube.get("detalle") or "no llegó a Drive")
+                              estado_nube.get("detalle") or "no se entregó")
                 print(f"   ⚠️ {codigo} queda PENDIENTE: no se registra en el historial para reintentarlo.")
         except Exception as e:
             fallidos.append(codigo)
@@ -6753,7 +6673,7 @@ def _anotar_fallo(cola, codigo, candidato, motivo):
 def mostrar_historial():
     historial = sorted(_leer_json_lista(ARCHIVO_HISTORIAL))
     print("")
-    print(f"📚 HISTORIAL: {len(historial)} proyecto(s) ya entregados en Drive")
+    print(f"📚 HISTORIAL: {len(historial)} proyecto(s) ya entregados")
     print(f"   Archivo: {ARCHIVO_HISTORIAL}")
     if not historial:
         print("   (vacío: la próxima corrida procesará todo lo que encuentre)")
@@ -6770,7 +6690,7 @@ def mostrar_pendientes():
     print(f"⏳ PENDIENTES: {len(cola)} proyecto(s) en cola")
     print(f"   Archivo: {ARCHIVO_COLA_PENDIENTE}")
     if not cola:
-        print("   (nada pendiente: todo lo detectado llegó a Drive)")
+        print("   (nada pendiente: todo lo detectado se entregó)")
         return
     for i, cand in enumerate(cola.values(), 1):
         print(f"   {i:3}. [{cand.get('tipo_portal', '?')}] {cand.get('codigo')}")
@@ -6882,7 +6802,7 @@ def _ayuda():
   python agente_licitador_z.py --limpiar             Borra clones antiguos (ANEXO_CLON, CLON_EXACTO)
   python agente_licitador_z.py --diagnostico-visor COD  Muestra la estructura del visor de anexos
   python agente_licitador_z.py --adjuntar CODIGO A.pdf   Agrega anexos a un proyecto (EETT, bases)
-  python agente_licitador_z.py --historial         Lista los ya entregados en Drive
+  python agente_licitador_z.py --historial         Lista los ya entregados
   python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
   python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
   python agente_licitador_z.py --olvidar CODIGO    Solo lo saca de las listas (sin procesar)
