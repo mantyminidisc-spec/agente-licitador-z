@@ -518,12 +518,28 @@ def _valores_planilla(proyecto):
     base = (oferta / presupuesto) if presupuesto else 0.80
     if base > 1.0 or base < 0.50:
         base = 0.80  # el monto guardado no es coherente: se usa el escenario estándar
+    horas = _solo_digitos(cot.get("horas") or 0)
+    valor_hora = _solo_digitos(cot.get("valor_hora") or 0)
+    cloud = _solo_digitos(cot.get("cloud") or 0)
+    gestion = _solo_digitos(cot.get("gestion") or 0)
+    costo_desglose = horas * valor_hora + cloud + gestion
     try:
         costo_guardado = _solo_digitos(cot.get("costo") or 0)
     except Exception:
         costo_guardado = 0
-    if costo_guardado <= 0:
+    if costo_desglose > 0:
+        costo_guardado = costo_desglose
+    elif costo_guardado <= 0:
         costo_guardado = int(round(presupuesto * 0.32)) if presupuesto else 0
+        horas = 40
+        valor_hora = int(round((costo_guardado * 0.6) / 40)) if costo_guardado else 25000
+        cloud = int(round(costo_guardado * 0.24)) if costo_guardado else 0
+        gestion = max(0, costo_guardado - horas * valor_hora - cloud)
+    if horas * valor_hora + cloud + gestion <= 0:
+        # deja el desglose coherente con el total
+        horas, valor_hora = 40, int(round(costo_guardado * 0.6 / 40)) if costo_guardado else 25000
+        cloud = int(round(costo_guardado * 0.24)) if costo_guardado else 0
+        gestion = max(0, costo_guardado - horas * valor_hora - cloud)
     defecto_1 = min(0.98, max(0.50, round(base - 0.02, 2)))
     defecto_2 = min(0.99, max(0.55, round(base, 2)))
     defecto_3 = min(0.99, max(0.60, round(base + 0.05, 2)))
@@ -545,6 +561,10 @@ def _valores_planilla(proyecto):
         "presupuesto": presupuesto,
         "iva": iva_guardado,
         "costo": costo_guardado,
+        "horas": horas,
+        "valor_hora": valor_hora,
+        "cloud": cloud,
+        "gestion": gestion,
         "neto": neto_guardado,
         "pct1": p1,
         "pct2": p2,
@@ -679,7 +699,11 @@ class Manejador(BaseHTTPRequestHandler):
                 if portal_ui is None:
                     return self._enviar(500, "<h1>UI no disponible</h1>")
                 valores = _valores_planilla(proyecto)
-                costo = int(valores.get("costo") or 0)
+                costo_desglose_get = (valores["horas"] * valores["valor_hora"]
+                                      + valores["cloud"] + valores["gestion"])
+                costo = costo_desglose_get if costo_desglose_get > 0 else int(
+                    valores.get("costo") or 0)
+                valores["costo"] = costo
                 filas = portal_ui.calcular_escenarios(
                     valores["presupuesto"], valores["iva"], costo,
                     [(u"Competitivo", valores["pct1"]),
@@ -873,13 +897,27 @@ class Manejador(BaseHTTPRequestHandler):
                 "iva": (lambda v: v / 100.0 if v > 1 else v)(_num("iva", 19) or 19),
                 "costo": _solo_digitos((campos.get("costo") or ["0"])[0],
                                        anteriores_post["costo"]),
+                "horas": _solo_digitos((campos.get("horas") or ["0"])[0],
+                                       anteriores_post.get("horas") or 0),
+                "valor_hora": _solo_digitos((campos.get("valor_hora") or ["0"])[0],
+                                            anteriores_post.get("valor_hora") or 0),
+                "cloud": _solo_digitos((campos.get("cloud") or ["0"])[0],
+                                       anteriores_post.get("cloud") or 0),
+                "gestion": _solo_digitos((campos.get("gestion") or ["0"])[0],
+                                         anteriores_post.get("gestion") or 0),
                 "neto": _solo_digitos((campos.get("neto") or ["0"])[0],
                                       anteriores_post.get("neto") or 0),
                 "pct1": anteriores_post["pct1"],
                 "pct2": anteriores_post["pct2"],
                 "pct3": anteriores_post["pct3"],
             }
-            costo = int(valores.get("costo") or 0)
+            costo_desglose_post = (valores["horas"] * valores["valor_hora"]
+                                   + valores["cloud"] + valores["gestion"])
+            if costo_desglose_post > 0:
+                costo = costo_desglose_post
+            else:
+                costo = _solo_digitos((campos.get("costo") or ["0"])[0],
+                                      anteriores_post["costo"]) or anteriores_post["costo"]
             # los escenarios salen del presupuesto por los porcentajes del motor
             if False and any(m > 0 for m in montos_libres):
                 filas = []
@@ -909,10 +947,23 @@ class Manejador(BaseHTTPRequestHandler):
                 portal_ui.escribir_xlsx_simulado(destino, {
                     "presupuesto": valores["presupuesto"],
                     "iva": valores["iva"],
+                    "horas": valores["horas"],
+                    "valor_hora": valores["valor_hora"],
+                    "cloud": valores["cloud"],
+                    "gestion": valores["gestion"],
+                    "costo": costo,
                     "costo": costo}, filas)
                 # la cotización toma el monto del escenario recomendado
                 cot = _leer_cotizacion(carpeta)
-                elegido = str((campos.get("escenario_cotizacion") or ["recomendado"])[0]).lower()
+                accion = str((campos.get("accion") or [""])[0]).lower()
+                if accion == "mi_precio":
+                    elegido = "mi_precio"
+                elif accion == "opcion":
+                    elegido = str((campos.get("escenario_cotizacion")
+                                   or ["recomendado"])[0]).lower()
+                else:
+                    elegido = str((campos.get("escenario_cotizacion")
+                                   or ["recomendado"])[0]).lower()
                 if elegido not in ("competitivo", "recomendado", "conservador", "mi_precio"):
                     elegido = "recomendado"
                 if elegido == "mi_precio":
