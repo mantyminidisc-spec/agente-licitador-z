@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.3"
+VERSION_LICITAIA = "19.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -987,6 +987,7 @@ def _montos_del_proceso(informe, presupuesto, tipo_pre=""):
 
 
 PERFIL_BARRIDO = {"nombre": "normal", "limite": 3, "ca_paginas": 12}
+NOTIFICAR_SIN_NOVEDADES = (os.getenv("NOTIFICAR_SIN_NOVEDADES") or "1").strip() != "0"
 
 
 def _estado_compra_agil_texto():
@@ -1014,7 +1015,8 @@ def _mensaje_sin_novedades():
                       f"({_RESUMEN_ESCANEO['ca_fallos']} consultas con error). "
                       f"No significa que no haya ofertas.")
     else:
-        lineas.append("• Compra Ágil: revisada, sin coincidencias con tu giro.")
+        lineas.append(f"• Compra Ágil: {PERFIL_BARRIDO['ca_paginas']} páginas revisadas, "
+                  f"sin coincidencias con tu giro.")
     lineas.append(f"• Licitaciones: {_RESUMEN_ESCANEO.get('lic_abiertas', 0)} abiertas, "
                   f"{_RESUMEN_ESCANEO.get('lic_candidatos', 0)} de tu rubro.")
     lineas.append("")
@@ -6610,7 +6612,7 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
     if not resultados_lote and not fallidos:
         _es_final = _es_hora_barrido_final()
         _hubo_falla = bool(_RESUMEN_ESCANEO.get("ca_fallos"))
-        if _es_final or _hubo_falla:
+        if NOTIFICAR_SIN_NOVEDADES:
             try:
                 _destinos = WHATSAPP_INTERNO or ([WHATSAPP_DESTINO] if WHATSAPP_DESTINO else [])
                 if _destinos and agente5._enviar_whatsapp(_destinos, _mensaje_sin_novedades()) > 0:
