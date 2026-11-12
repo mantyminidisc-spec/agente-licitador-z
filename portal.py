@@ -467,6 +467,9 @@ def _monto_recomendado(proyecto):
             return _solo_digitos(monto_elegido)
         if cot.get("monto"):
             return _solo_digitos(cot.get("monto"))
+        recomendado = _recomendado_del_estudio(proyecto["_carpeta"])
+        if recomendado > 0:
+            return recomendado
         valores = _valores_planilla(proyecto)
         return int(round(int(valores.get("presupuesto") or 0) * float(valores.get("pct2") or 0.8)))
     except Exception:
@@ -528,6 +531,47 @@ def _pct_seguro(valor, defecto):
     return round(v, 4)
 
 
+def _pcts_del_estudio(carpeta):
+    """Lee los porcentajes de tope del estudio financiero del agente."""
+    try:
+        datos = _leer_datos_informe(carpeta)
+        estudio = (datos.get("informes") or {}).get("estudio_financiero_escenarios") or {}
+    except Exception:
+        return {}
+    claves = ["escenario_1_competitivo_agresivo",
+              "escenario_2_equilibrado_recomendado",
+              "escenario_3_premium_alta_gama"]
+    salida = {}
+    for pos, clave in enumerate(claves, 1):
+        bloque = estudio.get(clave)
+        if not isinstance(bloque, dict):
+            continue
+        try:
+            pct = float(bloque.get("porcentaje_tope") or 0)
+        except Exception:
+            continue
+        if pct > 1.5:
+            pct = pct / 100.0
+        if 0.50 <= pct <= 1.0:
+            salida["pct%d" % pos] = round(pct, 4)
+            total = bloque.get("total_bruto_clp")
+            if total:
+                salida["bruto%d" % pos] = _solo_digitos(total)
+    return salida
+
+
+def _recomendado_del_estudio(carpeta):
+    """Monto bruto del escenario recomendado según el estudio del agente."""
+    try:
+        datos = _leer_datos_informe(carpeta)
+        estudio = (datos.get("informes") or {}).get("estudio_financiero_escenarios") or {}
+        bloque = estudio.get("escenario_2_equilibrado_recomendado") or {}
+        monto = _solo_digitos(bloque.get("total_bruto_clp") or 0)
+        return monto
+    except Exception:
+        return 0
+
+
 def _valores_planilla(proyecto):
     """Datos de entrada de la planilla: ficha + lo que el cliente ya editó."""
     cot = _leer_cotizacion(proyecto["_carpeta"])
@@ -567,9 +611,21 @@ def _valores_planilla(proyecto):
     defecto_2 = min(0.99, max(0.55, round(base, 2)))
     defecto_3 = min(0.99, max(0.60, round(base + 0.05, 2)))
 
+    # si el agente dejó un estudio financiero, esas son las referencias válidas
+    del_estudio = _pcts_del_estudio(proyecto["_carpeta"])
+    if del_estudio:
+        defecto_1 = del_estudio.get("pct1", defecto_1)
+        defecto_2 = del_estudio.get("pct2", defecto_2)
+        defecto_3 = del_estudio.get("pct3", defecto_3)
+
     p1 = _pct_seguro(cot.get("pct1"), defecto_1)
     p2 = _pct_seguro(cot.get("pct2"), defecto_2)
     p3 = _pct_seguro(cot.get("pct3"), defecto_3)
+    if del_estudio:
+        # el estudio del agente tiene prioridad sobre lo guardado
+        p1 = defecto_1
+        p2 = defecto_2
+        p3 = defecto_3
     if not _pcts_coherentes(p1, p2, p3):
         print(f"   [PORTAL] escenarios incoherentes ({p1}/{p2}/{p3}): "
               f"se usan los del documento {defecto_1}/{defecto_2}/{defecto_3}")
