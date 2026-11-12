@@ -677,6 +677,135 @@ def _valores_simulador(proyecto):
     }
 
 
+RUTA_BANCO_JSON = os.path.join(RAIZ, "datos_bancarios.json")
+CARPETA_BANCO = os.path.join(RAIZ, "banco")
+
+
+def _leer_banco():
+    try:
+        with open(RUTA_BANCO_JSON, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _guardar_banco(datos):
+    try:
+        os.makedirs(os.path.dirname(RUTA_BANCO_JSON), exist_ok=True)
+        with open(RUTA_BANCO_JSON, "w", encoding="utf-8") as f:
+            json.dump(datos, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"   [PORTAL] no se pudo guardar datos bancarios: {e}")
+        return False
+
+
+def _ruta_certificado():
+    for extension in (".pdf", ".png", ".jpg", ".jpeg"):
+        ruta = os.path.join(CARPETA_BANCO, "certificado" + extension)
+        if os.path.isfile(ruta):
+            return ruta
+    return ""
+
+
+def _pdf_simple(lineas, destino):
+    """Escribe un PDF de una página sin dependencias externas."""
+    def _esc_pdf(texto):
+        return (texto.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+                .encode("latin-1", "replace").decode("latin-1"))
+    contenido = ["BT", "/F1 11 Tf", "60 780 Td", "16 TL"]
+    for indice, linea in enumerate(lineas):
+        if indice == 0:
+            contenido.append("/F1 14 Tf")
+        texto = _esc_pdf(str(linea))
+        contenido.append(f"({texto}) Tj")
+        contenido.append("T*")
+        if indice == 0:
+            contenido.append("/F1 11 Tf")
+    contenido.append("ET")
+    flujo = "\n".join(contenido).encode("latin-1", "replace")
+    objetos = []
+    objetos.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objetos.append(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+    objetos.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+                   b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>")
+    objetos.append(b"<< /Length " + str(len(flujo)).encode() + b" >>\nstream\n"
+                   + flujo + b"\nendstream")
+    objetos.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    salida = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for numero, objeto in enumerate(objetos, 1):
+        offsets.append(len(salida))
+        salida += str(numero).encode() + b" 0 obj\n" + objeto + b"\nendobj\n"
+    inicio_xref = len(salida)
+    salida += b"xref\n0 " + str(len(objetos) + 1).encode() + b"\n"
+    salida += b"0000000000 65535 f \n"
+    for offset in offsets:
+        salida += ("%010d 00000 n \n" % offset).encode()
+    salida += (b"trailer\n<< /Size " + str(len(objetos) + 1).encode()
+               + b" /Root 1 0 R >>\nstartxref\n" + str(inicio_xref).encode() + b"\n%%EOF")
+    with open(destino, "wb") as f:
+        f.write(bytes(salida))
+    return True
+
+
+def _generar_pdf_banco(destino, datos):
+    """Crea un PDF con los datos bancarios usando PyMuPDF."""
+    lineas = ["DATOS BANCARIOS DEL PROVEEDOR", ""]
+    for clave, etiqueta in (("titular", "Titular de la cuenta"),
+                            ("rut", "RUT empresa"),
+                            ("banco", "Banco"),
+                            ("tipo_cuenta", "Tipo de cuenta"),
+                            ("numero_cuenta", "Numero de cuenta"),
+                            ("sucursal", "Sucursal"),
+                            ("email", "Correo de aviso"),
+                            ("telefono", "Telefono"),
+                            ("representante", "Representante legal"),
+                            ("rut_representante", "RUT representante")):
+        valor = str(datos.get(clave) or "").strip()
+        if valor:
+            lineas.append(f"{etiqueta}: {valor}")
+    try:
+        import fitz
+    except Exception:
+        return _pdf_simple(lineas, destino)
+
+    try:
+        documento = fitz.open()
+        pagina = documento.new_page()
+        y = 80
+        for indice, linea in enumerate(lineas):
+            tamano = 14 if indice == 0 else 11
+            pagina.insert_text((60, y), linea, fontsize=tamano, fontname="helv")
+            y += 24 if indice == 0 else 18
+        documento.save(destino)
+        documento.close()
+        return True
+    except Exception as e:
+        print(f"   [PORTAL] PyMuPDF no disponible ({e}); uso el generador simple")
+        try:
+            return _pdf_simple(lineas, destino)
+        except Exception as e2:
+            print(f"   [PORTAL] no se pudo generar el PDF bancario: {e2}")
+            return False
+
+
+def _leer_archivo_multipart(cuerpo, tipo_contenido):
+    """Extrae (nombre, bytes) del primer archivo de un formulario multipart."""
+    coincidencia = re.search(r"boundary=([^;]+)", tipo_contenido or "")
+    if not coincidencia:
+        return "", b""
+    separador = ("--" + coincidencia.group(1).strip('"')).encode()
+    for parte in cuerpo.split(separador):
+        if b"filename=" not in parte:
+            continue
+        cabecera, _, contenido = parte.partition(b"\r\n\r\n")
+        busqueda = re.search(rb'filename="([^"]*)"', cabecera)
+        nombre = busqueda.group(1).decode("utf-8", "ignore") if busqueda else ""
+        return nombre, contenido.rstrip(b"\r\n-").rstrip(b"\r\n")
+    return "", b""
+
+
 def _leer_datos_informe(carpeta):
     try:
         with open(os.path.join(carpeta, "datos_informe.json"), encoding="utf-8") as f:
@@ -796,6 +925,35 @@ class Manejador(BaseHTTPRequestHandler):
                     hay_logo=os.path.isfile(RUTA_LOGO),
                     meta_extra=str(proyecto.get("organismo") or ""))
                 return self._enviar(200, html_doc, "text/html; charset=utf-8")
+
+            if len(partes) == 3 and partes[2] == "banco":
+                if portal_ui is None:
+                    return self._enviar(500, "<h1>UI no disponible</h1>")
+                carpeta_proy = proyecto["_carpeta"]
+                adjuntos = [a["nombre"] for a in _archivos(carpeta_proy)
+                            if "banco" in a["nombre"].lower()]
+                return self._enviar(200, portal_ui.banco_html(
+                    proyecto, partes[1], _leer_banco(), "",
+                    hay_certificado=bool(_ruta_certificado()),
+                    adjuntos=adjuntos), "text/html; charset=utf-8")
+
+            if len(partes) == 3 and partes[2] == "certificado-banco":
+                ruta_cert = _ruta_certificado()
+                if not ruta_cert:
+                    return self._enviar(404, "<h1>Sin certificado cargado</h1>")
+                with open(ruta_cert, "rb") as f:
+                    contenido_cert = f.read()
+                extension = os.path.splitext(ruta_cert)[1].lower()
+                tipos = {".pdf": "application/pdf", ".png": "image/png",
+                         ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+                self.send_response(200)
+                self.send_header("Content-Type", tipos.get(extension, "application/octet-stream"))
+                self.send_header("Content-Length", str(len(contenido_cert)))
+                self.send_header("Content-Disposition",
+                                 f'inline; filename="certificado{extension}"')
+                self.end_headers()
+                self.wfile.write(contenido_cert)
+                return
 
             if len(partes) == 3 and partes[2] == "planilla":
                 if portal_ui is None:
@@ -919,7 +1077,11 @@ class Manejador(BaseHTTPRequestHandler):
     def _do_post_interno(self):
         ruta = self.path.split("?")[0]
         partes = [p for p in ruta.split("/") if p]
-        if len(partes) != 3 or partes[0] != "p" or partes[2] not in ("subir", "reprocesar", "logo", "cotizacion", "simular", "planilla"):
+        permitidas = ("subir", "reprocesar", "logo", "cotizacion", "simular", "planilla")
+        es_banco_3 = len(partes) == 3 and partes[0] == "p" and partes[2] == "banco"
+        es_banco_4 = len(partes) == 4 and partes[0] == "p" and partes[2] == "banco"
+        if not ((len(partes) == 3 and partes[0] == "p" and partes[2] in permitidas)
+                or es_banco_3 or es_banco_4):
             return self._enviar(404, "<h1>No encontrado</h1>")
         proyecto = self._buscar(partes[1])
         if not proyecto:
@@ -927,6 +1089,66 @@ class Manejador(BaseHTTPRequestHandler):
 
         carpeta = proyecto["_carpeta"]
         codigo = proyecto["_codigo"]
+
+        if partes[2] == "banco":
+            # subir: /p/<token>/banco/archivo  (multipart)
+            if len(partes) == 4 and partes[3] == "archivo":
+                tipo = self.headers.get("Content-Type") or ""
+                largo = int(self.headers.get("Content-Length") or 0)
+                if largo <= 0 or largo > 20 * 1024 * 1024:
+                    return self._enviar(413, "<h1>Archivo demasiado grande</h1>")
+                cuerpo = self.rfile.read(largo)
+                nombre, contenido = _leer_archivo_multipart(cuerpo, tipo)
+                if not contenido:
+                    return self._redirigir(f"/p/{partes[1]}/banco")
+                extension = os.path.splitext(nombre)[1].lower() or ".pdf"
+                if extension not in (".pdf", ".png", ".jpg", ".jpeg"):
+                    return self._enviar(400, "<h1>Formato no permitido (PDF, PNG o JPG)</h1>")
+                os.makedirs(CARPETA_BANCO, exist_ok=True)
+                for viejo_ext in (".pdf", ".png", ".jpg", ".jpeg"):
+                    ruta_vieja = os.path.join(CARPETA_BANCO, "certificado" + viejo_ext)
+                    if os.path.isfile(ruta_vieja):
+                        os.remove(ruta_vieja)
+                destino = os.path.join(CARPETA_BANCO, "certificado" + extension)
+                with open(destino, "wb") as f:
+                    f.write(contenido)
+                print(f"   [PORTAL] certificado bancario guardado: {destino} "
+                      f"({len(contenido)} bytes)")
+                return self._redirigir(f"/p/{partes[1]}/banco")
+
+            # adjuntar: /p/<token>/banco/adjuntar
+            if len(partes) == 4 and partes[3] == "adjuntar":
+                carpeta_proy = proyecto["_carpeta"]
+                adjuntos_dir = os.path.join(carpeta_proy, "adjuntos")
+                os.makedirs(adjuntos_dir, exist_ok=True)
+                datos_banco = _leer_banco()
+                destino_pdf = os.path.join(adjuntos_dir, "Datos_Bancarios_Proveedor.pdf")
+                generado = _generar_pdf_banco(destino_pdf, datos_banco)
+                certificado = _ruta_certificado()
+                if certificado:
+                    extension = os.path.splitext(certificado)[1].lower()
+                    shutil.copyfile(certificado,
+                                    os.path.join(adjuntos_dir,
+                                                 "Certificado_Bancario" + extension))
+                print(f"   [PORTAL] banco adjuntado al proyecto {codigo}: pdf={generado} "
+                      f"certificado={bool(certificado)}")
+                return self._redirigir(f"/p/{partes[1]}/banco")
+
+            # guardar datos: /p/<token>/banco
+            largo = int(self.headers.get("Content-Length") or 0)
+            if largo <= 0 or largo > 512 * 1024:
+                return self._enviar(413, "<h1>Datos inválidos</h1>")
+            from urllib.parse import parse_qs
+            campos = parse_qs(self.rfile.read(largo).decode("utf-8", "ignore"))
+            datos_banco = _leer_banco()
+            for clave in ("titular", "rut", "banco", "tipo_cuenta", "numero_cuenta",
+                          "sucursal", "email", "telefono", "representante",
+                          "rut_representante"):
+                if clave in campos:
+                    datos_banco[clave] = (campos.get(clave) or [""])[0].strip()
+            if _guardar_banco(datos_banco):
+                print(f"   [PORTAL] datos bancarios actualizados ({codigo})")
+            return self._redirigir(f"/p/{partes[1]}/banco")
 
         if partes[2] == "planilla":
             import re as _re_reset

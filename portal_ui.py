@@ -965,6 +965,145 @@ def escribir_xlsx_simulado(ruta, valores, filas):
 # ---------------------------------------------------------------------------
 # Informe financiero (solo números, en grilla tipo Excel)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Datos bancarios de la empresa
+# ---------------------------------------------------------------------------
+CAMPOS_BANCO = (
+    ("titular", "Titular de la cuenta (razón social)"),
+    ("rut", "RUT de la empresa"),
+    ("banco", "Banco"),
+    ("tipo_cuenta", "Tipo de cuenta"),
+    ("numero_cuenta", "Número de cuenta"),
+    ("sucursal", "Sucursal (opcional)"),
+    ("email", "Correo para avisos de pago"),
+    ("telefono", "Teléfono de contacto"),
+    ("representante", "Representante legal"),
+    ("rut_representante", "RUT del representante"),
+)
+
+
+def banco_html(proyecto, token, datos, mensaje="", hay_certificado=False, adjuntos=None):
+    datos = datos or {}
+    adjuntos = adjuntos or []
+    codigo = _esc(proyecto.get("codigo", ""))
+    nombre = _esc(str(proyecto.get("nombre") or "")[:90])
+    aviso = f'<div class="ok">{_esc(mensaje)}</div>' if mensaje else ""
+
+    campos = []
+    for clave, etiqueta in CAMPOS_BANCO:
+        valor = _esc(str(datos.get(clave) or ""))
+        campos.append(
+            f'<div class="campo"><label>{_esc(etiqueta)}</label>'
+            f'<input name="{clave}" type="text" value="{valor}"></div>')
+
+    certificado = (
+        f'<div class="aviso-doc"><strong>Certificado cargado</strong>'
+        f'<span>Puedes verlo o reemplazarlo subiendo otro archivo.</span>'
+        f'<a class="btn-mini" href="/p/{token}/certificado-banco" target="_blank">Ver certificado</a></div>'
+        if hay_certificado else
+        '<p class="ayuda">Aún no has subido el certificado bancario. Adjunta el PDF que entrega '
+        'tu banco (obligatorio en varias postulaciones).</p>')
+
+    lista_adj = ""
+    if adjuntos:
+        filas = "".join(
+            f'<li><a href="/p/{token}/f/{_esc(nombre_archivo)}" target="_blank">{_esc(nombre_archivo)}</a></li>'
+            for nombre_archivo in adjuntos)
+        lista_adj = (f'<h3>Archivos del proyecto</h3><ul class="lista-adj">{filas}</ul>')
+
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Datos bancarios · {codigo}</title>
+<style>
+:root{{--azul:#12213a;--azul2:#1e3a5f;--texto:#1c2536;--gris:#5b6674;--linea:#e3e7ee;
+--fondo:#f5f7fb;--blanco:#fff;--ambar:#fef3c7;--verde:#ecfdf5}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--fondo);color:var(--texto);font-size:14px;line-height:1.5;
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
+.wrap{{max-width:900px;margin:0 auto;padding:18px 16px 50px}}
+.cab{{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}}
+.cab h1{{font-size:17px;margin:0;color:var(--azul)}}
+.cab .sub{{font-size:12px;color:var(--gris)}}
+.cab .der{{margin-left:auto;display:flex;gap:8px}}
+.btn{{display:inline-block;background:var(--azul);color:#fff;border:0;border-radius:9px;
+padding:10px 16px;font-weight:650;font-size:13px;text-decoration:none;cursor:pointer;font-family:inherit}}
+.btn-sec{{background:#eef2f8;color:var(--azul2)}}
+.btn-mini{{display:inline-block;background:#eef2f8;color:var(--azul2);border-radius:7px;
+padding:6px 11px;font-size:12px;font-weight:600;text-decoration:none;margin-left:8px}}
+.tarjeta{{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;
+padding:18px 20px;margin-bottom:14px}}
+h2{{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--azul2);
+margin:0 0 12px;padding-bottom:6px;border-bottom:1px solid var(--linea)}}
+h3{{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--azul2);margin:16px 0 6px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px 18px}}
+.campo{{display:flex;flex-direction:column;gap:5px}}
+.campo label{{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+color:var(--gris);font-weight:700}}
+.campo input{{border:1px solid #d7dde7;border-radius:9px;padding:11px 13px;font-size:14px;
+font-family:inherit;background:#fffbeb;color:var(--texto);width:100%}}
+.campo input:focus{{outline:2px solid #93b4e6;background:#fff}}
+.ayuda{{color:var(--gris);font-size:12.5px;margin:0 0 10px}}
+.ok{{background:var(--verde);border:1px solid #a7f3d0;border-radius:10px;padding:10px 14px;
+font-size:12.5px;color:#065f46;margin-bottom:14px}}
+.aviso-doc{{background:#f3f6fa;border-radius:10px;padding:12px 14px;font-size:13px;
+display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
+.aviso-doc span{{color:var(--gris);font-size:12px}}
+.lista-adj{{margin:0;padding-left:18px;font-size:12.5px}}
+.lista-adj a{{color:#1e3a5f}}
+.acciones{{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}}
+input[type=file]{{border:1px dashed #c3ccd9;border-radius:9px;padding:10px;width:100%;
+background:#fafbfd;font-size:13px;font-family:inherit}}
+@media (max-width:640px){{.wrap{{padding:12px 10px 40px}}.tarjeta{{padding:14px}}}}
+</style></head><body>
+<div class="wrap">
+  <div class="cab">
+    <div><h1>Datos bancarios</h1>
+      <div class="sub">{nombre} · {codigo}</div></div>
+    <div class="der"><a class="btn btn-sec" href="/p/{token}">Volver al panel</a></div>
+  </div>
+  {aviso}
+
+  <form method="post" action="/p/{token}/banco">
+    <div class="tarjeta">
+      <h2>Datos de la cuenta</h2>
+      <div class="grid">{''.join(campos)}</div>
+      <div class="acciones">
+        <button class="btn" type="submit">Guardar datos bancarios</button>
+      </div>
+    </div>
+  </form>
+
+  <form method="post" action="/p/{token}/banco/archivo" enctype="multipart/form-data">
+    <div class="tarjeta">
+      <h2>Certificado bancario</h2>
+      {certificado}
+      <div style="margin-top:12px">
+        <input type="file" name="archivo" accept=".pdf,.png,.jpg,.jpeg">
+      </div>
+      <div class="acciones">
+        <button class="btn" type="submit">Subir certificado</button>
+      </div>
+    </div>
+  </form>
+
+  <form method="post" action="/p/{token}/banco/adjuntar">
+    <div class="tarjeta">
+      <h2>Llevar al proyecto</h2>
+      <p class="ayuda">Genera un PDF con los datos bancarios y lo deja en los anexos del proyecto,
+      junto con el certificado si lo subiste. Así queda listo para adjuntar en Mercado Público.</p>
+      <div class="acciones">
+        <button class="btn" type="submit">Adjuntar al proyecto</button>
+      </div>
+      {lista_adj}
+    </div>
+  </form>
+</div>
+</body></html>"""
+
+
 def informe_financiero_html(proyecto, valores, filas, elegido="recomendado",
                             monto_cotizacion=0, logo_url="", hay_logo=False, estudio=None):
     import datetime as _dt
@@ -1416,6 +1555,9 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
     <div class="titulo">Documentos</div>
     {"".join(menu_docs) if menu_docs else '<button data-seccion="resumen">Sin documentos</button>'}
     <button data-seccion="cotizacion">Editar cotización</button>
+    <a href="/p/{token}/banco" style="display:flex;align-items:center;gap:9px;
+       color:#dbe3ee;padding:9px 10px;border-radius:9px;font-size:13.5px;
+       font-weight:550;text-decoration:none">Datos bancarios</a>
     <a href="/p/{token}/simulador" target="_blank" rel="noopener"
        style="display:flex;align-items:center;gap:9px;color:#dbe3ee;padding:9px 10px;
        border-radius:9px;font-size:13.5px;font-weight:550;text-decoration:none">
