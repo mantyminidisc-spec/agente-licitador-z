@@ -562,10 +562,15 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
     aviso = f'<div class="aviso">{_esc(mensaje)}</div>' if mensaje else ""
     filas = filas or []
 
-    # bloque 1: precio a partir del margen objetivo
-    neto_obj = int(round(costo / (1 - margen_obj))) if 0 < margen_obj < 1 else costo
+    # bloque 1: se respeta el neto escrito; si no hay, se calcula con el margen
+    neto_guardado = int(valores.get("neto") or 0)
+    if neto_guardado > 0:
+        neto_obj = neto_guardado
+    else:
+        neto_obj = int(round(costo / (1 - margen_obj))) if 0 < margen_obj < 1 else costo
     bruto_obj = int(round(neto_obj * (1 + iva)))
     ganancia_obj = neto_obj - costo
+    margen_real = (ganancia_obj / neto_obj * 100) if neto_obj else 0
 
     claves = ["competitivo", "recomendado", "conservador"]
     cuerpo = []
@@ -709,7 +714,7 @@ display:flex;justify-content:space-between;align-items:center}}
         <div class="caja-res destacada"><span>Total bruto</span>
           <strong id="m-bruto">{_clp(bruto_obj)}</strong></div>
         <div class="caja-res"><span>Ganancia</span><strong id="m-gan">{_clp(ganancia_obj)}</strong></div>
-        <div class="caja-res"><span>Margen real</span><strong id="m-mar">{margen_obj*100:.1f}%</strong></div>
+        <div class="caja-res"><span>Margen real</span><strong id="m-mar">{margen_real:.1f}%</strong></div>
       </div>
       <div class="acciones">
         <button class="btn" type="submit" name="accion" value="mi_precio">
