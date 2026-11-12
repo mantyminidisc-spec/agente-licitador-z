@@ -424,6 +424,17 @@ def _monto_recomendado(proyecto):
     try:
         cot = _leer_cotizacion(proyecto["_carpeta"])
         elegido = str(cot.get("escenario_cotizacion") or "recomendado").lower()
+        if elegido == "mi_precio":
+            neto = _solo_digitos(cot.get("neto") or 0)
+            iva_txt = cot.get("iva") or 0.19
+            try:
+                iva_v = float(iva_txt)
+            except Exception:
+                iva_v = 0.19
+            if iva_v > 1:
+                iva_v = iva_v / 100.0
+            if neto:
+                return int(round(neto * (1 + iva_v)))
         monto_elegido = cot.get(f"monto_{elegido}")
         if monto_elegido:
             return _solo_digitos(monto_elegido)
@@ -525,10 +536,16 @@ def _valores_planilla(proyecto):
               f"se usan los del documento {defecto_1}/{defecto_2}/{defecto_3}")
         p1, p2, p3 = defecto_1, defecto_2, defecto_3
 
+    try:
+        neto_guardado = _solo_digitos(cot.get("neto") or 0)
+    except Exception:
+        neto_guardado = 0
+
     return {
         "presupuesto": presupuesto,
         "iva": iva_guardado,
         "costo": costo_guardado,
+        "neto": neto_guardado,
         "pct1": p1,
         "pct2": p2,
         "pct3": p3,
@@ -856,6 +873,8 @@ class Manejador(BaseHTTPRequestHandler):
                 "iva": (lambda v: v / 100.0 if v > 1 else v)(_num("iva", 19) or 19),
                 "costo": _solo_digitos((campos.get("costo") or ["0"])[0],
                                        anteriores_post["costo"]),
+                "neto": _solo_digitos((campos.get("neto") or ["0"])[0],
+                                      anteriores_post.get("neto") or 0),
                 "pct1": anteriores_post["pct1"],
                 "pct2": anteriores_post["pct2"],
                 "pct3": anteriores_post["pct3"],
@@ -894,11 +913,16 @@ class Manejador(BaseHTTPRequestHandler):
                 # la cotización toma el monto del escenario recomendado
                 cot = _leer_cotizacion(carpeta)
                 elegido = str((campos.get("escenario_cotizacion") or ["recomendado"])[0]).lower()
-                if elegido not in ("competitivo", "recomendado", "conservador"):
+                if elegido not in ("competitivo", "recomendado", "conservador", "mi_precio"):
                     elegido = "recomendado"
-                indice = {"competitivo": 0, "recomendado": 1, "conservador": 2}[elegido]
+                if elegido == "mi_precio":
+                    monto_final = int(round(valores["neto"] * (1 + valores["iva"])))
+                else:
+                    indice = {"competitivo": 0, "recomendado": 1, "conservador": 2}[elegido]
+                    monto_final = filas[indice]["bruto"]
                 cot.update({
-                    "monto": filas[indice]["bruto"],
+                    "monto": monto_final,
+                    "neto": valores["neto"],
                     "monto_competitivo": filas[0]["bruto"],
                     "monto_recomendado": filas[1]["bruto"],
                     "monto_conservador": filas[2]["bruto"],
