@@ -698,6 +698,10 @@ display:flex;justify-content:space-between;align-items:center}}
       </div>
       <div class="suma"><span>Costo interno total</span><strong id="c-total">{_clp(costo)}</strong></div>
       <input type="hidden" name="costo" id="c-costo" value="{costo}">
+      <div class="acciones">
+        <button class="btn btn-sec" type="submit" name="accion" value="cero_costos"
+                formnovalidate>Poner costos en cero</button>
+      </div>
     </div>
 
     <div class="tarjeta">

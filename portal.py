@@ -887,6 +887,19 @@ class Manejador(BaseHTTPRequestHandler):
                 v = _num(clave, defecto * 100) or (defecto * 100)
                 return v / 100.0 if v > 1.5 else v
 
+            # boton "poner costos en cero"
+            accion_previa = str((campos.get("accion") or [""])[0]).lower()
+            if accion_previa == "cero_costos":
+                try:
+                    cot_cero = _leer_cotizacion(carpeta)
+                    cot_cero.update({"horas": 0, "valor_hora": 0, "cloud": 0,
+                                     "gestion": 0, "costo": 0})
+                    _guardar_cotizacion(carpeta, cot_cero)
+                    print(f"   [PORTAL] planilla {codigo}: costos en cero")
+                except Exception as e_cero:
+                    print(f"   [PORTAL] no se pudo limpiar costos: {e_cero}")
+                return self._redirigir(f"/p/{partes[1]}/planilla")
+
             crudos = {c: _num(c, 0) for c in ("pct1", "pct2", "pct3")}
             montos_libres = [_solo_digitos((campos.get(f"monto{i}") or [""])[0], 0)
                              for i in (1, 2, 3)]
