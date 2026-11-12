@@ -554,19 +554,15 @@ def _valores_planilla(proyecto):
         costo_guardado = _solo_digitos(cot.get("costo") or 0)
     except Exception:
         costo_guardado = 0
+    # v28.3: los costos parten en cero; el cliente los completa
     if costo_desglose > 0:
         costo_guardado = costo_desglose
-    elif costo_guardado <= 0:
-        costo_guardado = int(round(presupuesto * 0.32)) if presupuesto else 0
-        horas = 40
-        valor_hora = int(round((costo_guardado * 0.6) / 40)) if costo_guardado else 25000
-        cloud = int(round(costo_guardado * 0.24)) if costo_guardado else 0
-        gestion = max(0, costo_guardado - horas * valor_hora - cloud)
-    if horas * valor_hora + cloud + gestion <= 0:
-        # deja el desglose coherente con el total
-        horas, valor_hora = 40, int(round(costo_guardado * 0.6 / 40)) if costo_guardado else 25000
-        cloud = int(round(costo_guardado * 0.24)) if costo_guardado else 0
-        gestion = max(0, costo_guardado - horas * valor_hora - cloud)
+    else:
+        costo_guardado = 0
+        horas = horas or 0
+        valor_hora = valor_hora or 0
+        cloud = cloud or 0
+        gestion = gestion or 0
     defecto_1 = min(0.98, max(0.50, round(base - 0.02, 2)))
     defecto_2 = min(0.99, max(0.55, round(base, 2)))
     defecto_3 = min(0.99, max(0.60, round(base + 0.05, 2)))

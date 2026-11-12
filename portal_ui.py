@@ -548,6 +548,12 @@ def _tabla_escenarios(filas):
 # ---------------------------------------------------------------------------
 def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel="",
                   sensibilidad=None):
+    def solo_num(n):
+        try:
+            return f"{int(n or 0):,}".replace(",", ".")
+        except Exception:
+            return "0"
+
     presupuesto = int(valores.get("presupuesto") or 0)
     iva = float(valores.get("iva") or 0.19)
     costo = int(valores.get("costo") or 0)
@@ -682,13 +688,13 @@ display:flex;justify-content:space-between;align-items:center}}
           <input name="horas" type="text" inputmode="numeric" value="{horas}"></div>
         <div class="campo"><label>Valor por hora</label>
           <input name="valor_hora" type="text" inputmode="numeric"
-                 value="{valor_hora:,}".replace(",", ".")></div>
+                 value="{solo_num(valor_hora)}"></div>
         <div class="campo"><label>Cloud, licencias y dominios</label>
           <input name="cloud" type="text" inputmode="numeric"
-                 value="{cloud:,}".replace(",", ".")></div>
+                 value="{solo_num(cloud)}"></div>
         <div class="campo"><label>Gestión e imprevistos</label>
           <input name="gestion" type="text" inputmode="numeric"
-                 value="{gestion:,}".replace(",", ".")></div>
+                 value="{solo_num(gestion)}"></div>
       </div>
       <div class="suma"><span>Costo interno total</span><strong id="c-total">{_clp(costo)}</strong></div>
       <input type="hidden" name="costo" id="c-costo" value="{costo}">
@@ -703,7 +709,7 @@ display:flex;justify-content:space-between;align-items:center}}
           <input name="margen_objetivo" type="text" inputmode="decimal" value="{margen_obj*100:g}"></div>
         <div class="campo"><label>Monto neto <span class="pista">(editable)</span></label>
           <input name="neto" type="text" inputmode="numeric"
-                 value="{neto_obj:,}".replace(",", ".")></div>
+                 value="{solo_num(neto_obj)}"></div>
         <div class="campo"><label>IVA (%)</label>
           <input name="iva" type="text" inputmode="decimal" value="{iva*100:g}"></div>
       </div>
@@ -729,7 +735,7 @@ display:flex;justify-content:space-between;align-items:center}}
       <div class="grid" style="margin-bottom:14px">
         <div class="campo"><label>Presupuesto oficial (tope con IVA)</label>
           <input name="presupuesto" type="text" inputmode="numeric"
-                 value="{presupuesto:,}".replace(",", ".")></div>
+                 value="{solo_num(presupuesto)}"></div>
       </div>
       {tabla}
       <div class="grid" style="margin-top:16px">
