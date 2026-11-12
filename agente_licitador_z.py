@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.4"
+VERSION_LICITAIA = "19.5"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3172,23 +3172,150 @@ class Agente2_5LectorForense:
         return "\n".join(textos)
 
     def _extraer_texto_doc_antiguo(self, ruta_doc):
-        """Lee los .doc de Word 97-2003 con antiword o catdoc."""
+        """Lee .doc antiguos probando varios caminos: docx disfrazado, RTF, HTML,
+        antiword, catdoc y, como último recurso, extracción de texto imprimible."""
+        nombre = os.path.basename(ruta_doc)
+        try:
+            with open(ruta_doc, "rb") as f:
+                crudo = f.read()
+        except Exception:
+            return ""
+
+        # 1) ¿es un .docx con extensión .doc? (empieza con PK)
+        if crudo[:2] == b"PK":
+            try:
+                import docx as _docx
+                doc = _docx.Document(ruta_doc)
+                partes = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
+                for tabla in doc.tables:
+                    for fila in tabla.rows:
+                        for celda in fila.cells:
+                            if celda.text and celda.text.strip():
+                                partes.append(celda.text.strip())
+                texto = "\n".join(partes)
+                if self._texto_util(texto):
+                    print(f"      📖 [DOCX disfrazado de .doc] {nombre}: {len(texto)} chars")
+                    return texto
+            except Exception:
+                pass
+
+        cabeza = crudo[:2000].lower()
+
+        # 2) ¿es RTF?
+        if cabeza.lstrip().startswith(b"{\\rtf") or b"\\rtf" in cabeza:
+            texto = self._rtf_a_texto(crudo)
+            if self._texto_util(texto):
+                print(f"      📖 [RTF] {nombre}: {len(texto)} chars")
+                return texto
+
+        # 3) ¿es HTML o XML?
+        if b"<html" in cabeza or b"<?xml" in cabeza or b"<body" in cabeza:
+            texto = self._html_a_texto(crudo)
+            if self._texto_util(texto):
+                print(f"      📖 [HTML] {nombre}: {len(texto)} chars")
+                return texto
+
+        # 4) antiword / catdoc / libreoffice
         for comando in (["antiword", "-w", "0", ruta_doc],
-                        ["catdoc", "-w", ruta_doc]):
+                        ["catdoc", "-w", ruta_doc],
+                        ["catdoc", "-d", "utf-8", ruta_doc]):
             try:
                 r = subprocess.run(comando, capture_output=True, timeout=60)
-                salida = (r.stdout or b"").decode("utf-8", "ignore").strip()
-                if len(salida) > 100:
-                    print(f"      📖 [TEXTO EXTRAÍDO .doc ANTIGUO] "
-                          f"{os.path.basename(ruta_doc)}: {len(salida)} chars")
-                    return salida
+                texto = self._mejor_decodificacion(r.stdout or b"")
+                if self._texto_util(texto):
+                    print(f"      📖 [TEXTO EXTRAÍDO .doc] {nombre}: {len(texto)} chars")
+                    return texto
             except FileNotFoundError:
                 continue
             except Exception:
                 continue
-        print(f"      [!] .doc antiguo sin convertidor: {os.path.basename(ruta_doc)}")
+
+        # 5) último recurso: texto imprimible del binario
+        texto = self._texto_imprimible(crudo)
+        if self._texto_util(texto):
+            print(f"      📖 [TEXTO RECUPERADO DEL BINARIO] {nombre}: {len(texto)} chars")
+            return texto
+
+        print(f"      [!] .doc sin texto legible: {nombre} ({len(crudo)} bytes)")
         return ""
 
+    @staticmethod
+    def _mejor_decodificacion(datos):
+        """Prueba utf-8, latin-1 y cp1252 y elige la que menos ruido produce."""
+        if not datos:
+            return ""
+        candidatos = []
+        for codificacion in ("utf-8", "cp1252", "latin-1"):
+            try:
+                candidatos.append(datos.decode(codificacion, "ignore"))
+            except Exception:
+                continue
+        if not candidatos:
+            return ""
+        def puntaje(t):
+            letras = sum(1 for c in t if c.isalpha() or c in " .,;:áéíóúñÁÉÍÓÚÑ")
+            return letras / max(1, len(t))
+        return max(candidatos, key=puntaje)
+
+    @staticmethod
+    def _texto_util(texto):
+        """True si el texto parece lenguaje real y no basura binaria."""
+        if not texto or len(texto.strip()) < 80:
+            return False
+        muestra = texto[:4000]
+        letras = sum(1 for c in muestra if c.isalpha() or c in " .,;:\n")
+        raros = sum(1 for c in muestra if ord(c) > 0x2000 and c not in "—–“”‘’•€°ºª")
+        return (letras / max(1, len(muestra))) > 0.75 and raros < len(muestra) * 0.05
+
+    @staticmethod
+    def _rtf_a_texto(crudo):
+        """Convierte RTF a texto plano."""
+        texto = crudo.decode("latin-1", "ignore")
+        texto = re.sub(r"\\'([0-9a-fA-F]{2})",
+                       lambda m: bytes([int(m.group(1), 16)]).decode("cp1252", "ignore"),
+                       texto)
+        texto = re.sub(r"\\u(-?\d+)\??", lambda m: chr(int(m.group(1)) % 65536), texto)
+        texto = re.sub(r"\\par[d]?", "\n", texto)
+        texto = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", texto)
+        texto = texto.replace("\\{", "{").replace("\\}", "}").replace("\\\\", "\\")
+        texto = re.sub(r"[{}]", "", texto)
+        texto = re.sub(r"\n{3,}", "\n\n", texto)
+        return texto.strip()
+
+    @staticmethod
+    def _html_a_texto(crudo):
+        """Extrae el texto de un HTML."""
+        texto = crudo.decode("utf-8", "ignore")
+        if "<" not in texto:
+            texto = crudo.decode("cp1252", "ignore")
+        texto = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", texto)
+        texto = re.sub(r"(?is)<br\s*/?>", "\n", texto)
+        texto = re.sub(r"(?is)</(p|div|tr|li|h\d)>", "\n", texto)
+        texto = re.sub(r"(?s)<[^>]+>", " ", texto)
+        texto = (texto.replace("&nbsp;", " ").replace("&amp;", "&")
+                 .replace("&lt;", "<").replace("&gt;", ">")
+                 .replace("&aacute;", "á").replace("&eacute;", "é")
+                 .replace("&iacute;", "í").replace("&oacute;", "ó")
+                 .replace("&uacute;", "ú").replace("&ntilde;", "ñ"))
+        texto = re.sub(r"[ \t]{2,}", " ", texto)
+        texto = re.sub(r"\n{3,}", "\n\n", texto)
+        return texto.strip()
+
+    @staticmethod
+    def _texto_imprimible(crudo):
+        """Recupera las corridas de texto legible de un binario."""
+        texto = crudo.decode("latin-1", "ignore")
+        piezas = re.findall(r"[ -\x7eáéíóúñÁÉÍÓÚÑ¿¡°ºª\t]{8,}", texto)
+        buenas = []
+        for pieza in piezas:
+            limpia = pieza.strip()
+            if len(limpia) < 8:
+                continue
+            letras = sum(1 for c in limpia if c.isalpha() or c == " ")
+            if letras / max(1, len(limpia)) < 0.7:
+                continue
+            buenas.append(limpia)
+        return "\n".join(buenas)
     def _extraer_texto_excel(self, ruta_xlsx):
         """Extrae TODAS las hojas y celdas del Excel."""
         textos = []
