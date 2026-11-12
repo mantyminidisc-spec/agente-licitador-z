@@ -681,16 +681,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     </div>
 
     <div class="tarjeta">
-      <h2>2. Montos que quieres ofertar</h2>
-      <p class="ayuda">Escribe el monto bruto (con IVA) de cada opción. Los sugeridos salen del
-      motor de precios, pero puedes cambiarlos libremente. Después elige cuál va a la cotización.</p>
-      <div class="grid">
-        {''.join(montos)}
-      </div>
-    </div>
-
-    <div class="tarjeta">
-      <h2>3. Cómo queda cada opción</h2>
+      <h2>2. Cómo queda cada opción</h2>
       {tabla}
       <div class="grid" style="margin-top:16px">
         <div class="campo" style="grid-column:1/-1">

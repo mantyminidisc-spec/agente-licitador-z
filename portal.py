@@ -440,12 +440,16 @@ def _sensibilidad(presupuesto, iva, costo, desde=0.70, hasta=0.99, paso=0.02,
     """Tabla de sensibilidad igual a la del Excel: puntaje y probabilidad por precio."""
     import math
     filas = []
+    desde = max(0.50, float(desde or 0.70))
+    hasta = min(0.99, max(desde + 0.02, float(hasta or 0.99)))
     pct = desde
     while pct <= hasta + 0.0001:
         bruto = int(round(presupuesto * pct))
         neto = int(round(bruto / (1 + iva))) if (1 + iva) else 0
         ganancia = neto - costo
         margen = (ganancia / neto * 100) if neto else 0
+        if pct <= 0:
+            pct = 0.01
         puntaje = (peso_precio * 100) * min(1.0, pct_competencia / pct) + (1 - peso_precio) * 100
         x = (pct_competencia - pct) / 0.035
         try:
@@ -860,8 +864,8 @@ class Manejador(BaseHTTPRequestHandler):
             }
             costo = (valores["horas"] * valores["valor_hora"]
                      + valores["cloud"] + valores["gestion"])
-            # si el cliente escribió montos, se calculan los escenarios desde esos montos
-            if any(m > 0 for m in montos_libres):
+            # los escenarios salen del presupuesto por los porcentajes del motor
+            if False and any(m > 0 for m in montos_libres):
                 filas = []
                 for pos, (nombre_esc, monto_bruto) in enumerate(
                         zip((u"Competitivo", u"Recomendado", u"Conservador"), montos_libres)):
