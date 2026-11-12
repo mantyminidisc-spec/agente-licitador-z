@@ -578,21 +578,29 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
             f"<td class='der'>{_clp(f['ganancia'])}</td>"
             f"<td class='der'>{f['margen']:.1f}%</td></tr>")
     tabla = ("<div class='scroll-x'><table class='planilla'>"
-             "<thead><tr><th>Escenario</th><th class='der'>% del tope</th>"
-             "<th class='der'>Total bruto</th><th class='der'>Oferta neta</th>"
+             "<thead><tr><th>Opción</th><th class='der'>% del tope</th>"
+             "<th class='der'>Total bruto</th><th class='der'>Neto</th>"
              "<th class='der'>IVA</th><th class='der'>Ganancia</th>"
              "<th class='der'>Margen</th></tr></thead><tbody>"
              + "".join(cuerpo) + "</tbody></table></div>")
 
+    # campos de monto: el cliente puede escribir lo que quiera
+    montos = []
+    etiquetas = ("Opción 1 · competitiva", "Opción 2 · recomendada", "Opción 3 · conservadora")
+    for pos, etiqueta in enumerate(etiquetas):
+        valor = filas[pos]["bruto"] if pos < len(filas) else round(presupuesto * (0.78 + pos * 0.035))
+        pct_txt = (f"({filas[pos]['pct']*100:.0f}% sugerido)" if pos < len(filas) else "")
+        montos.append(
+            f'<div class="campo"><label>{etiqueta} <span class="pista">{pct_txt}</span></label>'
+            f'<input name="monto{pos+1}" type="text" inputmode="numeric" '
+            f'value="{valor:,}".replace(",", ".")></div>')
+
     opciones = ""
-    if len(filas) >= 3:
-        for clave, idx, etiqueta in (("competitivo", 0, "Competitivo"),
-                                     ("recomendado", 1, "Recomendado"),
-                                     ("conservador", 2, "Conservador")):
-            sel = " selected" if clave == elegido else ""
-            fila = filas[idx]
-            opciones += (f'<option value="{clave}"{sel}>{etiqueta} — '
-                         f'{fila["pct"]*100:.0f}% · {_clp(fila["bruto"])}</option>')
+    for clave, etiqueta in (("competitivo", "Opción 1 · competitiva"),
+                            ("recomendado", "Opción 2 · recomendada"),
+                            ("conservador", "Opción 3 · conservadora")):
+        sel = " selected" if clave == elegido else ""
+        opciones += f'<option value="{clave}"{sel}>{etiqueta}</option>'
 
     return f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8">
@@ -617,12 +625,13 @@ padding:9px 16px;font-weight:650;font-size:13px;text-decoration:none;cursor:poin
 padding:18px 20px;margin-bottom:14px}}
 h2{{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--azul2);
 margin:0 0 12px;padding-bottom:6px;border-bottom:1px solid var(--linea)}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px 18px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}}
 .campo{{display:flex;flex-direction:column;gap:5px}}
 .campo label{{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
 color:var(--gris);font-weight:700}}
+.campo .pista{{font-weight:500;text-transform:none;letter-spacing:0;color:#8b95a4}}
 .campo input,.campo select{{border:1px solid #d7dde7;border-radius:9px;padding:10px 12px;
-font-size:14px;font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
+font-size:15px;font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
 .campo input:focus,.campo select:focus{{outline:2px solid #93b4e6;background:#fff}}
 .planilla{{width:100%;border-collapse:collapse;font-size:13px}}
 .planilla th{{background:var(--azul);color:#fff;text-align:left;padding:9px 10px;
@@ -653,40 +662,44 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   {aviso}
   <form method="post" action="/p/{token}/planilla">
     <div class="tarjeta">
-      <h2>1. Datos del proceso</h2>
+      <h2>1. Presupuesto y costos</h2>
       <div class="grid">
         <div class="campo"><label>Presupuesto oficial (con IVA)</label>
-          <input name="presupuesto" type="number" min="0" value="{presupuesto}"></div>
+          <input name="presupuesto" type="text" inputmode="numeric" value="{presupuesto:,}".replace(",", ".")></div>
         <div class="campo"><label>IVA (%)</label>
-          <input name="iva" type="number" step="0.01" min="0" max="30" value="{iva*100:g}"></div>
-      </div>
-    </div>
-    <div class="tarjeta">
-      <h2>2. Costos internos</h2>
-      <div class="grid">
+          <input name="iva" type="text" inputmode="decimal" value="{iva*100:g}"></div>
         <div class="campo"><label>Horas de trabajo</label>
-          <input name="horas" type="number" min="0" value="{horas}"></div>
+          <input name="horas" type="text" inputmode="numeric" value="{horas}"></div>
         <div class="campo"><label>Valor por hora</label>
-          <input name="valor_hora" type="number" min="0" value="{valor_hora}"></div>
-        <div class="campo"><label>Cloud, licencias, dominios</label>
-          <input name="cloud" type="number" min="0" value="{cloud}"></div>
+          <input name="valor_hora" type="text" inputmode="numeric" value="{valor_hora:,}".replace(",", ".")></div>
+        <div class="campo"><label>Cloud y licencias</label>
+          <input name="cloud" type="text" inputmode="numeric" value="{cloud:,}".replace(",", ".")></div>
         <div class="campo"><label>Gestión e imprevistos</label>
-          <input name="gestion" type="number" min="0" value="{gestion}"></div>
+          <input name="gestion" type="text" inputmode="numeric" value="{gestion:,}".replace(",", ".")></div>
       </div>
       <div class="total"><span>Costo interno total</span><strong>{_clp(costo)}</strong></div>
     </div>
+
     <div class="tarjeta">
-      <h2>3. Resultado por escenario</h2>
-      <p class="ayuda">Los porcentajes los calcula el motor de precios. Elige cuál quieres
-      que aparezca en la cotización formal.</p>
+      <h2>2. Montos que quieres ofertar</h2>
+      <p class="ayuda">Escribe el monto bruto (con IVA) de cada opción. Los sugeridos salen del
+      motor de precios, pero puedes cambiarlos libremente. Después elige cuál va a la cotización.</p>
+      <div class="grid">
+        {''.join(montos)}
+      </div>
+    </div>
+
+    <div class="tarjeta">
+      <h2>3. Cómo queda cada opción</h2>
       {tabla}
       <div class="grid" style="margin-top:16px">
         <div class="campo" style="grid-column:1/-1">
-          <label>Escenario que va a la cotización</label>
+          <label>¿Cuál opción va a la cotización formal?</label>
           <select name="escenario_cotizacion">{opciones}</select>
         </div>
       </div>
     </div>
+
     <div class="acciones">
       <button class="btn" type="submit">Guardar y actualizar la cotización</button>
       <a class="btn btn-sec" href="/p/{token}/cotizacion" target="_blank" rel="noopener">

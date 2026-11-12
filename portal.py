@@ -410,16 +410,27 @@ def _guardar_cotizacion(carpeta, datos):
     return ruta
 
 
-def _monto_recomendado(proyecto):
-    """Monto con IVA del escenario elegido por el cliente (por defecto el recomendado)."""
+def _solo_digitos(texto, defecto=0):
+    """Convierte '5.200.000', '5,200,000' o '$5.200.000' en 5200000."""
     try:
+        limpio = "".join(c for c in str(texto) if c.isdigit())
+        return int(limpio) if limpio else int(defecto)
+    except Exception:
+        return int(defecto)
+
+
+def _monto_recomendado(proyecto):
+    """Monto con IVA que el cliente eligió para la cotización."""
+    try:
+        cot = _leer_cotizacion(proyecto["_carpeta"])
+        elegido = str(cot.get("escenario_cotizacion") or "recomendado").lower()
+        monto_elegido = cot.get(f"monto_{elegido}")
+        if monto_elegido:
+            return _solo_digitos(monto_elegido)
+        if cot.get("monto"):
+            return _solo_digitos(cot.get("monto"))
         valores = _valores_planilla(proyecto)
-        presupuesto = int(valores.get("presupuesto") or 0)
-        elegido = str(valores.get("escenario_cotizacion") or "recomendado").lower()
-        clave = {"competitivo": "pct1", "recomendado": "pct2", "conservador": "pct3"}.get(
-            elegido, "pct2")
-        pct = float(valores.get(clave) or 0.80)
-        return int(round(presupuesto * pct))
+        return int(round(int(valores.get("presupuesto") or 0) * float(valores.get("pct2") or 0.8)))
     except Exception:
         return int(proyecto.get("oferta_bruta_clp") or 0)
 
@@ -802,6 +813,8 @@ class Manejador(BaseHTTPRequestHandler):
                 return v / 100.0 if v > 1.5 else v
 
             crudos = {c: _num(c, 0) for c in ("pct1", "pct2", "pct3")}
+            montos_libres = [_solo_digitos((campos.get(f"monto{i}") or [""])[0], 0)
+                             for i in (1, 2, 3)]
             anteriores = _valores_planilla(proyecto)
             for c, defecto in (("pct1", anteriores["pct1"]), ("pct2", anteriores["pct2"]),
                                ("pct3", anteriores["pct3"])):
@@ -847,11 +860,30 @@ class Manejador(BaseHTTPRequestHandler):
             }
             costo = (valores["horas"] * valores["valor_hora"]
                      + valores["cloud"] + valores["gestion"])
-            filas = portal_ui.calcular_escenarios(
-                valores["presupuesto"], valores["iva"], costo,
-                [(u"Competitivo", valores["pct1"]),
-                 (u"Recomendado", valores["pct2"]),
-                 (u"Conservador", valores["pct3"])])
+            # si el cliente escribió montos, se calculan los escenarios desde esos montos
+            if any(m > 0 for m in montos_libres):
+                filas = []
+                for pos, (nombre_esc, monto_bruto) in enumerate(
+                        zip((u"Competitivo", u"Recomendado", u"Conservador"), montos_libres)):
+                    bruto = monto_bruto or int(round(valores["presupuesto"]
+                                                     * (0.78, 0.80, 0.85)[pos]))
+                    neto = int(round(bruto / (1 + valores["iva"]))) if (1 + valores["iva"]) else 0
+                    iva_m = bruto - neto
+                    ganancia = neto - costo
+                    margen = (ganancia / neto * 100) if neto else 0
+                    roi = (ganancia / costo * 100) if costo else 0
+                    pct = (bruto / valores["presupuesto"]) if valores["presupuesto"] else 0
+                    filas.append({"escenario": nombre_esc, "pct": pct, "bruto": bruto,
+                                  "neto": neto, "iva": iva_m, "costo": costo,
+                                  "ganancia": ganancia, "margen": margen, "roi": roi})
+                for pos, clave in enumerate(("pct1", "pct2", "pct3")):
+                    valores[clave] = round(filas[pos]["pct"], 4)
+            else:
+                filas = portal_ui.calcular_escenarios(
+                    valores["presupuesto"], valores["iva"], costo,
+                    [(u"Competitivo", valores["pct1"]),
+                     (u"Recomendado", valores["pct2"]),
+                     (u"Conservador", valores["pct3"])])
             try:
                 destino = os.path.join(carpeta, "Planilla_Simulada.xlsx")
                 portal_ui.escribir_xlsx_simulado(destino, {
@@ -866,6 +898,9 @@ class Manejador(BaseHTTPRequestHandler):
                 indice = {"competitivo": 0, "recomendado": 1, "conservador": 2}[elegido]
                 cot.update({
                     "monto": filas[indice]["bruto"],
+                    "monto_competitivo": filas[0]["bruto"],
+                    "monto_recomendado": filas[1]["bruto"],
+                    "monto_conservador": filas[2]["bruto"],
                     "escenario_cotizacion": elegido,
                     "presupuesto": valores["presupuesto"],
                     "iva": valores["iva"],
