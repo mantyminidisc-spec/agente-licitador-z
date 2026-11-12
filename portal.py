@@ -425,6 +425,23 @@ def _monto_recomendado(proyecto):
         cot = _leer_cotizacion(proyecto["_carpeta"])
         elegido = str(cot.get("escenario_cotizacion") or "recomendado").lower()
         if elegido == "mi_precio":
+            costo_cot = _solo_digitos(cot.get("costo") or 0)
+            try:
+                margen_cot = float(cot.get("margen_objetivo") or 0.35)
+            except Exception:
+                margen_cot = 0.35
+            if margen_cot > 1:
+                margen_cot = margen_cot / 100.0
+            if costo_cot > 0 and 0 < margen_cot < 1:
+                neto_calc = int(round(costo_cot / (1 - margen_cot)))
+                iva_txt2 = cot.get("iva") or 0.19
+                try:
+                    iva_v2 = float(iva_txt2)
+                except Exception:
+                    iva_v2 = 0.19
+                if iva_v2 > 1:
+                    iva_v2 = iva_v2 / 100.0
+                return int(round(neto_calc * (1 + iva_v2)))
             neto = _solo_digitos(cot.get("neto") or 0)
             iva_txt = cot.get("iva") or 0.19
             try:
@@ -556,6 +573,14 @@ def _valores_planilla(proyecto):
         neto_guardado = _solo_digitos(cot.get("neto") or 0)
     except Exception:
         neto_guardado = 0
+    try:
+        margen_obj = float(cot.get("margen_objetivo") or 0.35)
+    except Exception:
+        margen_obj = 0.35
+    if margen_obj > 1:
+        margen_obj = margen_obj / 100.0
+    if not (0 < margen_obj < 1):
+        margen_obj = 0.35
 
     return {
         "presupuesto": presupuesto,
@@ -566,6 +591,7 @@ def _valores_planilla(proyecto):
         "cloud": cloud,
         "gestion": gestion,
         "neto": neto_guardado,
+        "margen_objetivo": margen_obj,
         "pct1": p1,
         "pct2": p2,
         "pct3": p3,
@@ -907,6 +933,8 @@ class Manejador(BaseHTTPRequestHandler):
                                          anteriores_post.get("gestion") or 0),
                 "neto": _solo_digitos((campos.get("neto") or ["0"])[0],
                                       anteriores_post.get("neto") or 0),
+                "margen_objetivo": (lambda v: v / 100.0 if v > 1 else v)(
+                    _num("margen_objetivo", 35) or 35),
                 "pct1": anteriores_post["pct1"],
                 "pct2": anteriores_post["pct2"],
                 "pct3": anteriores_post["pct3"],
@@ -967,13 +995,20 @@ class Manejador(BaseHTTPRequestHandler):
                 if elegido not in ("competitivo", "recomendado", "conservador", "mi_precio"):
                     elegido = "recomendado"
                 if elegido == "mi_precio":
-                    monto_final = int(round(valores["neto"] * (1 + valores["iva"])))
+                    margen_v = float(valores.get("margen_objetivo") or 0.35)
+                    if 0 < margen_v < 1 and costo > 0:
+                        neto_final = int(round(costo / (1 - margen_v)))
+                    else:
+                        neto_final = int(valores.get("neto") or 0)
+                    valores["neto"] = neto_final
+                    monto_final = int(round(neto_final * (1 + valores["iva"])))
                 else:
                     indice = {"competitivo": 0, "recomendado": 1, "conservador": 2}[elegido]
                     monto_final = filas[indice]["bruto"]
                 cot.update({
                     "monto": monto_final,
                     "neto": valores["neto"],
+                    "margen_objetivo": valores["margen_objetivo"],
                     "monto_competitivo": filas[0]["bruto"],
                     "monto_recomendado": filas[1]["bruto"],
                     "monto_conservador": filas[2]["bruto"],

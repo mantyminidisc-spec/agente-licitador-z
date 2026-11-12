@@ -551,9 +551,7 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
     presupuesto = int(valores.get("presupuesto") or 0)
     iva = float(valores.get("iva") or 0.19)
     costo = int(valores.get("costo") or 0)
-    neto = int(valores.get("neto") or 0)
-    if not neto:
-        neto = int(round(presupuesto / (1 + iva))) if presupuesto else 0
+    margen_obj = float(valores.get("margen_objetivo") or 0.35)
     horas = int(valores.get("horas") or 0)
     valor_hora = int(valores.get("valor_hora") or 0)
     cloud = int(valores.get("cloud") or 0)
@@ -563,9 +561,11 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
     nombre = _esc(str(proyecto.get("nombre") or "")[:90])
     aviso = f'<div class="aviso">{_esc(mensaje)}</div>' if mensaje else ""
     filas = filas or []
-    bruto_propio = int(round(neto * (1 + iva)))
-    ganancia_propia = neto - costo
-    margen_propio = (ganancia_propia / neto * 100) if neto else 0
+
+    # bloque 1: precio a partir del margen objetivo
+    neto_obj = int(round(costo / (1 - margen_obj))) if 0 < margen_obj < 1 else costo
+    bruto_obj = int(round(neto_obj * (1 + iva)))
+    ganancia_obj = neto_obj - costo
 
     claves = ["competitivo", "recomendado", "conservador"]
     cuerpo = []
@@ -578,22 +578,25 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
         cuerpo.append(
             f"<tr{marca}><td>{etiqueta}</td>"
             f"<td class='der'>{f['pct']*100:.0f}%</td>"
-            f"<td class='der'>{_clp(f['bruto'])}</td>"
             f"<td class='der'>{_clp(f['neto'])}</td>"
             f"<td class='der'>{_clp(f['iva'])}</td>"
+            f"<td class='der'>{_clp(f['bruto'])}</td>"
+            f"<td class='der'>{_clp(f['costo'])}</td>"
             f"<td class='der'>{_clp(f['ganancia'])}</td>"
-            f"<td class='der'>{f['margen']:.1f}%</td></tr>")
+            f"<td class='der'>{f['margen']:.1f}%</td>"
+            f"<td class='der'>{f['roi']:.1f}%</td></tr>")
     tabla = ("<div class='scroll-x'><table class='planilla'>"
-             "<thead><tr><th>Opción</th><th class='der'>% del tope</th>"
-             "<th class='der'>Total bruto</th><th class='der'>Neto</th>"
-             "<th class='der'>IVA</th><th class='der'>Ganancia</th>"
-             "<th class='der'>Margen</th></tr></thead><tbody>"
+             "<thead><tr><th>Escenario</th><th class='der'>% del tope</th>"
+             "<th class='der'>Oferta neta</th><th class='der'>IVA</th>"
+             "<th class='der'>Total bruto</th><th class='der'>Costo interno</th>"
+             "<th class='der'>Ganancia</th><th class='der'>Margen</th>"
+             "<th class='der'>ROI</th></tr></thead><tbody>"
              + "".join(cuerpo) + "</tbody></table></div>")
 
     opciones = ""
-    for clave, etiqueta in (("competitivo", "Opción 1 · competitiva"),
-                            ("recomendado", "Opción 2 · recomendada"),
-                            ("conservador", "Opción 3 · conservadora")):
+    for clave, etiqueta in (("competitivo", "Competitivo"),
+                            ("recomendado", "Recomendado"),
+                            ("conservador", "Conservador")):
         sel = " selected" if clave == elegido else ""
         opciones += f'<option value="{clave}"{sel}>{etiqueta}</option>'
 
@@ -608,27 +611,27 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--fondo);color:var(--texto);font-size:14px;line-height:1.5;
 font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
-.wrap{{max-width:920px;margin:0 auto;padding:18px 16px 50px}}
+.wrap{{max-width:980px;margin:0 auto;padding:18px 16px 50px}}
 .cab{{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}}
 .cab h1{{font-size:17px;margin:0;color:var(--azul)}}
 .cab .sub{{font-size:12px;color:var(--gris)}}
 .cab .der{{margin-left:auto;display:flex;gap:8px}}
 .btn{{display:inline-block;background:var(--azul);color:#fff;border:0;border-radius:9px;
-padding:9px 16px;font-weight:650;font-size:13px;text-decoration:none;cursor:pointer;font-family:inherit}}
+padding:10px 16px;font-weight:650;font-size:13px;text-decoration:none;cursor:pointer;font-family:inherit}}
 .btn-sec{{background:#eef2f8;color:var(--azul2)}}
 .tarjeta{{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;
 padding:18px 20px;margin-bottom:14px}}
 h2{{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--azul2);
 margin:0 0 12px;padding-bottom:6px;border-bottom:1px solid var(--linea)}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px 16px}}
 .campo{{display:flex;flex-direction:column;gap:6px}}
-.campo label{{font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+.campo label{{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
 color:var(--gris);font-weight:700}}
 .campo .pista{{font-weight:500;text-transform:none;letter-spacing:0;color:#8b95a4;font-size:10.5px}}
-.campo input,.campo select{{border:1px solid #d7dde7;border-radius:9px;padding:12px 14px;
-font-size:16px;font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
+.campo input,.campo select{{border:1px solid #d7dde7;border-radius:9px;padding:11px 13px;
+font-size:15px;font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
 .campo input:focus,.campo select:focus{{outline:2px solid #93b4e6;background:#fff}}
-.resumen{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;
+.resumen{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
 margin-top:16px}}
 .caja-res{{background:#f3f6fa;border-radius:10px;padding:10px 14px}}
 .caja-res span{{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
@@ -636,9 +639,9 @@ color:var(--gris);font-weight:700;margin-bottom:2px}}
 .caja-res strong{{font-size:16px;color:var(--azul)}}
 .caja-res.destacada{{background:#ecfdf5}}
 .caja-res.destacada strong{{color:#065f46}}
-.planilla{{width:100%;border-collapse:collapse;font-size:13px}}
+.planilla{{width:100%;border-collapse:collapse;font-size:12.5px}}
 .planilla th{{background:var(--azul);color:#fff;text-align:left;padding:9px 10px;
-font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}}
+font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}}
 .planilla td{{border:1px solid #c9d2de;padding:8px 10px}}
 .planilla .fila-ok td{{background:var(--verde);font-weight:600}}
 .planilla .et{{font-size:10px;color:#0f766e;font-weight:700}}
@@ -667,8 +670,8 @@ display:flex;justify-content:space-between;align-items:center}}
   <form method="post" action="/p/{token}/planilla">
     <div class="tarjeta">
       <h2>Costos internos de la empresa</h2>
-      <p class="ayuda">Esto es lo que te cuesta ejecutar el proyecto. Puedes cambiar cada
-      concepto o escribir el total directo.</p>
+      <p class="ayuda">Lo que te cuesta ejecutar el proyecto. Escribe los valores en pesos
+      (ej: 25.000). El total alimenta los dos bloques.</p>
       <div class="grid">
         <div class="campo"><label>Horas de ingeniería</label>
           <input name="horas" type="text" inputmode="numeric" value="{horas}"></div>
@@ -687,44 +690,46 @@ display:flex;justify-content:space-between;align-items:center}}
     </div>
 
     <div class="tarjeta">
-      <h2>1. Tu precio</h2>
-      <p class="ayuda">Escribe el monto <strong>neto</strong> que quieres cobrar. El IVA y el
-      total bruto se calculan solos; la ganancia descuenta el costo interno.</p>
+      <h2>1. Tu precio por margen objetivo</h2>
+      <p class="ayuda">Elige cuánto quieres ganar sobre el costo. El neto y el total bruto
+      salen solos.</p>
       <div class="grid">
-        <div class="campo"><label>Monto neto <span class="pista">(sin IVA)</span></label>
-          <input name="neto" type="text" inputmode="numeric" value="{neto:,}".replace(",", ".")></div>
+        <div class="campo"><label>Margen objetivo (%)</label>
+          <input name="margen_objetivo" type="text" inputmode="decimal" value="{margen_obj*100:g}"></div>
         <div class="campo"><label>IVA (%)</label>
           <input name="iva" type="text" inputmode="decimal" value="{iva*100:g}"></div>
       </div>
       <div class="resumen">
-        <div class="caja-res"><span>Neto</span><strong id="r-neto">{_clp(neto)}</strong></div>
-        <div class="caja-res"><span>IVA</span><strong id="r-iva">{_clp(bruto_propio - neto)}</strong></div>
+        <div class="caja-res"><span>Costo interno</span><strong id="m-costo">{_clp(costo)}</strong></div>
+        <div class="caja-res"><span>Oferta neta</span><strong id="m-neto">{_clp(neto_obj)}</strong></div>
+        <div class="caja-res"><span>IVA</span><strong id="m-iva">{_clp(bruto_obj - neto_obj)}</strong></div>
         <div class="caja-res destacada"><span>Total bruto</span>
-          <strong id="r-bruto">{_clp(bruto_propio)}</strong></div>
-        <div class="caja-res"><span>Ganancia</span><strong id="r-gan">{_clp(ganancia_propia)}</strong></div>
-        <div class="caja-res"><span>Margen</span><strong id="r-mar">{margen_propio:.1f}%</strong></div>
+          <strong id="m-bruto">{_clp(bruto_obj)}</strong></div>
+        <div class="caja-res"><span>Ganancia</span><strong id="m-gan">{_clp(ganancia_obj)}</strong></div>
       </div>
       <div class="acciones">
         <button class="btn" type="submit" name="accion" value="mi_precio">
-          Usar mi precio en la cotización</button>
+          Usar este precio en la cotización</button>
       </div>
     </div>
 
     <div class="tarjeta">
-      <h2>2. Recomendaciones del motor de precios</h2>
-      <p class="ayuda">Calculadas sobre el presupuesto oficial ({_clp(presupuesto)}) y el mismo
-      costo interno.</p>
-      {tabla}
-      <div class="grid" style="margin-top:16px">
-        <div class="campo"><label>Opción que va a la cotización</label>
-          <select name="escenario_cotizacion">{opciones}</select></div>
-        <div class="campo"><label>Presupuesto oficial <span class="pista">(referencia)</span></label>
+      <h2>2. Simulación de escenarios</h2>
+      <p class="ayuda">Presupuesto oficial {_clp(presupuesto)} · costo interno {_clp(costo)}.
+      Elige el escenario que quieras ofertar.</p>
+      <div class="grid" style="margin-bottom:14px">
+        <div class="campo"><label>Presupuesto oficial (tope con IVA)</label>
           <input name="presupuesto" type="text" inputmode="numeric"
                  value="{presupuesto:,}".replace(",", ".")></div>
       </div>
+      {tabla}
+      <div class="grid" style="margin-top:16px">
+        <div class="campo"><label>Escenario que va a la cotización</label>
+          <select name="escenario_cotizacion">{opciones}</select></div>
+      </div>
       <div class="acciones">
         <button class="btn" type="submit" name="accion" value="opcion">
-          Usar esta opción en la cotización</button>
+          Usar este escenario en la cotización</button>
       </div>
     </div>
   </form>
@@ -742,29 +747,30 @@ display:flex;justify-content:space-between;align-items:center}}
     var limpio = String(v || '').replace(/[^0-9]/g, '');
     return limpio ? parseInt(limpio, 10) : 0;
   }};
+  var dec = function (v) {{
+    var x = parseFloat(String(v || '').replace(',', '.'));
+    return isNaN(x) ? 0 : x;
+  }};
   var $ = function (n) {{ return document.querySelector('input[name=' + n + ']'); }};
   var horas = $('horas'), valorHora = $('valor_hora'), cloud = $('cloud'), gestion = $('gestion');
-  var neto = $('neto'), iva = $('iva');
-  function pctIva() {{
-    var i = parseFloat(String(iva.value).replace(',', '.')) || 0;
-    return i > 1 ? i / 100 : i;
-  }}
+  var margen = $('margen_objetivo'), iva = $('iva');
   function recalcular() {{
     var c = num(horas.value) * num(valorHora.value) + num(cloud.value) + num(gestion.value);
     document.getElementById('c-total').textContent = fmt(c);
     document.getElementById('c-costo').value = c;
-    var n = num(neto.value);
-    var i = pctIva();
-    var bruto = Math.round(n * (1 + i));
-    var gan = n - c;
-    var mar = n ? (gan / n * 100) : 0;
-    document.getElementById('r-neto').textContent = fmt(n);
-    document.getElementById('r-iva').textContent = fmt(bruto - n);
-    document.getElementById('r-bruto').textContent = fmt(bruto);
-    document.getElementById('r-gan').textContent = fmt(gan);
-    document.getElementById('r-mar').textContent = mar.toFixed(1) + '%';
+    var m = dec(margen.value);
+    if (m > 1) m = m / 100;
+    var i = dec(iva.value);
+    if (i > 1) i = i / 100;
+    var neto = (m > 0 && m < 1) ? Math.round(c / (1 - m)) : c;
+    var bruto = Math.round(neto * (1 + i));
+    document.getElementById('m-costo').textContent = fmt(c);
+    document.getElementById('m-neto').textContent = fmt(neto);
+    document.getElementById('m-iva').textContent = fmt(bruto - neto);
+    document.getElementById('m-bruto').textContent = fmt(bruto);
+    document.getElementById('m-gan').textContent = fmt(neto - c);
   }}
-  [horas, valorHora, cloud, gestion, neto, iva].forEach(function (campo) {{
+  [horas, valorHora, cloud, gestion, margen, iva].forEach(function (campo) {{
     if (campo) campo.addEventListener('input', recalcular);
   }});
 }})();
