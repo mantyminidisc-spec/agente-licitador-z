@@ -150,6 +150,8 @@ def _archivos(carpeta):
             continue
         if "CORREO_PENDIENTE" in nombre.upper():
             continue
+        if nombre.upper().startswith("PLANILLA_SIMULADA"):
+            continue
         salida.append({"nombre": nombre, "bytes": os.path.getsize(ruta)})
     return salida
 
@@ -409,11 +411,14 @@ def _guardar_cotizacion(carpeta, datos):
 
 
 def _monto_recomendado(proyecto):
-    """Monto con IVA del escenario recomendado, coherente con la planilla."""
+    """Monto con IVA del escenario elegido por el cliente (por defecto el recomendado)."""
     try:
         valores = _valores_planilla(proyecto)
         presupuesto = int(valores.get("presupuesto") or 0)
-        pct = float(valores.get("pct2") or 0.80)
+        elegido = str(valores.get("escenario_cotizacion") or "recomendado").lower()
+        clave = {"competitivo": "pct1", "recomendado": "pct2", "conservador": "pct3"}.get(
+            elegido, "pct2")
+        pct = float(valores.get(clave) or 0.80)
         return int(round(presupuesto * pct))
     except Exception:
         return int(proyecto.get("oferta_bruta_clp") or 0)
@@ -513,6 +518,7 @@ def _valores_planilla(proyecto):
         "pct1": p1,
         "pct2": p2,
         "pct3": p3,
+        "escenario_cotizacion": str(cot.get("escenario_cotizacion") or "recomendado").lower(),
     }
 
 
@@ -629,6 +635,8 @@ class Manejador(BaseHTTPRequestHandler):
                 datos = _leer_datos_informe(proyecto["_carpeta"])
                 nombre_doc = os.path.basename(unquote(partes[3]))
                 titulo = portal_ui.nombre_legible(nombre_doc)
+                if nombre_doc.upper().startswith("DOC3"):
+                    datos["_tipo_doc"] = "financiero"
                 html_doc = portal_ui.documento_html(
                     titulo, datos,
                     logo_url=f"/p/{partes[1]}/logo",
@@ -794,6 +802,11 @@ class Manejador(BaseHTTPRequestHandler):
                 return v / 100.0 if v > 1.5 else v
 
             crudos = {c: _num(c, 0) for c in ("pct1", "pct2", "pct3")}
+            anteriores = _valores_planilla(proyecto)
+            for c, defecto in (("pct1", anteriores["pct1"]), ("pct2", anteriores["pct2"]),
+                               ("pct3", anteriores["pct3"])):
+                if crudos[c] <= 0:
+                    crudos[c] = defecto * 100
             invalidos = [c for c, v in crudos.items() if not (1 <= v <= 100)]
             if not invalidos:
                 _v = [crudos["pct1"] / 100.0, crudos["pct2"] / 100.0, crudos["pct3"] / 100.0]
@@ -847,8 +860,13 @@ class Manejador(BaseHTTPRequestHandler):
                     "costo": costo}, filas)
                 # la cotización toma el monto del escenario recomendado
                 cot = _leer_cotizacion(carpeta)
+                elegido = str((campos.get("escenario_cotizacion") or ["recomendado"])[0]).lower()
+                if elegido not in ("competitivo", "recomendado", "conservador"):
+                    elegido = "recomendado"
+                indice = {"competitivo": 0, "recomendado": 1, "conservador": 2}[elegido]
                 cot.update({
-                    "monto": filas[1]["bruto"],
+                    "monto": filas[indice]["bruto"],
+                    "escenario_cotizacion": elegido,
                     "presupuesto": valores["presupuesto"],
                     "iva": valores["iva"],
                     "horas": valores["horas"],

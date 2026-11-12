@@ -293,9 +293,15 @@ def documento_html(titulo_doc, datos, logo_url="", hay_logo=False, meta_extra=""
     nombre = _esc(proyecto.get("nombre", ""))
     logo = (f'<img src="{_esc(logo_url)}" alt="Logo">' if hay_logo else "")
 
+    claves_financieras = ("escenarios", "estudio_financiero", "dictamen", "recomendaciones",
+                          "conclusion", "roi", "margen", "costos", "flujo_caja",
+                          "justificacion_precio", "precio_recomendado")
+    es_financiero = str(proyecto.get("_tipo_doc") or "").lower() == "financiero"
     cuerpo = []
     for clave, contenido in informes.items():
         if clave in TECNICOS:
+            continue
+        if es_financiero and clave not in claves_financieras:
             continue
         trozo = _valor_html(contenido)
         if not trozo:
@@ -549,59 +555,44 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
     cloud = int(valores.get("cloud") or 0)
     gestion = int(valores.get("gestion") or 0)
     costo = horas * valor_hora + cloud + gestion
-    pct1 = float(valores.get("pct1") or 0.78)
-    pct2 = float(valores.get("pct2") or 0.80)
-    pct3 = float(valores.get("pct3") or 0.85)
+    elegido = str(valores.get("escenario_cotizacion") or "recomendado").lower()
     codigo = _esc(proyecto.get("codigo", ""))
     nombre = _esc(str(proyecto.get("nombre") or "")[:90])
     aviso = f'<div class="aviso">{_esc(mensaje)}</div>' if mensaje else ""
-    sensibilidad = sensibilidad or []
+    filas = filas or []
 
-    def tabla_escenarios():
-        if not filas:
-            return '<p class="ayuda">Sin datos todavía.</p>'
-        cuerpo = []
-        for f in filas:
-            destacado = " class='fila-ok'" if "Recomend" in f["escenario"] else ""
-            cuerpo.append(
-                f"<tr{destacado}>"
-                f"<td><strong>{_esc(f['escenario'])}</strong></td>"
-                f"<td class='der'>{f['pct']*100:.0f}%</td>"
-                f"<td class='der'>{_clp(f['bruto'])}</td>"
-                f"<td class='der'>{_clp(f['neto'])}</td>"
-                f"<td class='der'>{_clp(f['iva'])}</td>"
-                f"<td class='der'>{_clp(f['costo'])}</td>"
-                f"<td class='der'>{_clp(f['ganancia'])}</td>"
-                f"<td class='der'>{f['margen']:.1f}%</td>"
-                f"<td class='der'>{f['roi']:.1f}%</td></tr>")
-        return ("<div class='scroll-x'><table class='planilla'>"
-                "<thead><tr><th>Escenario</th><th class='der'>% del tope</th>"
-                "<th class='der'>Total bruto</th><th class='der'>Oferta neta</th>"
-                "<th class='der'>IVA</th><th class='der'>Costo interno</th>"
-                "<th class='der'>Ganancia</th><th class='der'>Margen</th>"
-                "<th class='der'>ROI</th></tr></thead><tbody>"
-                + "".join(cuerpo) + "</tbody></table></div>")
+    claves = ["competitivo", "recomendado", "conservador"]
+    cuerpo = []
+    for pos, f in enumerate(filas):
+        clave = claves[pos] if pos < len(claves) else ""
+        marca = " class='fila-ok'" if clave == elegido else ""
+        etiqueta = _esc(f["escenario"])
+        if clave == elegido:
+            etiqueta += " <span class='et'>· va a la cotización</span>"
+        cuerpo.append(
+            f"<tr{marca}><td>{etiqueta}</td>"
+            f"<td class='der'>{f['pct']*100:.0f}%</td>"
+            f"<td class='der'>{_clp(f['bruto'])}</td>"
+            f"<td class='der'>{_clp(f['neto'])}</td>"
+            f"<td class='der'>{_clp(f['iva'])}</td>"
+            f"<td class='der'>{_clp(f['ganancia'])}</td>"
+            f"<td class='der'>{f['margen']:.1f}%</td></tr>")
+    tabla = ("<div class='scroll-x'><table class='planilla'>"
+             "<thead><tr><th>Escenario</th><th class='der'>% del tope</th>"
+             "<th class='der'>Total bruto</th><th class='der'>Oferta neta</th>"
+             "<th class='der'>IVA</th><th class='der'>Ganancia</th>"
+             "<th class='der'>Margen</th></tr></thead><tbody>"
+             + "".join(cuerpo) + "</tbody></table></div>")
 
-    def tabla_sensibilidad():
-        if not sensibilidad:
-            return '<p class="ayuda">Sin datos.</p>'
-        cuerpo = []
-        for s in sensibilidad:
-            cuerpo.append(
-                "<tr>"
-                f"<td class='der'>{s['pct']*100:.0f}%</td>"
-                f"<td class='der'>{_clp(s['bruto'])}</td>"
-                f"<td class='der'>{_clp(s['neto'])}</td>"
-                f"<td class='der'>{_clp(s['ganancia'])}</td>"
-                f"<td class='der'>{s['margen']:.1f}%</td>"
-                f"<td class='der'>{s['puntaje']:.1f}</td>"
-                f"<td class='der'>{s['prob']:.1f}%</td></tr>")
-        return ("<div class='scroll-x'><table class='planilla'>"
-                "<thead><tr><th class='der'>% del tope</th><th class='der'>Total bruto</th>"
-                "<th class='der'>Oferta neta</th><th class='der'>Ganancia</th>"
-                "<th class='der'>Margen</th><th class='der'>Puntaje estimado</th>"
-                "<th class='der'>Prob. adjudicar</th></tr></thead><tbody>"
-                + "".join(cuerpo) + "</tbody></table></div>")
+    opciones = ""
+    if len(filas) >= 3:
+        for clave, idx, etiqueta in (("competitivo", 0, "Competitivo"),
+                                     ("recomendado", 1, "Recomendado"),
+                                     ("conservador", 2, "Conservador")):
+            sel = " selected" if clave == elegido else ""
+            fila = filas[idx]
+            opciones += (f'<option value="{clave}"{sel}>{etiqueta} — '
+                         f'{fila["pct"]*100:.0f}% · {_clp(fila["bruto"])}</option>')
 
     return f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8">
@@ -614,7 +605,7 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--fondo);color:var(--texto);font-size:14px;line-height:1.5;
 font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
-.wrap{{max-width:1000px;margin:0 auto;padding:18px 16px 50px}}
+.wrap{{max-width:940px;margin:0 auto;padding:18px 16px 50px}}
 .cab{{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}}
 .cab h1{{font-size:17px;margin:0;color:var(--azul)}}
 .cab .sub{{font-size:12px;color:var(--gris)}}
@@ -622,30 +613,23 @@ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
 .btn{{display:inline-block;background:var(--azul);color:#fff;border:0;border-radius:9px;
 padding:9px 16px;font-weight:650;font-size:13px;text-decoration:none;cursor:pointer;font-family:inherit}}
 .btn-sec{{background:#eef2f8;color:var(--azul2)}}
-.pestanas{{display:flex;gap:4px;border-bottom:1px solid var(--linea);overflow-x:auto}}
-.pestanas button{{background:transparent;border:0;border-bottom:3px solid transparent;
-padding:11px 14px;font-size:13px;font-weight:650;color:var(--gris);cursor:pointer;
-white-space:nowrap;font-family:inherit}}
-.pestanas button.activa{{color:var(--azul);border-bottom-color:var(--azul)}}
-.tarjeta{{background:var(--blanco);border:1px solid var(--linea);border-radius:0 0 14px 14px;
-padding:18px 20px}}
-.seccion{{display:none}}
-.seccion.activa{{display:block}}
+.tarjeta{{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;
+padding:18px 20px;margin-bottom:14px}}
 h2{{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--azul2);
 margin:0 0 12px;padding-bottom:6px;border-bottom:1px solid var(--linea)}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:14px 18px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px 18px}}
 .campo{{display:flex;flex-direction:column;gap:5px}}
 .campo label{{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
 color:var(--gris);font-weight:700}}
-.campo input{{border:1px solid #d7dde7;border-radius:9px;padding:10px 12px;font-size:14px;
-font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
-.campo input:focus{{outline:2px solid #93b4e6;background:#fff}}
+.campo input,.campo select{{border:1px solid #d7dde7;border-radius:9px;padding:10px 12px;
+font-size:14px;font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
+.campo input:focus,.campo select:focus{{outline:2px solid #93b4e6;background:#fff}}
 .planilla{{width:100%;border-collapse:collapse;font-size:13px}}
 .planilla th{{background:var(--azul);color:#fff;text-align:left;padding:9px 10px;
 font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}}
 .planilla td{{border:1px solid #c9d2de;padding:8px 10px}}
-.planilla tbody tr:nth-child(even) td{{background:#fbfcfe}}
-.planilla .fila-ok td{{background:var(--verde)!important;font-weight:600}}
+.planilla .fila-ok td{{background:var(--verde);font-weight:600}}
+.planilla .et{{font-size:10px;color:#0f766e;font-weight:700}}
 .der{{text-align:right}}
 .scroll-x{{overflow-x:auto}}
 .ayuda{{color:var(--gris);font-size:12.5px;margin:0 0 12px}}
@@ -655,136 +639,63 @@ font-size:12.5px;color:#065f46;margin-bottom:14px}}
 display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}}
 .total strong{{font-size:16px;color:var(--azul)}}
 .acciones{{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}}
-ul.explica{{margin:0;padding-left:18px}}
-ul.explica li{{margin-bottom:7px;font-size:13px}}
-ul.explica b{{color:var(--azul2)}}
 @media (max-width:640px){{.wrap{{padding:12px 10px 40px}}.tarjeta{{padding:14px}}}}
 </style></head><body>
 <div class="wrap">
   <div class="cab">
-    <div>
-      <h1>Planilla financiera</h1>
-      <div class="sub">{nombre} · {codigo}</div>
-    </div>
+    <div><h1>Planilla financiera</h1>
+      <div class="sub">{nombre} · {codigo}</div></div>
     <div class="der">
       {f'<a class="btn btn-sec" href="{_esc(enlace_excel)}" download>Descargar Excel</a>' if enlace_excel else ''}
       <a class="btn btn-sec" href="/p/{token}">Volver al panel</a>
     </div>
   </div>
-
   {aviso}
-
-  <div class="pestanas">
-    <button class="activa" data-tab="escenarios">1. Escenarios</button>
-    <button data-tab="costos">2. Costos internos</button>
-    <button data-tab="sensibilidad">3. Sensibilidad</button>
-    <button data-tab="explica">4. Cómo se calcula</button>
-  </div>
-
-  <div class="tarjeta">
-    <form method="post" action="/p/{token}/planilla">
-      <section class="seccion activa" id="tab-escenarios">
-        <h2>Escenarios de postulación</h2>
-        <div class="grid">
-          <div class="campo"><label>Presupuesto oficial (con IVA)</label>
-            <input name="presupuesto" type="number" value="{presupuesto}"></div>
-          <div class="campo"><label>IVA (%)</label>
-            <input name="iva" type="number" step="0.01" min="0" max="30" value="{iva*100:g}"></div>
-          <div class="campo"><label>Escenario 1 (%)</label>
-            <input name="pct1" type="number" step="0.01" min="1" max="100" value="{pct1*100:g}"></div>
-          <div class="campo"><label>Escenario 2 (%)</label>
-            <input name="pct2" type="number" step="0.01" min="1" max="100" value="{pct2*100:g}"></div>
-          <div class="campo"><label>Escenario 3 (%)</label>
-            <input name="pct3" type="number" step="0.01" min="1" max="100" value="{pct3*100:g}"></div>
-          <div class="campo" style="justify-content:flex-end">
-            <span class="ayuda" style="margin:0">Los costos se editan en la pestaña 2.</span></div>
-        </div>
-        <input type="hidden" name="horas" value="{horas}">
-        <input type="hidden" name="valor_hora" value="{valor_hora}">
-        <input type="hidden" name="cloud" value="{cloud}">
-        <input type="hidden" name="gestion" value="{gestion}">
-        <div style="margin-top:18px">{tabla_escenarios()}</div>
-      </section>
-
-      <section class="seccion" id="tab-costos">
-        <h2>Desglose de costos internos</h2>
-        <div class="grid">
-          <div class="campo"><label>Horas de ingeniería</label>
-            <input name="horas" type="number" value="{horas}"></div>
-          <div class="campo"><label>Valor por hora (CLP)</label>
-            <input name="valor_hora" type="number" value="{valor_hora}"></div>
-          <div class="campo"><label>Cloud, licencias y dominios</label>
-            <input name="cloud" type="number" value="{cloud}"></div>
-          <div class="campo"><label>Gestión, imprevistos y garantía</label>
-            <input name="gestion" type="number" value="{gestion}"></div>
-        </div>
-        <div class="total">
-          <span>Costo interno total</span>
-          <strong>{_clp(costo)}</strong>
-        </div>
-        <p class="ayuda" style="margin-top:12px">Este total se descuenta de la oferta neta en los
-        tres escenarios.</p>
-      </section>
-
-      <section class="seccion" id="tab-sensibilidad">
-        <h2>Sensibilidad del precio</h2>
-        <p class="ayuda">Cómo cambia la ganancia y la probabilidad de adjudicar según el porcentaje
-        del tope que ofertes.</p>
-        {tabla_sensibilidad()}
-      </section>
-
-      <section class="seccion" id="tab-explica">
-        <h2>Cómo se calcula cada cifra</h2>
-        <ul class="explica">
-          <li><b>Total bruto</b> = presupuesto oficial × % del tope. Es lo que paga el Estado, IVA incluido.</li>
-          <li><b>Oferta neta</b> = total bruto ÷ (1 + IVA). Es tu ingreso antes de impuestos.</li>
-          <li><b>IVA</b> = total bruto − oferta neta.</li>
-          <li><b>Costo interno</b> = horas × valor hora + cloud + gestión.</li>
-          <li><b>Ganancia</b> = oferta neta − costo interno.</li>
-          <li><b>Margen</b> = ganancia ÷ oferta neta.</li>
-          <li><b>ROI</b> = ganancia ÷ costo interno.</li>
-          <li><b>Probabilidad de adjudicar</b> = 1 ÷ (1 + e^((precio competencia − tu precio) ÷ 0,035)).</li>
-        </ul>
-        <p class="ayuda" style="margin-top:14px">Al guardar, el monto del escenario recomendado pasa
-        automáticamente a la cotización formal.</p>
-      </section>
-
-      <div class="acciones">
-        <button class="btn" type="submit">Guardar y recalcular</button>
-        <a class="btn btn-sec" href="/p/{token}/cotizacion" target="_blank" rel="noopener">
-          Ver cotización</a>
-        <button class="btn btn-sec" type="submit" formaction="/p/{token}/planilla?reset=1"
-                formnovalidate>Restablecer del documento</button>
+  <form method="post" action="/p/{token}/planilla">
+    <div class="tarjeta">
+      <h2>1. Datos del proceso</h2>
+      <div class="grid">
+        <div class="campo"><label>Presupuesto oficial (con IVA)</label>
+          <input name="presupuesto" type="number" min="0" value="{presupuesto}"></div>
+        <div class="campo"><label>IVA (%)</label>
+          <input name="iva" type="number" step="0.01" min="0" max="30" value="{iva*100:g}"></div>
       </div>
-    </form>
-  </div>
+    </div>
+    <div class="tarjeta">
+      <h2>2. Costos internos</h2>
+      <div class="grid">
+        <div class="campo"><label>Horas de trabajo</label>
+          <input name="horas" type="number" min="0" value="{horas}"></div>
+        <div class="campo"><label>Valor por hora</label>
+          <input name="valor_hora" type="number" min="0" value="{valor_hora}"></div>
+        <div class="campo"><label>Cloud, licencias, dominios</label>
+          <input name="cloud" type="number" min="0" value="{cloud}"></div>
+        <div class="campo"><label>Gestión e imprevistos</label>
+          <input name="gestion" type="number" min="0" value="{gestion}"></div>
+      </div>
+      <div class="total"><span>Costo interno total</span><strong>{_clp(costo)}</strong></div>
+    </div>
+    <div class="tarjeta">
+      <h2>3. Resultado por escenario</h2>
+      <p class="ayuda">Los porcentajes los calcula el motor de precios. Elige cuál quieres
+      que aparezca en la cotización formal.</p>
+      {tabla}
+      <div class="grid" style="margin-top:16px">
+        <div class="campo" style="grid-column:1/-1">
+          <label>Escenario que va a la cotización</label>
+          <select name="escenario_cotizacion">{opciones}</select>
+        </div>
+      </div>
+    </div>
+    <div class="acciones">
+      <button class="btn" type="submit">Guardar y actualizar la cotización</button>
+      <a class="btn btn-sec" href="/p/{token}/cotizacion" target="_blank" rel="noopener">
+        Ver cotización</a>
+      <button class="btn btn-sec" type="submit" formaction="/p/{token}/planilla?reset=1"
+              formnovalidate>Restablecer del documento</button>
+    </div>
+  </form>
 </div>
-<script>
-(function () {{
-  var botones = document.querySelectorAll('.pestanas button');
-  var secciones = document.querySelectorAll('.seccion');
-  function activar(id) {{
-    botones.forEach(function (b) {{ b.classList.toggle('activa', b.dataset.tab === id); }});
-    secciones.forEach(function (s) {{ s.classList.toggle('activa', s.id === 'tab-' + id); }});
-    if (history.replaceState) history.replaceState(null, '', '#' + id);
-  }}
-  botones.forEach(function (b) {{
-    b.addEventListener('click', function (e) {{ e.preventDefault(); activar(b.dataset.tab); }});
-  }});
-  if (location.hash) {{
-    var inicial = location.hash.replace('#', '');
-    if (document.getElementById('tab-' + inicial)) activar(inicial);
-  }}
-  // los campos se repiten entre pestañas: sincronizar valores
-  document.querySelectorAll('input[name]').forEach(function (campo) {{
-    campo.addEventListener('input', function () {{
-      document.querySelectorAll('input[name="' + campo.name + '"]').forEach(function (otro) {{
-        if (otro !== campo) otro.value = campo.value;
-      }});
-    }});
-  }});
-}})();
-</script>
 </body></html>"""
 
 
