@@ -550,11 +550,7 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
                   sensibilidad=None):
     presupuesto = int(valores.get("presupuesto") or 0)
     iva = float(valores.get("iva") or 0.19)
-    horas = int(valores.get("horas") or 0)
-    valor_hora = int(valores.get("valor_hora") or 0)
-    cloud = int(valores.get("cloud") or 0)
-    gestion = int(valores.get("gestion") or 0)
-    costo = horas * valor_hora + cloud + gestion
+    costo = int(valores.get("costo") or 0)
     elegido = str(valores.get("escenario_cotizacion") or "recomendado").lower()
     codigo = _esc(proyecto.get("codigo", ""))
     nombre = _esc(str(proyecto.get("nombre") or "")[:90])
@@ -584,17 +580,6 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
              "<th class='der'>Margen</th></tr></thead><tbody>"
              + "".join(cuerpo) + "</tbody></table></div>")
 
-    # campos de monto: el cliente puede escribir lo que quiera
-    montos = []
-    etiquetas = ("Opción 1 · competitiva", "Opción 2 · recomendada", "Opción 3 · conservadora")
-    for pos, etiqueta in enumerate(etiquetas):
-        valor = filas[pos]["bruto"] if pos < len(filas) else round(presupuesto * (0.78 + pos * 0.035))
-        pct_txt = (f"({filas[pos]['pct']*100:.0f}% sugerido)" if pos < len(filas) else "")
-        montos.append(
-            f'<div class="campo"><label>{etiqueta} <span class="pista">{pct_txt}</span></label>'
-            f'<input name="monto{pos+1}" type="text" inputmode="numeric" '
-            f'value="{valor:,}".replace(",", ".")></div>')
-
     opciones = ""
     for clave, etiqueta in (("competitivo", "Opción 1 · competitiva"),
                             ("recomendado", "Opción 2 · recomendada"),
@@ -613,7 +598,7 @@ def planilla_html(proyecto, token, valores, filas=None, mensaje="", enlace_excel
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--fondo);color:var(--texto);font-size:14px;line-height:1.5;
 font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
-.wrap{{max-width:940px;margin:0 auto;padding:18px 16px 50px}}
+.wrap{{max-width:900px;margin:0 auto;padding:18px 16px 50px}}
 .cab{{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}}
 .cab h1{{font-size:17px;margin:0;color:var(--azul)}}
 .cab .sub{{font-size:12px;color:var(--gris)}}
@@ -625,13 +610,13 @@ padding:9px 16px;font-weight:650;font-size:13px;text-decoration:none;cursor:poin
 padding:18px 20px;margin-bottom:14px}}
 h2{{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--azul2);
 margin:0 0 12px;padding-bottom:6px;border-bottom:1px solid var(--linea)}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}}
-.campo{{display:flex;flex-direction:column;gap:5px}}
-.campo label{{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}}
+.campo{{display:flex;flex-direction:column;gap:6px}}
+.campo label{{font-size:11px;text-transform:uppercase;letter-spacing:.06em;
 color:var(--gris);font-weight:700}}
-.campo .pista{{font-weight:500;text-transform:none;letter-spacing:0;color:#8b95a4}}
-.campo input,.campo select{{border:1px solid #d7dde7;border-radius:9px;padding:10px 12px;
-font-size:15px;font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
+.campo .pista{{font-weight:500;text-transform:none;letter-spacing:0;color:#8b95a4;font-size:10.5px}}
+.campo input,.campo select{{border:1px solid #d7dde7;border-radius:9px;padding:12px 14px;
+font-size:16px;font-family:inherit;background:var(--ambar);color:var(--texto);width:100%}}
 .campo input:focus,.campo select:focus{{outline:2px solid #93b4e6;background:#fff}}
 .planilla{{width:100%;border-collapse:collapse;font-size:13px}}
 .planilla th{{background:var(--azul);color:#fff;text-align:left;padding:9px 10px;
@@ -644,9 +629,6 @@ font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;w
 .ayuda{{color:var(--gris);font-size:12.5px;margin:0 0 12px}}
 .aviso{{background:var(--verde);border:1px solid #a7f3d0;border-radius:10px;padding:10px 14px;
 font-size:12.5px;color:#065f46;margin-bottom:14px}}
-.total{{margin-top:14px;padding:12px 14px;background:#f3f6fa;border-radius:10px;
-display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}}
-.total strong{{font-size:16px;color:var(--azul)}}
 .acciones{{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}}
 @media (max-width:640px){{.wrap{{padding:12px 10px 40px}}.tarjeta{{padding:14px}}}}
 </style></head><body>
@@ -662,26 +644,25 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   {aviso}
   <form method="post" action="/p/{token}/planilla">
     <div class="tarjeta">
-      <h2>1. Presupuesto y costos</h2>
+      <h2>1. Datos del proyecto</h2>
       <div class="grid">
-        <div class="campo"><label>Presupuesto oficial (con IVA)</label>
-          <input name="presupuesto" type="text" inputmode="numeric" value="{presupuesto:,}".replace(",", ".")></div>
+        <div class="campo"><label>Presupuesto oficial <span class="pista">(con IVA)</span></label>
+          <input name="presupuesto" type="text" inputmode="numeric"
+                 value="{presupuesto:,}".replace(",", ".")></div>
+        <div class="campo"><label>Costo interno total <span class="pista">(lo que te cuesta ejecutarlo)</span></label>
+          <input name="costo" type="text" inputmode="numeric"
+                 value="{costo:,}".replace(",", ".")></div>
+      </div>
+      <div class="grid" style="margin-top:16px">
         <div class="campo"><label>IVA (%)</label>
           <input name="iva" type="text" inputmode="decimal" value="{iva*100:g}"></div>
-        <div class="campo"><label>Horas de trabajo</label>
-          <input name="horas" type="text" inputmode="numeric" value="{horas}"></div>
-        <div class="campo"><label>Valor por hora</label>
-          <input name="valor_hora" type="text" inputmode="numeric" value="{valor_hora:,}".replace(",", ".")></div>
-        <div class="campo"><label>Cloud y licencias</label>
-          <input name="cloud" type="text" inputmode="numeric" value="{cloud:,}".replace(",", ".")></div>
-        <div class="campo"><label>Gestión e imprevistos</label>
-          <input name="gestion" type="text" inputmode="numeric" value="{gestion:,}".replace(",", ".")></div>
       </div>
-      <div class="total"><span>Costo interno total</span><strong>{_clp(costo)}</strong></div>
     </div>
 
     <div class="tarjeta">
       <h2>2. Cómo queda cada opción</h2>
+      <p class="ayuda">Los montos salen de aplicar el porcentaje del motor de precios al
+      presupuesto oficial. Elige cuál quieres que aparezca en la cotización.</p>
       {tabla}
       <div class="grid" style="margin-top:16px">
         <div class="campo" style="grid-column:1/-1">

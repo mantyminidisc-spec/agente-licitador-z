@@ -507,10 +507,12 @@ def _valores_planilla(proyecto):
     base = (oferta / presupuesto) if presupuesto else 0.80
     if base > 1.0 or base < 0.50:
         base = 0.80  # el monto guardado no es coherente: se usa el escenario estándar
-    horas = int(cot.get("horas") or 40)
-    valor_hora = int(cot.get("valor_hora") or 25000)
-    cloud = int(cot.get("cloud") or 390000)
-    gestion = int(cot.get("gestion") or 260000)
+    try:
+        costo_guardado = _solo_digitos(cot.get("costo") or 0)
+    except Exception:
+        costo_guardado = 0
+    if costo_guardado <= 0:
+        costo_guardado = int(round(presupuesto * 0.32)) if presupuesto else 0
     defecto_1 = min(0.98, max(0.50, round(base - 0.02, 2)))
     defecto_2 = min(0.99, max(0.55, round(base, 2)))
     defecto_3 = min(0.99, max(0.60, round(base + 0.05, 2)))
@@ -526,10 +528,7 @@ def _valores_planilla(proyecto):
     return {
         "presupuesto": presupuesto,
         "iva": iva_guardado,
-        "horas": horas,
-        "valor_hora": valor_hora,
-        "cloud": cloud,
-        "gestion": gestion,
+        "costo": costo_guardado,
         "pct1": p1,
         "pct2": p2,
         "pct3": p3,
@@ -663,8 +662,7 @@ class Manejador(BaseHTTPRequestHandler):
                 if portal_ui is None:
                     return self._enviar(500, "<h1>UI no disponible</h1>")
                 valores = _valores_planilla(proyecto)
-                costo = (int(valores["horas"]) * int(valores["valor_hora"])
-                         + int(valores["cloud"]) + int(valores["gestion"]))
+                costo = int(valores.get("costo") or 0)
                 filas = portal_ui.calcular_escenarios(
                     valores["presupuesto"], valores["iva"], costo,
                     [(u"Competitivo", valores["pct1"]),
@@ -851,19 +849,18 @@ class Manejador(BaseHTTPRequestHandler):
                                                min(0.99, valores_prev["pct3"] + 0.10))),
                     "text/html; charset=utf-8")
 
+            anteriores_post = _valores_planilla(proyecto)
             valores = {
-                "presupuesto": int(_num("presupuesto", 0)),
+                "presupuesto": _solo_digitos((campos.get("presupuesto") or ["0"])[0],
+                                             anteriores_post["presupuesto"]),
                 "iva": (lambda v: v / 100.0 if v > 1 else v)(_num("iva", 19) or 19),
-                "horas": int(_num("horas", 40)),
-                "valor_hora": int(_num("valor_hora", 25000)),
-                "cloud": int(_num("cloud", 0)),
-                "gestion": int(_num("gestion", 0)),
-                "pct1": _pct_seguro(_pct("pct1", 0.78), 0.78),
-                "pct2": _pct_seguro(_pct("pct2", 0.80), 0.80),
-                "pct3": _pct_seguro(_pct("pct3", 0.85), 0.85),
+                "costo": _solo_digitos((campos.get("costo") or ["0"])[0],
+                                       anteriores_post["costo"]),
+                "pct1": anteriores_post["pct1"],
+                "pct2": anteriores_post["pct2"],
+                "pct3": anteriores_post["pct3"],
             }
-            costo = (valores["horas"] * valores["valor_hora"]
-                     + valores["cloud"] + valores["gestion"])
+            costo = int(valores.get("costo") or 0)
             # los escenarios salen del presupuesto por los porcentajes del motor
             if False and any(m > 0 for m in montos_libres):
                 filas = []
@@ -908,10 +905,6 @@ class Manejador(BaseHTTPRequestHandler):
                     "escenario_cotizacion": elegido,
                     "presupuesto": valores["presupuesto"],
                     "iva": valores["iva"],
-                    "horas": valores["horas"],
-                    "valor_hora": valores["valor_hora"],
-                    "cloud": valores["cloud"],
-                    "gestion": valores["gestion"],
                     "pct1": valores["pct1"],
                     "pct2": valores["pct2"],
                     "pct3": valores["pct3"],
