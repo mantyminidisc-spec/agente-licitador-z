@@ -719,7 +719,19 @@ class Manejador(BaseHTTPRequestHandler):
                 nombre_doc = os.path.basename(unquote(partes[3]))
                 titulo = portal_ui.nombre_legible(nombre_doc)
                 if nombre_doc.upper().startswith("DOC3"):
-                    datos["_tipo_doc"] = "financiero"
+                    valores_fin = _valores_planilla(proyecto)
+                    costo_fin = int(valores_fin.get("costo") or 0)
+                    filas_fin = portal_ui.calcular_escenarios(
+                        valores_fin["presupuesto"], valores_fin["iva"], costo_fin,
+                        [(u"Competitivo", valores_fin["pct1"]),
+                         (u"Recomendado", valores_fin["pct2"]),
+                         (u"Conservador", valores_fin["pct3"])])
+                    return self._enviar(200, portal_ui.informe_financiero_html(
+                        proyecto, valores_fin, filas_fin,
+                        elegido=str(valores_fin.get("escenario_cotizacion") or "recomendado"),
+                        monto_cotizacion=_monto_recomendado(proyecto),
+                        logo_url=f"/p/{partes[1]}/logo",
+                        hay_logo=os.path.isfile(RUTA_LOGO)), "text/html; charset=utf-8")
                 html_doc = portal_ui.documento_html(
                     titulo, datos,
                     logo_url=f"/p/{partes[1]}/logo",

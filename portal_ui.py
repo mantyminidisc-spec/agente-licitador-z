@@ -295,13 +295,16 @@ def documento_html(titulo_doc, datos, logo_url="", hay_logo=False, meta_extra=""
 
     claves_financieras = ("escenarios", "estudio_financiero", "dictamen", "recomendaciones",
                           "conclusion", "roi", "margen", "costos", "flujo_caja",
-                          "justificacion_precio", "precio_recomendado")
+                          "justificacion_precio", "precio_recomendado", "escenarios_precio",
+                          "simulacion_escenarios")
     es_financiero = str(proyecto.get("_tipo_doc") or "").lower() == "financiero"
     cuerpo = []
     for clave, contenido in informes.items():
         if clave in TECNICOS:
             continue
         if es_financiero and clave not in claves_financieras:
+            continue
+        if not es_financiero and clave in claves_financieras:
             continue
         trozo = _valor_html(contenido)
         if not trozo:
@@ -956,6 +959,150 @@ def escribir_xlsx_simulado(ruta, valores, filas):
 
     libro.save(ruta)
     return True
+
+
+
+# ---------------------------------------------------------------------------
+# Informe financiero (solo números, en grilla tipo Excel)
+# ---------------------------------------------------------------------------
+def informe_financiero_html(proyecto, valores, filas, elegido="recomendado",
+                            monto_cotizacion=0, logo_url="", hay_logo=False):
+    import datetime as _dt
+    codigo = _esc(proyecto.get("codigo", ""))
+    nombre = _esc(str(proyecto.get("nombre") or "")[:120])
+    organismo = _esc(proyecto.get("organismo", ""))
+    presupuesto = int(valores.get("presupuesto") or 0)
+    iva = float(valores.get("iva") or 0.19)
+    costo = int(valores.get("costo") or 0)
+    margen_obj = float(valores.get("margen_objetivo") or 0.35)
+    neto = int(valores.get("neto") or 0)
+    if not neto and 0 < margen_obj < 1 and costo:
+        neto = int(round(costo / (1 - margen_obj)))
+    bruto_propio = int(round(neto * (1 + iva))) if neto else 0
+    ganancia_propia = neto - costo
+    margen_real = (ganancia_propia / neto * 100) if neto else 0
+    logo = f'<img src="{_esc(logo_url)}" alt="Logo">' if hay_logo else ""
+    hoy = _dt.date.today().strftime("%d-%m-%Y")
+    etiquetas = {"competitivo": "Competitivo", "recomendado": "Recomendado",
+                 "conservador": "Conservador", "mi_precio": "Tu precio"}
+
+    def caja(etiqueta, valor, destacada=False, tono=""):
+        clase = "caja-f" + (" destacada" if destacada else "")
+        color = f' style="color:{tono}"' if tono else ""
+        return (f'<div class="{clase}"><span>{_esc(etiqueta)}</span>'
+                f'<strong{color}>{_esc(valor)}</strong></div>')
+
+    filas_tabla = []
+    for f in filas:
+        filas_tabla.append(
+            "<tr>"
+            f"<td><strong>{_esc(f['escenario'])}</strong></td>"
+            f"<td class='der'>{f['pct']*100:.0f}%</td>"
+            f"<td class='der'>{_clp(f['neto'])}</td>"
+            f"<td class='der'>{_clp(f['iva'])}</td>"
+            f"<td class='der'>{_clp(f['bruto'])}</td>"
+            f"<td class='der'>{_clp(f['costo'])}</td>"
+            f"<td class='der'>{_clp(f['ganancia'])}</td>"
+            f"<td class='der'>{f['margen']:.1f}%</td>"
+            f"<td class='der'>{f['roi']:.1f}%</td>"
+            "</tr>")
+    tabla = ("<table class='grilla'><thead><tr>"
+             "<th>Escenario</th><th class='der'>% tope</th><th class='der'>Oferta neta</th>"
+             "<th class='der'>IVA</th><th class='der'>Total bruto</th>"
+             "<th class='der'>Costo interno</th><th class='der'>Ganancia</th>"
+             "<th class='der'>Margen</th><th class='der'>ROI</th>"
+             "</tr></thead><tbody>" + "".join(filas_tabla) + "</tbody></table>")
+
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Informe financiero · {codigo}</title>
+<style>
+@page{{size:A4;margin:14mm}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:#eef1f6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",
+Roboto,Arial,sans-serif;color:#1c2536;font-size:12.5px;line-height:1.55}}
+.hoja{{max-width:860px;margin:18px auto;background:#fff;border-radius:14px;
+box-shadow:0 8px 30px rgba(18,33,58,.10);padding:30px 34px 38px}}
+.barra{{max-width:860px;margin:14px auto 0;display:flex;justify-content:flex-end;gap:10px}}
+.barra button{{background:#12213a;color:#fff;border:0;border-radius:9px;padding:9px 16px;
+font-size:13px;font-weight:650;cursor:pointer;font-family:inherit}}
+.cab{{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
+border-bottom:2px solid #12213a;padding-bottom:12px;margin-bottom:18px}}
+.cab img{{height:48px;max-width:170px;object-fit:contain}}
+.cab .der{{text-align:right;font-size:11.5px;color:#5b6674}}
+.cab .der strong{{color:#12213a;font-size:12.5px;display:block}}
+h1{{font-size:15px;margin:0 0 2px;color:#12213a}}
+h2{{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:#1e3a5f;
+margin:20px 0 8px;padding-bottom:5px;border-bottom:1px solid #e3e7ee}}
+.cajas{{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:9px}}
+.caja-f{{border:1px solid #dfe4ec;border-radius:9px;padding:9px 11px;background:#fafbfd}}
+.caja-f span{{display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;
+color:#8b95a4;font-weight:700;margin-bottom:2px}}
+.caja-f strong{{font-size:13.5px;color:#12213a}}
+.caja-f.destacada{{background:#ecfdf5;border-color:#a7f3d0}}
+.caja-f.destacada strong{{color:#065f46}}
+.grilla{{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px}}
+.grilla th{{background:#12213a;color:#fff;text-align:left;padding:7px 8px;font-weight:600;
+font-size:10px;text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}}
+.grilla td{{border:1px solid #c9d2de;padding:6px 8px}}
+.grilla tbody tr:nth-child(even) td{{background:#fafbfd}}
+.grilla .der{{text-align:right}}
+.nota{{background:#f3f6fa;border-left:3px solid #12213a;padding:10px 14px;border-radius:0 8px 8px 0;
+font-size:11.5px;margin-top:12px}}
+.pie{{margin-top:24px;border-top:1px solid #e3e7ee;padding-top:9px;font-size:9.5px;
+color:#8b95a4;text-align:center}}
+@media print{{body{{background:#fff}}.hoja{{box-shadow:none;margin:0;border-radius:0;padding:0}}
+.barra{{display:none}}}}
+</style></head><body>
+<div class="barra"><button onclick="window.print()">Imprimir / Guardar PDF</button></div>
+<div class="hoja">
+  <div class="cab">
+    <div>{logo}<div style="font-size:10.5px;color:#5b6674;margin-top:6px">{organismo}</div></div>
+    <div class="der">
+      <strong>Informe financiero</strong>
+      {codigo}<br>{hoy}
+    </div>
+  </div>
+
+  <h1>{nombre}</h1>
+
+  <h2>Datos del proceso</h2>
+  <div class="cajas">
+    {caja("Presupuesto oficial (con IVA)", _clp(presupuesto))}
+    {caja("Costo interno total", _clp(costo))}
+    {caja("IVA", f"{iva*100:.0f}%")}
+    {caja("Escenario elegido", etiquetas.get(elegido, "Recomendado"))}
+    {caja("Monto en la cotización", _clp(monto_cotizacion), True)}
+  </div>
+
+  <h2>Tu precio por margen objetivo</h2>
+  <div class="cajas">
+    {caja("Margen objetivo", f"{margen_obj*100:.0f}%")}
+    {caja("Oferta neta", _clp(neto))}
+    {caja("IVA", _clp(bruto_propio - neto))}
+    {caja("Total bruto", _clp(bruto_propio), True)}
+    {caja("Ganancia", _clp(ganancia_propia))}
+    {caja("Margen real", f"{margen_real:.1f}%")}
+  </div>
+
+  <h2>Escenarios calculados</h2>
+  {tabla}
+
+  <h2>Resultado</h2>
+  <div class="nota">
+    Se cotiza el escenario <strong>{etiquetas.get(elegido, "Recomendado")}</strong> por
+    <strong>{_clp(monto_cotizacion)}</strong> con IVA incluido. Sobre el costo interno de
+    {_clp(costo)}, la ganancia estimada es
+    <strong>{_clp(max(0, int(round(monto_cotizacion / (1 + iva))) - costo))}</strong>
+    y el margen {((int(round(monto_cotizacion / (1 + iva))) - costo) / int(round(monto_cotizacion / (1 + iva))) * 100) if monto_cotizacion else 0:.1f}%.
+  </div>
+
+  <div class="pie">Documento generado con LICITAIA · {codigo}</div>
+</div>
+</body></html>"""
+
 
 
 def vista_archivo(ruta, nombre):
