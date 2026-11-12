@@ -296,7 +296,7 @@ def documento_html(titulo_doc, datos, logo_url="", hay_logo=False, meta_extra=""
     claves_financieras = ("escenarios", "estudio_financiero", "dictamen", "recomendaciones",
                           "conclusion", "roi", "margen", "costos", "flujo_caja",
                           "justificacion_precio", "precio_recomendado", "escenarios_precio",
-                          "simulacion_escenarios")
+                          "simulacion_escenarios", "estudio_financiero_escenarios")
     es_financiero = str(proyecto.get("_tipo_doc") or "").lower() == "financiero"
     cuerpo = []
     for clave, contenido in informes.items():
@@ -966,7 +966,7 @@ def escribir_xlsx_simulado(ruta, valores, filas):
 # Informe financiero (solo números, en grilla tipo Excel)
 # ---------------------------------------------------------------------------
 def informe_financiero_html(proyecto, valores, filas, elegido="recomendado",
-                            monto_cotizacion=0, logo_url="", hay_logo=False):
+                            monto_cotizacion=0, logo_url="", hay_logo=False, estudio=None):
     import datetime as _dt
     codigo = _esc(proyecto.get("codigo", ""))
     nombre = _esc(str(proyecto.get("nombre") or "")[:120])
@@ -1012,6 +1012,43 @@ def informe_financiero_html(proyecto, valores, filas, elegido="recomendado",
              "<th class='der'>Costo interno</th><th class='der'>Ganancia</th>"
              "<th class='der'>Margen</th><th class='der'>ROI</th>"
              "</tr></thead><tbody>" + "".join(filas_tabla) + "</tbody></table>")
+
+    bloque_estudio = ""
+    if isinstance(estudio, dict) and estudio:
+        tope = estudio.get("presupuesto_oficial_tope_bruto_clp") or presupuesto
+        neto_max = estudio.get("neto_maximo_oficial_clp") or 0
+        regla = estudio.get("regla_iva") or (
+            "El presupuesto oficial publicado ya incluye el IVA de 19%.")
+        filas_est = []
+        for clave_est, contenido in estudio.items():
+            if not isinstance(contenido, dict):
+                continue
+            if "porcentaje_tope" not in contenido:
+                continue
+            filas_est.append(
+                "<tr>"
+                f"<td><strong>{_esc(_titulo(clave_est))}</strong></td>"
+                f"<td class='der'>{float(contenido.get('porcentaje_tope') or 0):.0f}%</td>"
+                f"<td class='der'>{_clp(contenido.get('neto_clp') or 0)}</td>"
+                f"<td class='der'>{_clp(contenido.get('iva_19_clp') or 0)}</td>"
+                f"<td class='der'>{_clp(contenido.get('total_bruto_clp') or 0)}</td>"
+                f"<td>{_esc(contenido.get('estrategia') or '')}</td>"
+                "</tr>")
+        tabla_est = ""
+        if filas_est:
+            tabla_est = ("<table class='grilla'><thead><tr><th>Escenario</th>"
+                         "<th class='der'>% tope</th><th class='der'>Neto</th>"
+                         "<th class='der'>IVA</th><th class='der'>Total bruto</th>"
+                         "<th>Estrategia</th></tr></thead><tbody>"
+                         + "".join(filas_est) + "</tbody></table>")
+        bloque_estudio = (
+            "<h2>Estudio financiero del proceso</h2>"
+            "<div class='cajas'>"
+            + caja("Presupuesto oficial (tope bruto)", _clp(int(tope or 0)))
+            + caja("Neto máximo oficial", _clp(int(neto_max or 0)))
+            + "</div>"
+            + "<div class='nota' style='margin-top:10px'>" + _esc(regla) + "</div>"
+            + tabla_est)
 
     return f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8">
@@ -1086,6 +1123,8 @@ color:#8b95a4;text-align:center}}
     {caja("Ganancia", _clp(ganancia_propia))}
     {caja("Margen real", f"{margen_real:.1f}%")}
   </div>
+
+  {bloque_estudio}
 
   <h2>Escenarios calculados</h2>
   {tabla}

@@ -731,7 +731,9 @@ class Manejador(BaseHTTPRequestHandler):
                         elegido=str(valores_fin.get("escenario_cotizacion") or "recomendado"),
                         monto_cotizacion=_monto_recomendado(proyecto),
                         logo_url=f"/p/{partes[1]}/logo",
-                        hay_logo=os.path.isfile(RUTA_LOGO)), "text/html; charset=utf-8")
+                        hay_logo=os.path.isfile(RUTA_LOGO),
+                        estudio=(datos.get("informes") or {}).get(
+                            "estudio_financiero_escenarios")), "text/html; charset=utf-8")
                 html_doc = portal_ui.documento_html(
                     titulo, datos,
                     logo_url=f"/p/{partes[1]}/logo",
