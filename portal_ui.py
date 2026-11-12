@@ -696,6 +696,9 @@ display:flex;justify-content:space-between;align-items:center}}
       <div class="grid">
         <div class="campo"><label>Margen objetivo (%)</label>
           <input name="margen_objetivo" type="text" inputmode="decimal" value="{margen_obj*100:g}"></div>
+        <div class="campo"><label>Monto neto <span class="pista">(editable)</span></label>
+          <input name="neto" type="text" inputmode="numeric"
+                 value="{neto_obj:,}".replace(",", ".")></div>
         <div class="campo"><label>IVA (%)</label>
           <input name="iva" type="text" inputmode="decimal" value="{iva*100:g}"></div>
       </div>
@@ -706,6 +709,7 @@ display:flex;justify-content:space-between;align-items:center}}
         <div class="caja-res destacada"><span>Total bruto</span>
           <strong id="m-bruto">{_clp(bruto_obj)}</strong></div>
         <div class="caja-res"><span>Ganancia</span><strong id="m-gan">{_clp(ganancia_obj)}</strong></div>
+        <div class="caja-res"><span>Margen real</span><strong id="m-mar">{margen_obj*100:.1f}%</strong></div>
       </div>
       <div class="acciones">
         <button class="btn" type="submit" name="accion" value="mi_precio">
@@ -753,7 +757,7 @@ display:flex;justify-content:space-between;align-items:center}}
   }};
   var $ = function (n) {{ return document.querySelector('input[name=' + n + ']'); }};
   var horas = $('horas'), valorHora = $('valor_hora'), cloud = $('cloud'), gestion = $('gestion');
-  var margen = $('margen_objetivo'), iva = $('iva');
+  var margen = $('margen_objetivo'), iva = $('iva'), netoCampo = $('neto');
   function recalcular() {{
     var c = num(horas.value) * num(valorHora.value) + num(cloud.value) + num(gestion.value);
     document.getElementById('c-total').textContent = fmt(c);
@@ -762,15 +766,30 @@ display:flex;justify-content:space-between;align-items:center}}
     if (m > 1) m = m / 100;
     var i = dec(iva.value);
     if (i > 1) i = i / 100;
-    var neto = (m > 0 && m < 1) ? Math.round(c / (1 - m)) : c;
+    var netoEscrito = num(netoCampo ? netoCampo.value : 0);
+    var neto = netoEscrito > 0 ? netoEscrito
+                               : ((m > 0 && m < 1) ? Math.round(c / (1 - m)) : c);
     var bruto = Math.round(neto * (1 + i));
+    var margenReal = neto ? ((neto - c) / neto * 100) : 0;
     document.getElementById('m-costo').textContent = fmt(c);
     document.getElementById('m-neto').textContent = fmt(neto);
     document.getElementById('m-iva').textContent = fmt(bruto - neto);
     document.getElementById('m-bruto').textContent = fmt(bruto);
     document.getElementById('m-gan').textContent = fmt(neto - c);
+    var cajaMar = document.getElementById('m-mar');
+    if (cajaMar) cajaMar.textContent = margenReal.toFixed(1) + '%';
   }}
-  [horas, valorHora, cloud, gestion, margen, iva].forEach(function (campo) {{
+  function margenANeto() {{
+    var c = num(horas.value) * num(valorHora.value) + num(cloud.value) + num(gestion.value);
+    var m = dec(margen.value);
+    if (m > 1) m = m / 100;
+    if (m > 0 && m < 1 && netoCampo && c > 0) {{
+      netoCampo.value = Math.round(c / (1 - m)).toLocaleString('es-CL');
+    }}
+    recalcular();
+  }}
+  if (margen) margen.addEventListener('input', margenANeto);
+  [horas, valorHora, cloud, gestion, iva, netoCampo].forEach(function (campo) {{
     if (campo) campo.addEventListener('input', recalcular);
   }});
 }})();

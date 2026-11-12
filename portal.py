@@ -432,6 +432,16 @@ def _monto_recomendado(proyecto):
                 margen_cot = 0.35
             if margen_cot > 1:
                 margen_cot = margen_cot / 100.0
+            neto_preferido = _solo_digitos(cot.get("neto") or 0)
+            if neto_preferido > 0:
+                iva_txt3 = cot.get("iva") or 0.19
+                try:
+                    iva_v3 = float(iva_txt3)
+                except Exception:
+                    iva_v3 = 0.19
+                if iva_v3 > 1:
+                    iva_v3 = iva_v3 / 100.0
+                return int(round(neto_preferido * (1 + iva_v3)))
             if costo_cot > 0 and 0 < margen_cot < 1:
                 neto_calc = int(round(costo_cot / (1 - margen_cot)))
                 iva_txt2 = cot.get("iva") or 0.19
@@ -996,10 +1006,13 @@ class Manejador(BaseHTTPRequestHandler):
                     elegido = "recomendado"
                 if elegido == "mi_precio":
                     margen_v = float(valores.get("margen_objetivo") or 0.35)
-                    if 0 < margen_v < 1 and costo > 0:
+                    neto_escrito = int(valores.get("neto") or 0)
+                    if neto_escrito > 0:
+                        neto_final = neto_escrito
+                    elif 0 < margen_v < 1 and costo > 0:
                         neto_final = int(round(costo / (1 - margen_v)))
                     else:
-                        neto_final = int(valores.get("neto") or 0)
+                        neto_final = costo
                     valores["neto"] = neto_final
                     monto_final = int(round(neto_final * (1 + valores["iva"])))
                 else:
