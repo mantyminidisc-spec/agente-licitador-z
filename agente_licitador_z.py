@@ -150,7 +150,7 @@ URL_APPS_SCRIPT = os.getenv(
 ).strip()
 
 CORREO_DESTINO = os.getenv("CORREO_DESTINO", "booknegocios2015@gmail.com")
-WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56997567519")
+WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56987567519")
 # En un contenedor "localhost" es el propio contenedor: hay que apuntar a la
 # URL real de la Evolution API (o dejarlo vacío para desactivar WhatsApp).
 WHATSAPP_API_URL = os.getenv("WHATSAPP_API_URL", "").strip()
@@ -165,7 +165,7 @@ WHATSAPP_INSTANCIA = os.getenv("WHATSAPP_INSTANCIA", "LICITAIA").strip()
 WHATSAPP_APIKEY = os.getenv("WHATSAPP_APIKEY", "").strip()
 WHATSAPP_WEBHOOK_URL = os.getenv("WHATSAPP_WEBHOOK_URL", "").strip()
 # Número al que llega el aviso del cliente (por defecto, el que indicaste).
-WHATSAPP_CLIENTE = [n.strip() for n in os.getenv("WHATSAPP_CLIENTE", "+56997567519").split(",") if n.strip()]
+WHATSAPP_CLIENTE = [n.strip() for n in os.getenv("WHATSAPP_CLIENTE", "+56987567519").split(",") if n.strip()]
 # Números internos (con ganancias). Vacío = no manda el resumen, solo el aviso por proyecto.
 WHATSAPP_INTERNO = [n.strip() for n in os.getenv("WHATSAPP_INTERNO", "").split(",") if n.strip()]
 WHATSAPP_AVISO_CLIENTE = os.getenv("WHATSAPP_AVISO_CLIENTE", "1").strip() != "0"
@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.6"
+VERSION_LICITAIA = "19.7"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -7152,6 +7152,65 @@ def limpiar_clones():
     return 0
 
 
+def probar_correo(destino=None):
+    """Manda un correo de prueba por el puente de Apps Script. Uso: --probar-correo [email]"""
+    destino = (destino or "").strip() or CORREO_DESTINO
+    print("")
+    print("📧 PRUEBA DE CORREO")
+    print(f"   Destino : {destino}")
+    print(f"   Puente  : {(URL_APPS_SCRIPT or '(sin configurar)')[:75]}")
+    if not URL_APPS_SCRIPT:
+        print("")
+        print("   ❌ Falta APPS_SCRIPT_URL en las variables de entorno.")
+        return 1
+    payload = {
+        "empresa": "Mantytech_SpA",
+        "email_destino": destino,
+        "asunto_email": "✅ [LICITAIA] prueba de correo",
+        "html_resumen": ("<p>Prueba de conexión del puente de correo de LICITAIA.</p>"
+                         "<p>Si recibes este mensaje, los avisos por email funcionan.</p>"),
+        "enviar_correo": True,
+        "id_envio": "prueba-" + datetime.datetime.now().strftime("%Y%m%d%H%M%S"),
+        "subcarpeta_portal": "",
+        "codigo_id": "PRUEBA",
+        "archivos": [],
+    }
+    try:
+        respuesta = requests.post(
+            URL_APPS_SCRIPT,
+            data=json.dumps(payload, ensure_ascii=False),
+            headers={"Content-Type": "text/plain;charset=utf-8"},
+            timeout=90,
+            allow_redirects=True,
+        )
+    except Exception as e:
+        print("")
+        print(f"   ❌ No se pudo conectar con el puente: {str(e)[:120]}")
+        print("      Revisa la red del contenedor o si el Apps Script sigue publicado.")
+        return 1
+    cuerpo = (respuesta.text or "").strip()
+    print("")
+    print(f"   HTTP       : {respuesta.status_code}")
+    print(f"   Respuesta  : {cuerpo[:400] or '(vacía)'}")
+    bajo = cuerpo.lower()
+    if respuesta.status_code == 200 and ('"ok"' in bajo or "ok" == bajo[:2]):
+        print("")
+        print(f"   ✅ El puente respondió OK. Revisa la bandeja de {destino} (y el spam).")
+        return 0
+    print("")
+    if "cuota" in bajo or "quota" in bajo:
+        print("   ⚠️ El puente dice que se agotó la cuota de correo de Google.")
+        print("      Las cuentas Gmail tienen un límite diario de envíos.")
+        return 1
+    if "iniciar sesión" in bajo or "accounts.google" in bajo:
+        print("   ⚠️ El Apps Script pide iniciar sesión: hay que volver a publicarlo")
+        print("      con acceso 'Cualquier persona' y copiar la nueva URL.")
+        return 1
+    print("   ⚠️ El puente respondió, pero no confirmó el envío.")
+    print("      Revisa el despliegue del Apps Script (Implementar → Gestionar implementaciones).")
+    return 1
+
+
 def probar_whatsapp(destino=None):
     """Manda un WhatsApp de prueba.  Uso: --probar-whatsapp +56912345678"""
     destino = (destino or "").strip() or (WHATSAPP_CLIENTE[0] if WHATSAPP_CLIENTE else WHATSAPP_DESTINO)
@@ -7224,6 +7283,8 @@ if __name__ == "__main__":
         sys.exit(adjuntar_archivos(argumentos[1], argumentos[2:]))
     elif argumentos[0] in ("--diagnostico-visor", "diagnostico-visor") and len(argumentos) > 1:
         sys.exit(diagnostico_visor(argumentos[1]))
+    elif argumentos[0] in ("--probar-correo", "probar-correo"):
+        sys.exit(probar_correo(argumentos[1] if len(argumentos) > 1 else None))
     elif argumentos[0] in ("--probar-whatsapp", "probar-whatsapp"):
         sys.exit(probar_whatsapp(argumentos[1] if len(argumentos) > 1 else None))
     elif argumentos[0] in ("--solo-ca", "solo-ca"):
