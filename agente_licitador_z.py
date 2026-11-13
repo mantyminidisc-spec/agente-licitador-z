@@ -150,7 +150,7 @@ URL_APPS_SCRIPT = os.getenv(
 ).strip()
 
 CORREO_DESTINO = os.getenv("CORREO_DESTINO", "booknegocios2015@gmail.com")
-WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56950901627")
+WHATSAPP_DESTINO = os.getenv("WHATSAPP_DESTINO", "+56997567519")
 # En un contenedor "localhost" es el propio contenedor: hay que apuntar a la
 # URL real de la Evolution API (o dejarlo vacío para desactivar WhatsApp).
 WHATSAPP_API_URL = os.getenv("WHATSAPP_API_URL", "").strip()
@@ -165,7 +165,7 @@ WHATSAPP_INSTANCIA = os.getenv("WHATSAPP_INSTANCIA", "LICITAIA").strip()
 WHATSAPP_APIKEY = os.getenv("WHATSAPP_APIKEY", "").strip()
 WHATSAPP_WEBHOOK_URL = os.getenv("WHATSAPP_WEBHOOK_URL", "").strip()
 # Número al que llega el aviso del cliente (por defecto, el que indicaste).
-WHATSAPP_CLIENTE = [n.strip() for n in os.getenv("WHATSAPP_CLIENTE", "+56950901627").split(",") if n.strip()]
+WHATSAPP_CLIENTE = [n.strip() for n in os.getenv("WHATSAPP_CLIENTE", "+56997567519").split(",") if n.strip()]
 # Números internos (con ganancias). Vacío = no manda el resumen, solo el aviso por proyecto.
 WHATSAPP_INTERNO = [n.strip() for n in os.getenv("WHATSAPP_INTERNO", "").split(",") if n.strip()]
 WHATSAPP_AVISO_CLIENTE = os.getenv("WHATSAPP_AVISO_CLIENTE", "1").strip() != "0"
@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.5"
+VERSION_LICITAIA = "19.6"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
