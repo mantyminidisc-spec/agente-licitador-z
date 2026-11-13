@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.7"
+VERSION_LICITAIA = "19.8"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -6343,6 +6343,7 @@ class Agente5Entregador:
 
         Soporta Evolution API (WHATSAPP_API_URL + WHATSAPP_INSTANCIA + WHATSAPP_APIKEY)
         o un webhook genérico (WHATSAPP_WEBHOOK_URL) que reciba {"number", "text"}.
+        Solo cuenta como enviado si Evolution confirma el mensaje, no por HTTP 200.
         """
         destinos = [str(d).strip() for d in (destinos or []) if str(d).strip()]
         if not destinos:
@@ -6354,22 +6355,36 @@ class Agente5Entregador:
         if base:
             url = f"{base}/message/sendText/{WHATSAPP_INSTANCIA}" if WHATSAPP_INSTANCIA else base
             for numero in destinos:
+                limpio = (str(numero).replace(" ", "").replace("-", "")
+                          .replace("(", "").replace(")", "").lstrip("+"))
                 for intento in (1, 2):
                     try:
                         r = requests.post(
                             url,
-                            json={"number": numero, "text": texto},
+                            json={"number": limpio, "text": texto},
                             headers={"apikey": WHATSAPP_APIKEY,
                                      "Content-Type": "application/json"},
                             timeout=20,
                         )
-                        if r.status_code in (200, 201):
-                            print(f"   📲 [WhatsApp] enviado a {numero}")
+                        cuerpo = ""
+                        try:
+                            cuerpo = r.text or ""
+                        except Exception:
+                            cuerpo = ""
+                        bajo = cuerpo.lower()
+                        confirmado = False
+                        if r.status_code in (200, 201) and "error" not in bajo:
+                            confirmado = any(marca in bajo for marca in
+                                             ('"key"', '"id"', "pending", "server_ack",
+                                              "sent", '"status":"ok"'))
+                        if confirmado:
+                            print(f"   📲 [WhatsApp] enviado a {limpio}")
                             enviados += 1
                             break
-                        print(f"   [!] WhatsApp a {numero}: HTTP {r.status_code} {str(r.text)[:110]}")
+                        print(f"   [!] WhatsApp a {limpio}: HTTP {r.status_code} -> "
+                              f"{cuerpo[:220] or '(respuesta vacia)'}")
                     except Exception as e:
-                        print(f"   [!] WhatsApp a {numero}: {e}")
+                        print(f"   [!] WhatsApp a {limpio}: {e}")
                     time.sleep(3)
             return enviados
         if WHATSAPP_WEBHOOK_URL:
@@ -6386,7 +6401,6 @@ class Agente5Entregador:
                     print(f"   [!] WhatsApp webhook: {e}")
             return enviados
         return 0
-
     def _mensaje_cliente_whatsapp(self, expediente, escenarios, estado_nube=None):
         """Aviso para el CLIENTE: sin márgenes ni datos financieros internos."""
         tipo = "Compra Ágil" if expediente.get("tipo_portal") == "COMPRA_AGIL" else "Licitación pública"
@@ -7228,6 +7242,15 @@ def probar_whatsapp(destino=None):
         print("         WHATSAPP_APIKEY=tu_clave")
         print("      Después vuelve a desplegar y repite la prueba.")
         return 1
+    try:
+        _base_wsp = (WHATSAPP_API_URL or WHATSAPP_API_LOCAL or "").rstrip("/")
+        _r_estado = requests.get(
+            f"{_base_wsp}/instance/connectionState/{WHATSAPP_INSTANCIA}",
+            headers={"apikey": WHATSAPP_APIKEY}, timeout=15)
+        print(f"   Estado    : HTTP {_r_estado.status_code} "
+              f"{str(_r_estado.text)[:180]}")
+    except Exception as _e_estado:
+        print(f"   Estado    : no se pudo consultar ({str(_e_estado)[:90]})")
     agente5 = Agente5Entregador({"email_notificaciones": CORREO_DESTINO})
     texto = ("✅ *LICITAIA* · prueba de conexión\n"
              "Si recibes este mensaje, las notificaciones ya están funcionando.")
