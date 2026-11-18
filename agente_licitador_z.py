@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "19.10"
+VERSION_LICITAIA = "20.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -329,6 +329,204 @@ _ULTIMA_LLAMADA_IA = [0.0]
 _FALLOS_CUOTA = [0]
 
 
+# ==============================================================================
+# CONTROL DE CONSUMO DE IA (tokens y costo estimado)  ·  v20
+# ==============================================================================
+RUTA_CONSUMO = os.path.join(DIRECTORIO_RAIZ, "consumo_ia.json")
+REGISTRAR_CONSUMO = (os.getenv("REGISTRAR_CONSUMO") or "1").strip() != "0"
+CACHE_IA_ACTIVA = (os.getenv("CACHE_IA") or "1").strip() != "0"
+CACHE_IA_DIAS = int(os.getenv("CACHE_IA_DIAS", "7") or 7)
+CARPETA_CACHE_IA = os.path.join(DIRECTORIO_RAIZ, "cache_ia")
+
+# Precio en USD por millón de tokens. Ajustable por variable de entorno.
+PRECIOS_IA = {
+    "deepseek-v4-pro": {"entrada": 0.55, "cache": 0.07, "salida": 2.19},
+    "deepseek-chat": {"entrada": 0.27, "cache": 0.07, "salida": 1.10},
+    "deepseek-flash": {"entrada": 0.27, "cache": 0.07, "salida": 1.10},
+    "deepseek-reasoner": {"entrada": 0.55, "cache": 0.07, "salida": 2.19},
+    "gemini-2.5-flash": {"entrada": 0.30, "cache": 0.075, "salida": 2.50},
+    "gpt-oss-120b": {"entrada": 0.15, "cache": 0.15, "salida": 0.60},
+    "llama-3.3-70b-versatile": {"entrada": 0.59, "cache": 0.59, "salida": 0.79},
+}
+PRECIO_DEFECTO = {"entrada": 0.55, "cache": 0.07, "salida": 2.19}
+
+_CONSUMO_RUN = {"llamadas": 0, "entrada": 0, "salida": 0, "cache": 0, "modelos": {}}
+
+
+def _precio_modelo(nombre):
+    """Busca el precio del modelo por coincidencia parcial."""
+    nombre = (nombre or "").lower()
+    for clave, precio in PRECIOS_IA.items():
+        if clave in nombre:
+            return precio
+    return PRECIO_DEFECTO
+
+
+def _registrar_consumo(datos, modelo, prompt=""):
+    """Acumula los tokens que informa el proveedor en la respuesta."""
+    if not REGISTRAR_CONSUMO:
+        return
+    try:
+        uso = (datos or {}).get("usage") or {}
+        entrada = int(uso.get("prompt_tokens") or 0)
+        salida = int(uso.get("completion_tokens") or 0)
+        cache = int(uso.get("prompt_cache_hit_tokens") or 0)
+        detalles = uso.get("prompt_tokens_details") or {}
+        if not cache:
+            cache = int(detalles.get("cached_tokens") or 0)
+        if not entrada and not salida:
+            # el proveedor no informó: se estima con el largo del texto
+            entrada = int(len(prompt or "") / 4)
+        _CONSUMO_RUN["llamadas"] += 1
+        _CONSUMO_RUN["entrada"] += entrada
+        _CONSUMO_RUN["salida"] += salida
+        _CONSUMO_RUN["cache"] += cache
+        clave = modelo or "desconocido"
+        acumulado = _CONSUMO_RUN["modelos"].setdefault(
+            clave, {"llamadas": 0, "entrada": 0, "salida": 0, "cache": 0})
+        acumulado["llamadas"] += 1
+        acumulado["entrada"] += entrada
+        acumulado["salida"] += salida
+        acumulado["cache"] += cache
+    except Exception as e:
+        print(f"      [!] no se pudo registrar el consumo: {str(e)[:80]}")
+
+
+def _costo_de(entrada, salida, cache, modelo):
+    """Costo estimado en USD."""
+    precio = _precio_modelo(modelo)
+    cache = min(cache, entrada)
+    normales = max(0, entrada - cache)
+    return ((normales / 1_000_000) * precio["entrada"]
+            + (cache / 1_000_000) * precio["cache"]
+            + (salida / 1_000_000) * precio["salida"])
+
+
+def _costo_run_actual():
+    total = 0.0
+    for modelo, datos in _CONSUMO_RUN["modelos"].items():
+        total += _costo_de(datos["entrada"], datos["salida"], datos["cache"], modelo)
+    return total
+
+
+def _guardar_consumo(etiqueta=""):
+    """Agrega la corrida al archivo histórico de consumo."""
+    if not REGISTRAR_CONSUMO or not _CONSUMO_RUN["llamadas"]:
+        return
+    registro = {
+        "fecha": datetime.datetime.now().isoformat(timespec="seconds"),
+        "etiqueta": etiqueta or "corrida",
+        "llamadas": _CONSUMO_RUN["llamadas"],
+        "entrada": _CONSUMO_RUN["entrada"],
+        "salida": _CONSUMO_RUN["salida"],
+        "cache": _CONSUMO_RUN["cache"],
+        "costo_usd": round(_costo_run_actual(), 4),
+        "modelos": _CONSUMO_RUN["modelos"],
+    }
+    try:
+        historial = []
+        if os.path.isfile(RUTA_CONSUMO):
+            with open(RUTA_CONSUMO, encoding="utf-8") as f:
+                historial = json.load(f) or []
+        historial.append(registro)
+        historial = historial[-600:]
+        with open(RUTA_CONSUMO, "w", encoding="utf-8") as f:
+            json.dump(historial, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        print(f"   [!] no se pudo guardar el consumo: {str(e)[:80]}")
+
+
+def _cache_clave(payload):
+    """Hash estable de la petición (modelo + mensajes + límites)."""
+    try:
+        base = json.dumps({
+            "m": (payload or {}).get("model"),
+            "msgs": (payload or {}).get("messages"),
+            "mt": (payload or {}).get("max_tokens"),
+            "t": (payload or {}).get("temperature"),
+        }, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(base.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _cache_leer(clave):
+    """Devuelve la respuesta guardada, si existe y no está vencida."""
+    if not CACHE_IA_ACTIVA or not clave:
+        return None
+    ruta = os.path.join(CARPETA_CACHE_IA, clave + ".json")
+    try:
+        if not os.path.isfile(ruta):
+            return None
+        if (time.time() - os.path.getmtime(ruta)) > CACHE_IA_DIAS * 86400:
+            return None
+        with open(ruta, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _cache_guardar(clave, valor):
+    if not CACHE_IA_ACTIVA or not clave or valor is None:
+        return
+    try:
+        os.makedirs(CARPETA_CACHE_IA, exist_ok=True)
+        with open(os.path.join(CARPETA_CACHE_IA, clave + ".json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(valor, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def mostrar_costos():
+    """Resumen de consumo y costo estimado. Uso: --costos"""
+    print("")
+    print("=" * 74)
+    print("  CONSUMO DE IA · LICITAIA")
+    print("=" * 74)
+    if not os.path.isfile(RUTA_CONSUMO):
+        print("  Todavía no hay registros. Se llenan en la próxima corrida.")
+        print("=" * 74)
+        return
+    try:
+        with open(RUTA_CONSUMO, encoding="utf-8") as f:
+            historial = json.load(f) or []
+    except Exception:
+        print("  No se pudo leer el archivo de consumo.")
+        return
+    hoy = datetime.date.today()
+    desde_mes = hoy.replace(day=1)
+    acumulados = {"hoy": [0, 0.0, 0], "mes": [0, 0.0, 0], "total": [0, 0.0, 0]}
+    for registro in historial:
+        try:
+            fecha = datetime.datetime.fromisoformat(registro.get("fecha", "")).date()
+        except Exception:
+            continue
+        costo = float(registro.get("costo_usd") or 0)
+        tokens = int(registro.get("entrada") or 0) + int(registro.get("salida") or 0)
+        for clave, aplica in (("total", True), ("mes", fecha >= desde_mes),
+                              ("hoy", fecha == hoy)):
+            if aplica:
+                acumulados[clave][0] += 1
+                acumulados[clave][1] += costo
+                acumulados[clave][2] += tokens
+    print(f"  {'Período':<12}{'Corridas':>10}{'Tokens':>14}{'Costo USD':>14}{'Costo CLP':>14}")
+    for nombre, clave in (("Hoy", "hoy"), ("Este mes", "mes"), ("Histórico", "total")):
+        corridas, costo, tokens = acumulados[clave]
+        print(f"  {nombre:<12}{corridas:>10}{tokens:>14,}{costo:>14.2f}{costo * 950:>14,.0f}")
+    print("")
+    print("  Últimas 8 corridas:")
+    for registro in historial[-8:]:
+        fecha = str(registro.get("fecha", ""))[:16].replace("T", " ")
+        print(f"    {fecha}  {registro.get('etiqueta', '')[:22]:<22} "
+              f"{int(registro.get('entrada') or 0):>8,} ent · "
+              f"{int(registro.get('salida') or 0):>7,} sal · "
+              f"${float(registro.get('costo_usd') or 0):.3f}")
+    print("")
+    print("  Referencia: cache_hit ahorra ~87% del costo de entrada.")
+    print("=" * 74)
+
+
 def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3,
                          base_url=None, api_key=None, modelo=None):
     """Llamada a un proveedor compatible con OpenAI (DeepSeek, Groq, OpenRouter...).
@@ -355,6 +553,11 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
         "Authorization": f"Bearer {_clave}",
         "Content-Type": "application/json",
     }
+    _clave_cache = _cache_clave(payload)
+    _en_cache = _cache_leer(_clave_cache)
+    if _en_cache is not None:
+        print("      ♻️  respuesta reutilizada del caché (sin costo)")
+        return _en_cache, ""
     ultimo = "sin intentos"
     for n in range(1, max(1, intentos) + 1):
         _faltante = PAUSA_MINIMA_IA - (time.time() - _ULTIMA_LLAMADA_IA[0])
@@ -403,6 +606,7 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
             else:
                 _FALLOS_CUOTA[0] = 0
                 datos = r.json()
+                _registrar_consumo(datos, modelo or IA_MODELO, prompt)
                 contenido = ((datos.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
                 contenido = contenido.strip()
                 if not contenido:
@@ -411,13 +615,17 @@ def _generar_json_openai(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
                     contenido = re.sub(r"^\s*```(?:json)?|```\s*$", "", contenido,
                                        flags=re.IGNORECASE).strip()
                     try:
-                        return json.loads(contenido), ""
+                        _resultado_json = json.loads(contenido)
+                        _cache_guardar(_clave_cache, _resultado_json)
+                        return _resultado_json, ""
                     except Exception as e_json:
                         i = contenido.find("{")
                         j = contenido.rfind("}")
                         if i >= 0 and j > i:
                             try:
-                                return json.loads(contenido[i:j + 1]), ""
+                                _resultado_json2 = json.loads(contenido[i:j + 1])
+                                _cache_guardar(_clave_cache, _resultado_json2)
+                                return _resultado_json2, ""
                             except Exception:
                                 pass
                         ultimo = f"JSON inválido ({e_json}) largo={len(contenido)}"
@@ -436,7 +644,7 @@ def _ia_limite_alcanzado():
 IA_PREMIUM_URL = os.getenv("IA_PREMIUM_URL", "").strip().rstrip("/")
 IA_PREMIUM_KEY = os.getenv("IA_PREMIUM_KEY", "").strip()
 IA_PREMIUM_MODELO = os.getenv("IA_PREMIUM_MODELO", "").strip()
-IA_PREMIUM_TOPE_TEXTO = int(os.getenv("IA_PREMIUM_TOPE_TEXTO", "60000"))
+IA_PREMIUM_TOPE_TEXTO = int(os.getenv("IA_PREMIUM_TOPE_TEXTO", "80000"))
 PREMIUM_ACTIVO = bool(IA_PREMIUM_URL and IA_PREMIUM_KEY and IA_PREMIUM_MODELO)
 
 
@@ -6760,6 +6968,7 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
                     print("   📲 Aviso de \"sin novedades\" enviado por WhatsApp")
             except Exception as _e_aviso:
                 print(f"   [!] No se pudo avisar por WhatsApp: {str(_e_aviso)[:60]}")
+    _guardar_consumo("barrido")
     print(f"🎉 PIPELINE FINALIZADO: {len(resultados_lote)} procesado(s) | {len(fallidos)} pendiente(s)")
     if fallidos:
         print(f"   ⚠️ Pendientes (se reintentan en la próxima corrida): {', '.join(fallidos)}")
@@ -7306,6 +7515,8 @@ if __name__ == "__main__":
         sys.exit(adjuntar_archivos(argumentos[1], argumentos[2:]))
     elif argumentos[0] in ("--diagnostico-visor", "diagnostico-visor") and len(argumentos) > 1:
         sys.exit(diagnostico_visor(argumentos[1]))
+    elif argumentos[0] in ("--costos", "costos"):
+        mostrar_costos()
     elif argumentos[0] in ("--probar-correo", "probar-correo"):
         sys.exit(probar_correo(argumentos[1] if len(argumentos) > 1 else None))
     elif argumentos[0] in ("--probar-whatsapp", "probar-whatsapp"):
