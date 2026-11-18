@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.0"
+VERSION_LICITAIA = "20.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -4205,6 +4205,13 @@ ESTRUCTURA DE AUDITORÍA OBLIGATORIA (DEBES DESARROLLAR LAS 7 SECCIONES):
    * Opción 3 - Premium / Alta Gama al 98%: Total Bruto ${esc3['total_bruto_clp']:,} CLP (Neto: ${esc3['neto_clp']:,} CLP + IVA 19%: ${esc3['iva_19_clp']:,} CLP).
 7. PROPUESTA DE ESPECIFICACIONES TÉCNICAS ESPECIALIZADAS: Redaccion tecnica para el Agente 4. DEBES basarte 100% en los items y cantidades especificadas en los adjuntos leidos (citando el nombre de cada archivo adjunto). Desglosar en la tabla economica y tecnica EXACTAMENTE los items, cantidades y servicios solicitados en los archivos adjuntos. PROHIBIDO usar items genericos si los adjuntos contienen informacion especifica.
 
+REGLAS DE SALIDA (OBLIGATORIAS — control de costo y legibilidad):
+- Máximo 90 palabras por campo de texto y máximo 6 elementos por lista.
+- No copies párrafos completos de las bases: resume en una o dos frases.
+- No repitas el mismo dato en dos secciones.
+- Si un dato no aparece en los adjuntos, escribe "No informado en las bases".
+- El JSON completo no debe superar los 6.000 tokens.
+
 Genera la respuesta estrictamente en formato JSON válido con esta estructura:
 {{
   "identificacion_comprador": {{
@@ -4336,7 +4343,7 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
 """
 
         datos_ia, error_ia = _gemini_generar_json(
-            prompt, temperatura=0.2, max_tokens=16384, timeout=420, intentos=3,
+            prompt, temperatura=0.2, max_tokens=8192, timeout=420, intentos=3,
             premium=True
         )
         if datos_ia:
