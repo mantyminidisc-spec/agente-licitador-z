@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.1"
+VERSION_LICITAIA = "20.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -3798,7 +3798,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
         Devuelve dict con: archivo, objeto, requisitos, excluyentes, riesgos,
         preguntas. Si la IA falla, devuelve None (el informe sigue funcionando).
         """
-        recorte = (texto or "")[:5000]
+        recorte = (texto or "")[:4000]
         if len(recorte.strip()) < 150:
             return None
         if os.getenv("RESUMENES_IA", "0").strip() != "1":
@@ -3822,14 +3822,15 @@ Lee y transcribe el contenido completo en formato estructurado."""
             '"riesgos": ["riesgo concreto para el oferente, explicado"], '
             '"observaciones": ["clausula dudosa, ambigua o contraria a la ley, con el articulo"], '
             '"preguntas": ["pregunta lista para el foro de consultas"]}\n'
-            "Reglas: hasta 10 elementos por lista; cita cifras, plazos, articulos y "
+            "Reglas: hasta 6 elementos por lista, frases de menos de 20 palabras; "
+            "cita cifras, plazos, articulos y "
             "numeros de clausula cuando existan; si el documento no trata un tema, "
             "devuelve esa lista vacia; no inventes nada que no este en el texto.\n\n"
             f"DOCUMENTO: {nombre}\n"
             f"CONTENIDO:\n{recorte}"
         )
-        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=2200,
-                                            timeout=360, intentos=3, premium=True)
+        datos, error = _gemini_generar_json(prompt, temperatura=0.1, max_tokens=1600,
+                                            timeout=240, intentos=2, premium=False)
         if not datos:
             print(f"      [!] Sin resumen de {nombre}: {str(error)[:80]}")
             return None
@@ -3838,7 +3839,7 @@ Lee y transcribe el contenido completo en formato estructurado."""
             valor = datos.get(clave) or []
             if isinstance(valor, str):
                 valor = [valor]
-            return [str(v)[:400] for v in valor if str(v).strip()][:10]
+            return [str(v)[:300] for v in valor if str(v).strip()][:6]
 
         salida = {
             "archivo": nombre,
