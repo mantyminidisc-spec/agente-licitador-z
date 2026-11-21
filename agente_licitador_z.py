@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.2"
+VERSION_LICITAIA = "20.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -656,9 +656,21 @@ def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None,
     Aquí el fallo se informa y se reintenta.
     """
     if premium and PREMIUM_ACTIVO:
-        return _generar_json_openai(prompt, temperatura, max_tokens, timeout, intentos,
-                                    base_url=IA_PREMIUM_URL, api_key=IA_PREMIUM_KEY,
-                                    modelo=IA_PREMIUM_MODELO)
+        datos_premium, error_premium = _generar_json_openai(
+            prompt, temperatura, max_tokens, timeout, intentos,
+            base_url=IA_PREMIUM_URL, api_key=IA_PREMIUM_KEY,
+            modelo=IA_PREMIUM_MODELO)
+        if datos_premium:
+            return datos_premium, ""
+        if IA_API_KEY and IA_BASE_URL != IA_PREMIUM_URL:
+            print(f"      [!] Premium ({IA_PREMIUM_MODELO}) sin respuesta "
+                  f"({str(error_premium)[:50]}): se usa el respaldo {IA_MODELO}")
+            datos_respaldo, error_respaldo = _generar_json_openai(
+                prompt, temperatura, max_tokens, timeout, intentos)
+            if datos_respaldo:
+                return datos_respaldo, ""
+            return None, f"{error_premium} | respaldo: {error_respaldo}"
+        return None, error_premium
     if PROVEEDOR_IA == "openai":
         return _generar_json_openai(prompt, temperatura, max_tokens, timeout, intentos)
     if not API_KEY_GEMINI:
