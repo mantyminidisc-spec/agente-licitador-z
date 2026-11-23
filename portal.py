@@ -994,7 +994,8 @@ class Manejador(BaseHTTPRequestHandler):
                     proyecto, partes[1], datos,
                     hay_logo=os.path.isfile(RUTA_LOGO),
                     logo_url=f"/p/{partes[1]}/logo",
-                    cot=datos)
+                    cot=datos,
+                    informes=(_leer_datos_informe(proyecto["_carpeta"]).get("informes") or {}))
                 return self._enviar(200, html_cot, "text/html; charset=utf-8")
 
             if len(partes) == 3 and partes[2] == "logo":

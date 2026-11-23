@@ -1688,7 +1688,69 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
 # ---------------------------------------------------------------------------
 # Cotización imprimible
 # ---------------------------------------------------------------------------
-def cotizacion_html(proyecto, token, datos, hay_logo=True, logo_url="", cot=None):
+def _tecnicos_cotizacion(informes):
+    """Devuelve (html_especificaciones, html_cumplimiento) para la cotización."""
+    informes = informes or {}
+    tec = informes.get("propuesta_especificaciones_tecnicas") or {}
+    resumen = informes.get("resumen_ejecutivo_proyecto") or {}
+    alcance = (str(tec.get("alcance") or "").strip()
+               or str(resumen.get("alcance_real") or "").strip())
+    arquitectura = str(tec.get("arquitectura_solucion") or "").strip()
+    metodologia = str(tec.get("metodologia_trabajo") or "").strip()
+    sla = str(tec.get("sla_soporte_postventa") or "").strip()
+    garantia = str(tec.get("garantia_tecnica") or "").strip()
+    entregables = list(tec.get("entregables_clave") or [])
+    if not (alcance or arquitectura or metodologia or entregables):
+        alcance = str(informes.get("resumen_ejecutivo_proyecto", {}) or "").strip()
+        arquitectura = ("Servicio gestionado: configuración, puesta en marcha y soporte del "
+                        "entorno comprometido, con control de accesos y respaldo de información.")
+        metodologia = ("Metodología ágil con hitos de entrega continua: levantamiento, "
+                       "implementación, pruebas de aceptación y puesta en marcha.")
+        sla = ("Respuesta en menos de 2 horas hábiles y resolución en menos de 4 horas.")
+        garantia = "12 meses desde la recepción conforme, con soporte preferente."
+
+    partes = []
+    if alcance:
+        partes.append(f"<h3>Alcance del servicio</h3><p>{_esc(alcance)}</p>")
+    if arquitectura:
+        partes.append(f"<h3>Arquitectura de la solución</h3><p>{_esc(arquitectura)}</p>")
+    if metodologia:
+        partes.append(f"<h3>Metodología de trabajo</h3><p>{_esc(metodologia)}</p>")
+    if entregables:
+        filas = "".join(
+            f"<tr><td style='width:8%'>{i}</td><td>{_esc(str(e)[:160])}</td>"
+            f"<td style='width:18%'>Etapa {i} de {min(len(entregables), 6)}</td>"
+            f"<td style='width:12%'>Incluido</td></tr>"
+            for i, e in enumerate(entregables[:6], 1))
+        partes.append("<h3>Entregables comprometidos</h3>"
+                      "<table><tr><th>N°</th><th>Entregable</th><th>Etapa</th><th>Costo</th></tr>"
+                      + filas + "</table>")
+    if sla:
+        partes.append(f"<h3>Nivel de servicio (SLA)</h3><p>{_esc(sla)}</p>")
+    if garantia:
+        partes.append(f"<h3>Garantía técnica</h3><p>{_esc(garantia)}</p>")
+
+    normas = informes.get("normas_chilenas_nch_estandares") or {}
+    lista = normas.get("normas_aplicables") or informes.get("checklist_nch_detectadas") or []
+    legal = informes.get("auditoria_37_normas_ley_19886") or {}
+    cumplimiento = [
+        "Oferta presentada conforme a la Ley 19.886, su Reglamento (DS 661/2024) y las bases "
+        "del proceso. El proveedor declara no estar afecto a las inhabilidades del Art. 4.",
+    ]
+    for clave in ("cumplimiento_art_4", "probidad_e_intereses"):
+        if legal.get(clave):
+            cumplimiento.append(str(legal[clave])[:300])
+    if normas.get("estrategia_cumplimiento"):
+        cumplimiento.append(str(normas["estrategia_cumplimiento"])[:300])
+    html_cumplimiento = "<ul>" + "".join(f"<li>{_esc(x)}</li>" for x in cumplimiento) + "</ul>"
+    if lista:
+        html_cumplimiento += "<p><strong>Normas aplicadas:</strong></p><ul>" + "".join(
+            f"<li>{_esc(str(n)[:180])}</li>" for n in lista[:6]) + "</ul>"
+    return "".join(partes), html_cumplimiento
+
+
+def cotizacion_html(proyecto, token, datos, hay_logo=True, logo_url="", cot=None,
+                    informes=None):
     cot = dict(cot or {})
     codigo = _esc(proyecto.get("codigo", ""))
     organismo = _esc(proyecto.get("organismo", ""))
@@ -1700,6 +1762,7 @@ def cotizacion_html(proyecto, token, datos, hay_logo=True, logo_url="", cot=None
     validez = _esc(cot.get("validez") or "60 días")
     obs = _esc(cot.get("observaciones") or "")
     logo = f'<img src="{_esc(logo_url)}" alt="Logo" style="height:52px;max-width:170px;object-fit:contain">' if hay_logo else ""
+    secciones_tecnicas, cumplimiento = _tecnicos_cotizacion(informes)
 
     return f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8">
@@ -1764,6 +1827,8 @@ font-size:13px;font-weight:650;cursor:pointer}}
     Son {_clp(monto)} pesos con IVA incluido. La presente oferta no supera el presupuesto
     máximo informado por el organismo requirente.</p>
 
+  {secciones_tecnicas}
+
   <h2>Condiciones comerciales</h2>
   <ul>
     <li>Plazo de entrega: <strong>{plazo}</strong>, conforme a lo exigido en la ficha del proceso.</li>
@@ -1771,6 +1836,24 @@ font-size:13px;font-weight:650;cursor:pointer}}
     <li>Forma de pago: 30 días contra recepción conforme y factura electrónica (Ley 21.131).</li>
     <li>Garantía técnica de 12 meses desde la recepción, con soporte preferente.</li>
     {f"<li>{obs}</li>" if obs else ""}
+  </ul>
+
+  <h2>Cumplimiento normativo y estándares</h2>
+  {cumplimiento}
+
+  <h2>Supuestos y exclusiones</h2>
+  <ul>
+    <li>Ejecución en modalidad remota, con reuniones de coordinación en línea.</li>
+    <li>Plazos contados desde la orden de compra y la entrega de antecedentes.</li>
+    <li>Se excluye hardware, conectividad y licencias de terceros no detalladas.</li>
+    <li>Cambios de alcance posteriores se cotizan por separado.</li>
+  </ul>
+
+  <h2>Documentos que se acompañan</h2>
+  <ul>
+    <li>Informe de auditoría del proceso.</li>
+    <li>Planilla financiera con costos, márgenes y escenarios.</li>
+    <li>Certificado bancario y datos de pago.</li>
   </ul>
 
   <h2>Declaración</h2>

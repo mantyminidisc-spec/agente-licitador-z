@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.4"
+VERSION_LICITAIA = "20.6"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -5482,8 +5482,130 @@ class Agente5Entregador:
         else:
             self._parrafo(doc, str(expediente.get("descripcion", ""))[:400], 9)
 
-        # --- 2. Desglose económico
-        self._titulo_seccion(doc, 2, "Desglose económico")
+        # --- 2. Especificaciones técnicas de la solución
+        self._titulo_seccion(doc, 2, "Especificaciones técnicas de la solución")
+        tec = informes.get("propuesta_especificaciones_tecnicas") or {}
+        resumen_proyecto = informes.get("resumen_ejecutivo_proyecto") or {}
+        arquitectura = str(tec.get("arquitectura_solucion") or "").strip()
+        metodologia = str(tec.get("metodologia_trabajo") or "").strip()
+        sla = str(tec.get("sla_soporte_postventa") or "").strip()
+        garantia = str(tec.get("garantia_tecnica") or "").strip()
+        entregables = list(tec.get("entregables_clave") or [])
+        alcance_real = str(resumen_proyecto.get("alcance_real") or "").strip()
+
+        # respaldo: si la IA no devolvió el bloque técnico, se arma con lo que exista
+        if not (arquitectura or metodologia or entregables or alcance_real):
+            alcance_real = (str(resumen_proyecto.get("objetivo_principal") or "").strip()
+                            or str(expediente.get("descripcion") or "").strip()[:700])
+            entregables = list(informes.get("alcance_resumido_doc2") or [])
+            arquitectura = (
+                "Solución implementada en modalidad de servicio gestionado: configuración, "
+                "puesta en marcha y soporte del entorno comprometido, con control de accesos, "
+                "respaldo de información y monitoreo permanente del servicio."
+            )
+            metodologia = (
+                "Metodología ágil (Scrum/Kanban) con hitos de entrega continua: levantamiento "
+                "de requerimientos, implementación, pruebas de aceptación y puesta en marcha, "
+                "con acta de recepción por cada etapa."
+            )
+            sla = (
+                "Soporte técnico con respuesta en menos de 2 horas hábiles y resolución en "
+                "menos de 4 horas, de lunes a viernes en horario hábil."
+            )
+            garantia = (
+                "Garantía de correcto funcionamiento por 12 meses desde la recepción conforme, "
+                "con soporte preferente y repuestos de configuración sin costo."
+            )
+
+        if alcance_real:
+            self._parrafo(doc, "Alcance del servicio", 9, negrita=True,
+                          color=self.AZUL, espacio_despues=2)
+            self._parrafo(doc, alcance_real, 8.8, espacio_despues=6)
+
+        if arquitectura:
+            self._parrafo(doc, "Arquitectura de la solución", 9, negrita=True,
+                          color=self.AZUL, espacio_despues=2)
+            self._parrafo(doc, arquitectura, 8.8, espacio_despues=6)
+
+        if metodologia:
+            self._parrafo(doc, "Metodología de trabajo", 9, negrita=True,
+                          color=self.AZUL, espacio_despues=2)
+            self._parrafo(doc, metodologia, 8.8, espacio_despues=6)
+
+        if entregables:
+            self._parrafo(doc, "Entregables comprometidos", 9, negrita=True,
+                          color=self.AZUL, espacio_despues=3)
+            try:
+                dias_plazo = int(informes.get("plazo_entrega_dias_habiles")
+                                 or expediente.get("plazo_entrega_dias_habiles") or 15)
+            except Exception:
+                dias_plazo = 15
+            filas_entregables = []
+            total_entregables = min(len(entregables), 6)
+            for indice, entregable in enumerate(entregables[:6], 1):
+                filas_entregables.append([
+                    str(indice),
+                    str(entregable)[:150],
+                    f"Etapa {indice} de {total_entregables}",
+                    "Incluido",
+                ])
+            if filas_entregables:
+                self._tabla(
+                    doc,
+                    ["N°", "Entregable", "Etapa", "Costo"],
+                    filas_entregables,
+                    [1.0, 9.8, 3.2, 2.4],
+                    alineaciones=["c", "l", "l", "c"],
+                    tam=8.2,
+                )
+                self._parrafo(
+                    doc,
+                    f"Plazo total comprometido: {dias_plazo} días hábiles desde la orden de "
+                    f"compra, con hitos de entrega continua y acta de recepción por etapa.",
+                    8.4, cursiva=True, espacio_despues=6,
+                )
+
+        if sla:
+            self._parrafo(doc, "Nivel de servicio (SLA)", 9, negrita=True,
+                          color=self.AZUL, espacio_despues=2)
+            self._parrafo(doc, sla, 8.8, espacio_despues=6)
+
+        if garantia:
+            self._parrafo(doc, "Garantía técnica", 9, negrita=True,
+                          color=self.AZUL, espacio_despues=2)
+            self._parrafo(doc, garantia, 8.8, espacio_despues=6)
+
+        # --- 3. Cumplimiento normativo
+        self._titulo_seccion(doc, 3, "Cumplimiento normativo y estándares")
+        normas = informes.get("normas_chilenas_nch_estandares") or {}
+        lista_normas = normas.get("normas_aplicables") or informes.get("checklist_nch_detectadas") or []
+        legal = informes.get("auditoria_37_normas_ley_19886") or {}
+        self._parrafo(
+            doc,
+            "La presente oferta se presenta en estricto cumplimiento de la Ley 19.886 de Bases "
+            "sobre Contratos Administrativos, su Reglamento (DS 661/2024), la Ley 21.634 y las "
+            "bases administrativas y técnicas del proceso. El proveedor declara no encontrarse "
+            "afecto a las inhabilidades del artículo 4 de la Ley 19.886.",
+            8.8, espacio_despues=4,
+        )
+        declaraciones = []
+        if legal.get("cumplimiento_art_4"):
+            declaraciones.append(str(legal["cumplimiento_art_4"]))
+        if legal.get("probidad_e_intereses"):
+            declaraciones.append(str(legal["probidad_e_intereses"]))
+        if normas.get("estrategia_cumplimiento"):
+            declaraciones.append(str(normas["estrategia_cumplimiento"]))
+        for declaracion in declaraciones[:3]:
+            self._parrafo(doc, f"•  {declaracion[:320]}", 8.5, espacio_despues=1)
+        if lista_normas:
+            self._parrafo(doc, "Normas y estándares aplicados", 9, negrita=True,
+                          color=self.AZUL, espacio_despues=2)
+            for norma in lista_normas[:6]:
+                self._parrafo(doc, f"•  {str(norma)[:200]}", 8.5, espacio_despues=1)
+        self._parrafo(doc, "", 4, espacio_despues=0)
+
+        # --- 4. Desglose económico
+        self._titulo_seccion(doc, 4, "Desglose económico")
         neto = int(eq.get("oferta_neta_clp") or 0)
         iva = int(eq.get("iva_19_clp") or 0)
         bruto = int(eq.get("oferta_total_bruta_clp") or 0)
@@ -5535,7 +5657,7 @@ class Agente5Entregador:
         doc.add_paragraph().paragraph_format.space_after = Pt(0)
 
         # --- 3. Condiciones
-        self._titulo_seccion(doc, 3, "Condiciones comerciales")
+        self._titulo_seccion(doc, 5, "Condiciones comerciales")
         condiciones = [
             ("Plazo de entrega: " + (expediente.get("plazo_entrega_organismo") or
              f"{informes.get('plazo_entrega_dias_habiles', 15)} días hábiles") +
@@ -5547,8 +5669,43 @@ class Agente5Entregador:
         for linea in condiciones:
             self._parrafo(doc, f"•  {linea}", 8.5, espacio_despues=1)
 
-        # --- 4. Datos de pago
-        self._titulo_seccion(doc, 4, "Datos del proveedor y de pago")
+        # --- 6. Supuestos y exclusiones
+        self._titulo_seccion(doc, 6, "Supuestos, exclusiones y condiciones")
+        supuestos = [
+            "El precio ofertado considera la ejecución del servicio en modalidad remota, con "
+            "reuniones de coordinación en línea y disponibilidad del organismo para validaciones.",
+            "Los plazos corren desde la emisión de la orden de compra y la entrega de los "
+            "antecedentes e insumos necesarios por parte del organismo.",
+            "Se excluye hardware, conectividad del organismo y licencias de terceros no "
+            "detalladas en el desglose económico.",
+            "Cambios de alcance solicitados después de la orden de compra se cotizan por "
+            "separado, mediante orden de cambio firmada por ambas partes.",
+            "La oferta considera los valores de impuestos y tasas vigentes a la fecha de su "
+            "presentación.",
+        ]
+        for supuesto in supuestos:
+            self._parrafo(doc, f"•  {supuesto}", 8.5, espacio_despues=1)
+
+        # --- 7. Documentos que se acompañan
+        self._titulo_seccion(doc, 7, "Documentos que se acompañan")
+        anexos = [
+            "Informe de auditoría del proceso (análisis de bases, requisitos y riesgos).",
+            "Planilla financiera con el desglose de costos, márgenes y escenarios de precio.",
+            "Certificado bancario y datos de la cuenta para el pago.",
+            "Documentación de respaldo del proveedor (constitución, RUT y representación legal).",
+        ]
+        for anexo in anexos:
+            self._parrafo(doc, f"•  {anexo}", 8.5, espacio_despues=1)
+        self._parrafo(
+            doc,
+            "El proveedor se obliga a mantener vigente la oferta por 60 días corridos desde el "
+            "cierre del proceso y a entregar cualquier antecedente adicional que el organismo "
+            "solicite para la correcta evaluación de la propuesta.",
+            8.5, cursiva=True, espacio_despues=2,
+        )
+
+        # --- 8. Datos de pago
+        self._titulo_seccion(doc, 8, "Datos del proveedor y de pago")
         self._tabla(
             doc,
             ["Razón social", "RUT", "Banco", "Cuenta", "Correo de contacto"],
