@@ -13,18 +13,23 @@
   "whatsapp_cliente": ["+56950901627"],
   "margen_objetivo": 0.35,
   "costo_hora_ingenieria_clp": 25000,
-  "plan_activo": "PLAN_FULL_EMPRESARIAL",
+  "plan_activo": "PLAN_COMPRA_AGIL",
   "limite_lote_ciclo": 3,
   "palabras_clave_positivas": [
     "desarrollo de software", "software", "pagina web", "página web", "sitio web",
     "portal web", "sistema informatico", "sistema informático", "plataforma web",
-    "aplicacion movil", "aplicación móvil", "aplicacion web", "aplicación web",
-    "inteligencia artificial", "agente ia", "chatbot", "automatizacion", "automatización",
-    "servidor cloud", "servidores cloud", "cloud computing", "vps", "hosting",
-    "mantenimiento web", "mantencion web", "mantención web",
-    "posicionamiento seo", "seo", "marketing digital",
-    "google ads", "meta ads", "campaña digital", "campana digital",
-    "comunicacion digital", "comunicación digital", "correo corporativo"
+    "aplicacion movil", "aplicación móvil", "app movil", "inteligencia artificial",
+    "automatizacion", "automatización", "crm", "saas", "licencia de software",
+    "soporte informatico", "soporte informático", "mantenimiento de software",
+    "desarrollo web", "transformacion digital", "transformación digital",
+    "marketing digital", "gestion documental", "gestión documental", "digitalizacion"
   ],
-  "lista_negra_exclusiones": []
+  "palabras_clave_negativas": [
+    "medicamento", "insumo clinico", "insumo clínico", "osteosintesis", "osteosíntesis",
+    "odontolog", "farmaco", "fármaco", "protesis", "prótesis", "reactivo",
+    "obra civil", "construccion", "construcción", "ferreteria", "ferretería",
+    "vehiculo", "vehículo", "repuesto", "combustible", "alimento", "catering",
+    "aseo", "guardia", "jardineria", "jardinería", "vestuario", "uniformes",
+    "mobiliario", "impresora", "toner", "papel", "arriendo de maquinaria"
+  ]
 }

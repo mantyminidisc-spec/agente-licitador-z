@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.3"
+VERSION_LICITAIA = "20.4"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1237,8 +1237,9 @@ def _mensaje_sin_novedades():
     else:
         lineas.append(f"• Compra Ágil: {PERFIL_BARRIDO['ca_paginas']} páginas revisadas, "
                   f"sin coincidencias con tu giro.")
-    lineas.append(f"• Licitaciones: {_RESUMEN_ESCANEO.get('lic_abiertas', 0)} abiertas, "
-                  f"{_RESUMEN_ESCANEO.get('lic_candidatos', 0)} de tu rubro.")
+    if PERMITIR_LICITACIONES:
+        lineas.append(f"• Licitaciones: {_RESUMEN_ESCANEO.get('lic_abiertas', 0)} abiertas, "
+                      f"{_RESUMEN_ESCANEO.get('lic_candidatos', 0)} de tu rubro.")
     lineas.append("")
     lineas.append("Se vuelve a revisar en la próxima corrida programada.")
     return "\n".join(lineas)
@@ -1247,7 +1248,7 @@ def _mensaje_sin_novedades():
     # ==============================================================================
 # PLANES COMERCIALES · qué incluye cada cliente
 # ==============================================================================
-PLAN_ACTIVO = (os.getenv("PLAN") or "").strip().upper()
+PLAN_ACTIVO = (os.getenv("PLAN") or "PLAN_COMPRA_AGIL").strip().upper()
 PERMITIR_COMPRA_AGIL = True
 PERMITIR_LICITACIONES = True
 
@@ -1486,7 +1487,7 @@ class Agente0Contexto:
         os.makedirs(CARPETA_LICITACIONES, exist_ok=True)
         print(f"   ✓ Empresa Activa     : {self.perfil['razon_social']} (RUT: {self.perfil['rut']})")
         print(f"   ✓ Representante      : {self.perfil['representante_legal']}")
-        aplicar_plan(os.getenv("PLAN") or self.perfil.get("plan_activo"))
+        aplicar_plan(os.getenv("PLAN") or "PLAN_COMPRA_AGIL")
         print(f"   ✓ Plan Configurado   : {self.perfil['plan_activo']} (Micro-lotes de {self.perfil['limite_lote_ciclo']} proyectos)")
         print(f"   ✓ Keywords Positivas : {len(self.perfil['palabras_clave_positivas'])} términos específicos de TI/IA/SEO/Ads")
         print(f"   ✓ Lista Negra Activa : {len(self.perfil['lista_negra_exclusiones'])} términos bloqueados (Regex \\b...\\b)")
