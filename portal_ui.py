@@ -1849,13 +1849,6 @@ font-size:13px;font-weight:650;cursor:pointer}}
     <li>Cambios de alcance posteriores se cotizan por separado.</li>
   </ul>
 
-  <h2>Documentos que se acompañan</h2>
-  <ul>
-    <li>Informe de auditoría del proceso.</li>
-    <li>Planilla financiera con costos, márgenes y escenarios.</li>
-    <li>Certificado bancario y datos de pago.</li>
-  </ul>
-
   <h2>Declaración</h2>
   <p>El oferente declara conocer y aceptar las bases administrativas y técnicas del proceso,
   y que la información entregada es fidedigna.</p>

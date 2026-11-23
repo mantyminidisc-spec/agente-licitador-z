@@ -5685,17 +5685,6 @@ class Agente5Entregador:
         ]
         for supuesto in supuestos:
             self._parrafo(doc, f"•  {supuesto}", 8.5, espacio_despues=1)
-
-        # --- 7. Documentos que se acompañan
-        self._titulo_seccion(doc, 7, "Documentos que se acompañan")
-        anexos = [
-            "Informe de auditoría del proceso (análisis de bases, requisitos y riesgos).",
-            "Planilla financiera con el desglose de costos, márgenes y escenarios de precio.",
-            "Certificado bancario y datos de la cuenta para el pago.",
-            "Documentación de respaldo del proveedor (constitución, RUT y representación legal).",
-        ]
-        for anexo in anexos:
-            self._parrafo(doc, f"•  {anexo}", 8.5, espacio_despues=1)
         self._parrafo(
             doc,
             "El proveedor se obliga a mantener vigente la oferta por 60 días corridos desde el "
@@ -5704,8 +5693,8 @@ class Agente5Entregador:
             8.5, cursiva=True, espacio_despues=2,
         )
 
-        # --- 8. Datos de pago
-        self._titulo_seccion(doc, 8, "Datos del proveedor y de pago")
+        # --- 7. Datos de pago
+        self._titulo_seccion(doc, 7, "Datos del proveedor y de pago")
         self._tabla(
             doc,
             ["Razón social", "RUT", "Banco", "Cuenta", "Correo de contacto"],
