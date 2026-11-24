@@ -1514,6 +1514,23 @@ JS = """
 # ---------------------------------------------------------------------------
 # Página principal
 # ---------------------------------------------------------------------------
+def _tecnico_por_defecto(informes):
+    """Valores iniciales del bloque técnico, tomados del informe de auditoría."""
+    informes = informes or {}
+    tec = informes.get("propuesta_especificaciones_tecnicas") or {}
+    resumen = informes.get("resumen_ejecutivo_proyecto") or {}
+    entregables = tec.get("entregables_clave") or informes.get("alcance_resumido_doc2") or []
+    return {
+        "incluir": True,
+        "alcance": str(tec.get("alcance") or resumen.get("alcance_real") or "").strip(),
+        "arquitectura": str(tec.get("arquitectura_solucion") or "").strip(),
+        "metodologia": str(tec.get("metodologia_trabajo") or "").strip(),
+        "sla": str(tec.get("sla_soporte_postventa") or "").strip(),
+        "garantia": str(tec.get("garantia_tecnica") or "").strip(),
+        "entregables": "\n".join(str(e) for e in entregables[:8]),
+    }
+
+
 def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_url="",
            doc1_marca=0, cotizacion=None, datos_informe=None, oferta_vigente=None):
     codigo = proyecto.get("codigo", "")
@@ -1525,6 +1542,11 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
     estado = str(proyecto.get("estado") or "")
 
     cot = dict(cotizacion or {})
+    tecnico = _tecnico_por_defecto((datos_informe or {}).get("informes")
+                                      if isinstance(datos_informe, dict) else None)
+    tecnico.update(cot.get("tecnico") or {})
+    if "incluir" not in (cot.get("tecnico") or {}):
+        tecnico["incluir"] = True
     datos = {
         "razon_social": cot.get("razon_social") or "Mantytech SpA",
         "rut": cot.get("rut") or "78.479.059-2",
@@ -1628,6 +1650,27 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
   </div>
   <div class="campo"><label>Observaciones para el organismo</label>
     <textarea name="observaciones">{_esc(datos['observaciones'])}</textarea></div>
+  <div class="campo" style="margin-top:14px">
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px">
+      <input type="checkbox" name="incluir_tecnico" value="1"
+             {'checked' if tecnico.get('incluir') else ''}>
+      Incluir las secciones técnicas en la cotización
+    </label>
+  </div>
+  <div class="campo"><label>Alcance del servicio</label>
+    <textarea name="tec_alcance" rows="3">{_esc(tecnico.get('alcance') or '')}</textarea></div>
+  <div class="campo"><label>Arquitectura de la solución</label>
+    <textarea name="tec_arquitectura" rows="3">{_esc(tecnico.get('arquitectura') or '')}</textarea></div>
+  <div class="campo"><label>Metodología de trabajo</label>
+    <textarea name="tec_metodologia" rows="3">{_esc(tecnico.get('metodologia') or '')}</textarea></div>
+  <div class="campo"><label>Entregables comprometidos (uno por línea)</label>
+    <textarea name="tec_entregables" rows="5">{_esc(tecnico.get('entregables') or '')}</textarea></div>
+  <div class="grid2">
+    <div class="campo"><label>Nivel de servicio (SLA)</label>
+      <textarea name="tec_sla" rows="2">{_esc(tecnico.get('sla') or '')}</textarea></div>
+    <div class="campo"><label>Garantía técnica</label>
+      <textarea name="tec_garantia" rows="2">{_esc(tecnico.get('garantia') or '')}</textarea></div>
+  </div>
   <div style="display:flex;gap:10px;flex-wrap:wrap">
     <button class="btn" type="submit">Guardar cotización</button>
     <a class="btn btn-sec" href="/p/{token}/cotizacion" target="_blank" rel="noopener">Descargar PDF</a>
@@ -1871,7 +1914,30 @@ def cotizacion_html(proyecto, token, datos, hay_logo=True, logo_url="", cot=None
     validez = _esc(cot.get("validez") or "60 días")
     obs = _esc(cot.get("observaciones") or "")
     logo = f'<img src="{_esc(logo_url)}" alt="Logo" style="height:52px;max-width:170px;object-fit:contain">' if hay_logo else ""
-    secciones_tecnicas, cumplimiento = _tecnicos_cotizacion(informes)
+    tecnico_guardado = cot.get("tecnico") or {}
+    if tecnico_guardado:
+        informes_tec = {
+            "propuesta_especificaciones_tecnicas": {
+                "alcance": tecnico_guardado.get("alcance") or "",
+                "arquitectura_solucion": tecnico_guardado.get("arquitectura") or "",
+                "metodologia_trabajo": tecnico_guardado.get("metodologia") or "",
+                "sla_soporte_postventa": tecnico_guardado.get("sla") or "",
+                "garantia_tecnica": tecnico_guardado.get("garantia") or "",
+                "entregables_clave": [linea.strip() for linea in
+                                      str(tecnico_guardado.get("entregables") or "").split("\n")
+                                      if linea.strip()],
+            },
+            "normas_chilenas_nch_estandares": (informes or {}).get(
+                "normas_chilenas_nch_estandares") or {},
+            "auditoria_37_normas_ley_19886": (informes or {}).get(
+                "auditoria_37_normas_ley_19886") or {},
+            "resumen_ejecutivo_proyecto": {},
+        }
+        secciones_tecnicas, cumplimiento = _tecnicos_cotizacion(informes_tec)
+        if tecnico_guardado.get("incluir") is False:
+            secciones_tecnicas = ""
+    else:
+        secciones_tecnicas, cumplimiento = _tecnicos_cotizacion(informes)
 
     return f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8">

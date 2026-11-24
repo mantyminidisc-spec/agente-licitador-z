@@ -1448,9 +1448,28 @@ class Manejador(BaseHTTPRequestHandler):
                 datos["monto"] = int(str(datos.get("monto") or "0").replace(".", "").strip() or 0)
             except Exception:
                 datos["monto"] = 0
+            # bloque técnico editable
+            tecnico = {
+                "incluir": bool(str(datos.get("incluir_tecnico") or "").strip()),
+                "alcance": str(datos.get("tec_alcance") or "").strip(),
+                "arquitectura": str(datos.get("tec_arquitectura") or "").strip(),
+                "metodologia": str(datos.get("tec_metodologia") or "").strip(),
+                "entregables": str(datos.get("tec_entregables") or "").strip(),
+                "sla": str(datos.get("tec_sla") or "").strip(),
+                "garantia": str(datos.get("tec_garantia") or "").strip(),
+            }
+            for clave_tec in ("incluir_tecnico", "tec_alcance", "tec_arquitectura",
+                              "tec_metodologia", "tec_entregables", "tec_sla",
+                              "tec_garantia"):
+                datos.pop(clave_tec, None)
+            datos["tecnico"] = tecnico
             try:
-                _guardar_cotizacion(carpeta, datos)
-                print(f"   [PORTAL] cotización editada {codigo}: monto {datos.get('monto')}")
+                # se mezcla con lo guardado para no perder montos, costos ni escenarios
+                existente = _leer_cotizacion(carpeta)
+                existente.update(datos)
+                _guardar_cotizacion(carpeta, existente)
+                print(f"   [PORTAL] cotización editada {codigo}: monto {datos.get('monto')} "
+                      f"· tecnico {'sí' if tecnico['incluir'] else 'no'}")
             except Exception as e:
                 print(f"   [PORTAL] error guardando cotización: {e}")
                 return self._enviar(500, "<h1>No se pudo guardar</h1>")
