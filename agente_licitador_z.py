@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.9"
+VERSION_LICITAIA = "21.0"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1020,7 +1020,21 @@ def _motor_precios(presupuesto, costo_interno=None):
     }
 
 
-_RESUMEN_ESCANEO = {"ca_fallos": 0, "ca_ok": 0, "lic_abiertas": 0, "lic_candidatos": 0}
+_RESUMEN_ESCANEO = {
+    "ca_consultas": 0,   # consultas efectivamente intentadas contra Compra Ágil
+    "ca_fallos": 0,      # consultas que terminaron sin respuesta válida
+    "ca_5xx": 0,         # subconjunto de fallos por 500/502/503/504
+    "ca_codigos": {},    # {"504": 5, "sin respuesta": 2, ...}
+    "ca_degradado": False,  # más de la mitad de las consultas falló
+    "ca_respaldo": "",      # resultado del respaldo por listado
+    "ca_respaldo_paginas": 0,  # páginas del listado que sí respondieron
+    "ca_respaldo_error": "",   # por qué se cortó el respaldo (si falló)
+    "ca_corte": "",         # por qué se cortó la búsqueda (fallos/tiempo)
+    "ca_ok": 0,
+    "lic_fallos": 0,
+    "lic_abiertas": 0,
+    "lic_candidatos": 0,
+}
 
 
 NOTIFICAR_ENTREGAS = [True]
@@ -1209,12 +1223,22 @@ def _montos_del_proceso(informe, presupuesto, tipo_pre=""):
 
 PERFIL_BARRIDO = {"nombre": "normal", "limite": 3, "ca_paginas": 12}
 NOTIFICAR_SIN_NOVEDADES = (os.getenv("NOTIFICAR_SIN_NOVEDADES") or "1").strip() != "0"
+# Aviso cuando Compra Ágil falla en más de la mitad de las consultas (5xx,
+# timeouts o error del portal). 0.5 = "más de la mitad".
+ALERTAR_CA_CAIDO = (os.getenv("ALERTAR_CA_CAIDO") or "1").strip() != "0"
+UMBRAL_FALLOS_CA = float(os.getenv("UMBRAL_FALLOS_CA", "0.5"))
+ARCHIVO_SALUD_CORRIDAS = os.path.join(DIRECTORIO_RAIZ, "salud_corridas.json")
+MAX_SALUD_CORRIDAS = int(os.getenv("MAX_SALUD_CORRIDAS", "240"))
 
 
 def _estado_compra_agil_texto():
     """Texto corto del estado de Compra Ágil para el resumen."""
     fallos = _RESUMEN_ESCANEO.get("ca_fallos") or 0
     ok = _RESUMEN_ESCANEO.get("ca_ok") or 0
+    consultas = _RESUMEN_ESCANEO.get("ca_consultas") or 0
+    if _RESUMEN_ESCANEO.get("ca_degradado"):
+        return (f"PORTAL INESTABLE: {fallos} de {consultas} consultas fallaron "
+                f"({_pct_fallos_ca()}%)")
     if fallos and not ok:
         return f"portal sin respuesta ({fallos} consultas con error)"
     if ok:
@@ -1224,26 +1248,229 @@ def _estado_compra_agil_texto():
     return "revisada, sin coincidencias con tu giro"
 
 
-def _mensaje_sin_novedades():
-    """Arma el aviso de 'no hay nada hoy', distinguiendo falla técnica de falta de ofertas."""
+def _pct_fallos_ca():
+    """Porcentaje entero de consultas a Compra Ágil que fallaron (0-100)."""
+    consultas = int(_RESUMEN_ESCANEO.get("ca_consultas") or 0)
+    fallos = int(_RESUMEN_ESCANEO.get("ca_fallos") or 0)
+    if consultas <= 0:
+        return 0
+    return int(round(100.0 * fallos / consultas))
+
+
+def _codigos_ca_texto():
+    """'504 x5, sin respuesta x2' para explicar por qué falló el portal."""
+    codigos = _RESUMEN_ESCANEO.get("ca_codigos") or {}
+    if not isinstance(codigos, dict) or not codigos:
+        return ""
+    partes = [f"{clave} x{valor}" for clave, valor in
+              sorted(codigos.items(), key=lambda kv: -int(kv[1])) if valor]
+    return ", ".join(partes[:5])
+
+
+def _proxima_corrida_texto():
+    """'hoy a las 19:00' o 'mañana a las 09:00', según el horario configurado."""
+    if not HORARIO_ESCANEO:
+        return "en la próxima corrida programada"
     ahora = _ahora_chile()
-    lineas = [f"🤖 *LICITAIA* · {ahora:%d-%m-%Y} {ahora:%H:%M}", ""]
-    lineas.append("Sin proyectos nuevos para tu giro en esta corrida.")
-    lineas.append("")
-    lineas.append("*Qué se revisó*")
-    if _RESUMEN_ESCANEO.get("ca_fallos"):
-        lineas.append(f"• Compra Ágil: el portal *no respondió* "
-                      f"({_RESUMEN_ESCANEO['ca_fallos']} consultas con error). "
-                      f"No significa que no haya ofertas.")
+    proxima = next((h for h in HORARIO_ESCANEO if h > ahora.hour), None)
+    if proxima is None:
+        return f"mañana a las {HORARIO_ESCANEO[0]:02d}:00"
+    return f"hoy a las {proxima:02d}:00"
+
+
+def _leer_salud_corridas():
+    """Historial corto de corridas (para --salud y para detectar caídas seguidas)."""
+    try:
+        if os.path.isfile(ARCHIVO_SALUD_CORRIDAS):
+            with open(ARCHIVO_SALUD_CORRIDAS, encoding="utf-8") as f:
+                datos = json.load(f)
+            if isinstance(datos, list):
+                return [d for d in datos if isinstance(d, dict)]
+    except Exception as e:
+        print(f"   [!] No se pudo leer {os.path.basename(ARCHIVO_SALUD_CORRIDAS)}: {e}")
+    return []
+
+
+def _registrar_salud_corrida(resultados=0, pendientes=0, alerta="", modo=""):
+    """Agrega la corrida al historial de salud. Nunca debe romper el pipeline."""
+    ahora = _ahora_chile()
+    entrada = {
+        "fecha": ahora.strftime("%Y-%m-%d %H:%M"),
+        "modo": modo or ("final" if _es_hora_barrido_final(ahora) else "normal"),
+        "ca_consultas": int(_RESUMEN_ESCANEO.get("ca_consultas") or 0),
+        "ca_fallos": int(_RESUMEN_ESCANEO.get("ca_fallos") or 0),
+        "ca_5xx": int(_RESUMEN_ESCANEO.get("ca_5xx") or 0),
+        "ca_pct_fallo": _pct_fallos_ca(),
+        "ca_degradado": bool(_RESUMEN_ESCANEO.get("ca_degradado")),
+        "ca_respaldo": str(_RESUMEN_ESCANEO.get("ca_respaldo") or ""),
+        "ca_respaldo_paginas": int(_RESUMEN_ESCANEO.get("ca_respaldo_paginas") or 0),
+        "ca_respaldo_error": str(_RESUMEN_ESCANEO.get("ca_respaldo_error") or ""),
+        "ca_corte": str(_RESUMEN_ESCANEO.get("ca_corte") or ""),
+        "ca_codigos": dict(_RESUMEN_ESCANEO.get("ca_codigos") or {}),
+        "lic_fallos": int(_RESUMEN_ESCANEO.get("lic_fallos") or 0),
+        "resultados": int(resultados or 0),
+        "pendientes": int(pendientes or 0),
+        "alerta": alerta,
+    }
+    historial = _leer_salud_corridas()
+    historial.append(entrada)
+    historial = historial[-max(10, MAX_SALUD_CORRIDAS):]
+    try:
+        os.makedirs(os.path.dirname(ARCHIVO_SALUD_CORRIDAS) or ".", exist_ok=True)
+        tmp = ARCHIVO_SALUD_CORRIDAS + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(historial, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, ARCHIVO_SALUD_CORRIDAS)
+    except Exception as e:
+        print(f"   [!] No se pudo guardar la salud de la corrida: {e}")
+    return entrada
+
+
+def _corridas_caidas_seguidas():
+    """Cuántas corridas consecutivas (incluida la actual) traen el portal caído."""
+    seguidas = 0
+    for item in reversed(_leer_salud_corridas()):
+        if item.get("ca_degradado"):
+            seguidas += 1
+        else:
+            break
+    return seguidas
+
+
+def _mensaje_estado_corrida(resultados=0, fallidos=None):
+    """Aviso de salud de la corrida para el WhatsApp interno.
+
+    Devuelve "" cuando no hay nada que avisar: si hubo resultados y el portal
+    respondió bien, el resumen normal ya cuenta lo que pasó (sin ruido extra).
+    Dos casos sí avisan siempre:
+      1) Compra Ágil falló en más de la mitad de las consultas (portal caído).
+      2) La corrida terminó sin ningún proyecto (aunque el portal esté bien).
+    """
+    fallidos = list(fallidos or [])
+    resultados = int(resultados or 0)
+    ahora = _ahora_chile()
+    consultas = int(_RESUMEN_ESCANEO.get("ca_consultas") or 0)
+    fallos = int(_RESUMEN_ESCANEO.get("ca_fallos") or 0)
+    fallos_5xx = int(_RESUMEN_ESCANEO.get("ca_5xx") or 0)
+    degradado = bool(_RESUMEN_ESCANEO.get("ca_degradado"))
+    pct = _pct_fallos_ca()
+    codigos = _codigos_ca_texto()
+    respaldo = str(_RESUMEN_ESCANEO.get("ca_respaldo") or "")
+    proxima = _proxima_corrida_texto()
+
+    if degradado:
+        paginas = int(_RESUMEN_ESCANEO.get("ca_respaldo_paginas") or 0)
+        if resultados:
+            cabecera = "⚠️ *LICITAIA · COMPRA ÁGIL INESTABLE*"
+        elif paginas:
+            cabecera = "⚠️ *LICITAIA · BÚSQUEDA DE COMPRA ÁGIL CAÍDA*"
+        else:
+            cabecera = "⚠️ *LICITAIA · COMPRA ÁGIL NO RESPONDE*"
+        lineas = [cabecera, f"🕐 {ahora:%d-%m-%Y %H:%M}", ""]
+        detalle = f"• *{fallos} de {consultas}* consultas fallaron ({pct}%)"
+        if fallos_5xx:
+            detalle += f", {fallos_5xx} con error 5xx"
+        lineas.append(detalle)
+        if codigos:
+            lineas.append(f"• Respuestas del portal: {codigos}")
+        if respaldo:
+            lineas.append(f"• Respaldo por listado: {respaldo}")
+        corte = str(_RESUMEN_ESCANEO.get("ca_corte") or "")
+        if corte:
+            lineas.append(f"• Búsqueda cortada: {corte} (para no demorar la corrida).")
+        lineas.append("")
+        if resultados:
+            lineas.append(f"✅ Se alcanzaron a entregar *{resultados}* proyecto(s).")
+            lineas.append("⚠️ Puede haber ofertas sin revisar: el portal falló en la "
+                          "mayoría de las consultas.")
+        else:
+            lineas.append("❌ Esta corrida *no entregó ningún proyecto*.")
+            if paginas:
+                lineas.append("El buscador por palabra clave no respondió; el listado sí "
+                              "respondió y no hubo coincidencias. Puede haber ofertas "
+                              "sin revisar.")
+            else:
+                lineas.append("No es que no haya ofertas: el portal no respondió.")
+        if fallidos:
+            lineas.append(f"⏳ Quedaron *{len(fallidos)}* pendiente(s) para el reintento.")
+        seguidas = _corridas_caidas_seguidas()
+        if seguidas >= 2:
+            lineas.append(f"🚨 Van *{seguidas} corridas seguidas* con Compra Ágil caída.")
+        lineas.append("")
+        lineas.append(f"🔁 Se reintenta {proxima}.")
+        return "\n".join(lineas)
+
+    if resultados:
+        return ""
+
+    # Sin resultados y sin caída: hay que avisar igual que "no hay nada".
+    lineas = [f"🤖 *LICITAIA · sin proyectos nuevos*", f"🕐 {ahora:%d-%m-%Y %H:%M}", ""]
+    if consultas:
+        lineas.append(f"• Compra Ágil: {consultas} consultas OK, 0 coincidencias con tu giro.")
     else:
-        lineas.append(f"• Compra Ágil: {PERFIL_BARRIDO['ca_paginas']} páginas revisadas, "
-                  f"sin coincidencias con tu giro.")
+        lineas.append("• Compra Ágil: no se consultó en esta corrida.")
     if PERMITIR_LICITACIONES:
-        lineas.append(f"• Licitaciones: {_RESUMEN_ESCANEO.get('lic_abiertas', 0)} abiertas, "
-                      f"{_RESUMEN_ESCANEO.get('lic_candidatos', 0)} de tu rubro.")
+        lic_fallos = int(_RESUMEN_ESCANEO.get("lic_fallos") or 0)
+        if lic_fallos:
+            lineas.append(f"• Licitaciones: la API falló en {lic_fallos} intento(s).")
+        else:
+            lineas.append(f"• Licitaciones: {_RESUMEN_ESCANEO.get('lic_abiertas', 0)} "
+                          f"abiertas, {_RESUMEN_ESCANEO.get('lic_candidatos', 0)} de tu rubro.")
     lineas.append("")
-    lineas.append("Se vuelve a revisar en la próxima corrida programada.")
+    lineas.append("El portal respondió bien: simplemente no había nada nuevo para tu giro.")
+    if fallidos:
+        lineas.append(f"⏳ Quedaron *{len(fallidos)}* pendiente(s) para el reintento.")
+    lineas.append(f"🔁 Se vuelve a revisar {proxima}.")
     return "\n".join(lineas)
+
+
+def _mensaje_sin_novedades():
+    """Compatibilidad: mismo aviso de estado que usa el cierre de corrida."""
+    return _mensaje_estado_corrida(0, [])
+
+
+def _enviar_aviso_corrida(agente5, resultados_lote, fallidos):
+    """Cierra la corrida: guarda salud y avisa por WhatsApp si hay que avisar.
+
+    Se llama SIEMPRE, incluso cuando la cola queda vacía (antes el pipeline
+    retornaba antes de avisar y las corridas de las 15:00 y 17:00 terminaban
+    en silencio aunque Compra Ágil estuviera caída).
+    """
+    n = len(resultados_lote or [])
+    fallidos = list(fallidos or [])
+    if not _notificaciones_activas():
+        print("   ℹ️ Corrida silenciosa: sin aviso ni registro de salud.")
+        return
+    degradado = bool(_RESUMEN_ESCANEO.get("ca_degradado"))
+    if degradado:
+        # Si el aviso de portal caído está desactivado, no se manda nada: el
+        # mensaje de "sin novedades" mentiría diciendo que el portal respondió.
+        motivo = "portal_caido" if ALERTAR_CA_CAIDO else ""
+    elif n == 0 and NOTIFICAR_SIN_NOVEDADES:
+        motivo = "sin_novedades"
+    else:
+        motivo = ""
+    _registrar_salud_corrida(n, len(fallidos), alerta=motivo)
+    if not motivo:
+        return
+    mensaje = _mensaje_estado_corrida(n, fallidos)
+    if not mensaje:
+        return
+    print("\n" + "-" * 80)
+    print(mensaje)
+    print("-" * 80)
+    destinos = list(WHATSAPP_INTERNO) or ([WHATSAPP_DESTINO] if WHATSAPP_DESTINO else [])
+    if not destinos:
+        print("   [!] Sin número interno configurado: no se envía el aviso de salud.")
+        return
+    try:
+        enviados = agente5._enviar_whatsapp(destinos, mensaje)
+        if enviados:
+            print("   📲 Aviso de salud de la corrida enviado por WhatsApp")
+        else:
+            print("   [!] El aviso de salud no se pudo enviar por WhatsApp")
+    except Exception as e:
+        print(f"   [!] No se pudo enviar el aviso de salud: {str(e)[:80]}")
 
 
     # ==============================================================================
@@ -1714,6 +1941,21 @@ Responde ÚNICAMENTE en formato JSON:
         print("   -> [1A] Escaneando Portal COMPRA ÁGIL V2 (Barrido de 72h con Keywords de Giro)...")
         sesion_ca = _crear_sesion_api()
         fallos_ca = 0
+        consultas_ca = 0
+        fallos_5xx = 0
+        codigos_ca = {}
+        fallos_consecutivos_ca = 0
+        corte_ca = ""
+        # Con el portal caído, 11 keywords x 4 reintentos x 45 s podían tardar
+        # más de una hora y la corrida no alcanzaba a avisar.  Ahora hay un
+        # presupuesto de tiempo y un corte por fallos seguidos.
+        limite_ca = time.monotonic() + float(os.getenv("CA_TIEMPO_MAX_SEG", "240"))
+        corte_fallos = max(1, int(os.getenv("CA_FALLOS_CORTE", "3")))
+        _RESUMEN_ESCANEO.update({
+            "ca_consultas": 0, "ca_fallos": 0, "ca_5xx": 0, "ca_codigos": {},
+            "ca_degradado": False, "ca_respaldo": "", "ca_ok": 0, "ca_corte": "",
+            "ca_respaldo_paginas": 0, "ca_respaldo_error": "",
+        })
 
         # Keywords de consulta compuestas y específicas del giro TI (sin palabras ambiguas como 'sistema')
         keywords_consulta = [
@@ -1725,20 +1967,44 @@ Responde ÚNICAMENTE en formato JSON:
         for kw in keywords_consulta:
             if len(hallazgos_ca) >= max_ca:
                 break
+            if time.monotonic() >= limite_ca:
+                corte_ca = "tiempo máximo agotado"
+                print("      ⏱ Tiempo máximo de Compra Ágil agotado: se corta la búsqueda "
+                      "para poder avisar a tiempo.")
+                break
             kw_url = urllib.parse.quote(kw)
             url_api = f"https://api2.mercadopublico.cl/v2/compra-agil?q={kw_url}&estado=publicada&numero_pagina=1"
 
             try:
+                consultas_ca += 1
                 r = _ca_con_reintentos(url_api, HEADERS_API_COMPRA_AGIL,
-                                       sesion=sesion_ca)
+                                       sesion=sesion_ca, timeout=25, limite=limite_ca)
                 if r is None:
                     fallos_ca += 1
+                    fallos_consecutivos_ca += 1
+                    codigos_ca["sin respuesta"] = codigos_ca.get("sin respuesta", 0) + 1
+                    print(f'      [!] Compra Ágil sin respuesta para "{kw}" '
+                          f'(timeout o error de red)')
+                    if fallos_consecutivos_ca >= corte_fallos and not hallazgos_ca:
+                        corte_ca = f"{fallos_consecutivos_ca} fallos seguidos"
+                        print(f"      ⏹ Se corta la búsqueda: {corte_ca} sin respuesta.")
+                        break
                     continue
                 if r.status_code != 200:
                     fallos_ca += 1
+                    fallos_consecutivos_ca += 1
+                    clave = str(r.status_code)
+                    codigos_ca[clave] = codigos_ca.get(clave, 0) + 1
+                    if r.status_code in (500, 502, 503, 504):
+                        fallos_5xx += 1
                     print(f'      [!] Compra Ágil respondió HTTP {r.status_code} '
-                          f'después de reintentos')
+                          f'para "{kw}" después de reintentos')
+                    if fallos_consecutivos_ca >= corte_fallos and not hallazgos_ca:
+                        corte_ca = f"{fallos_consecutivos_ca} fallos seguidos"
+                        print(f"      ⏹ Se corta la búsqueda: {corte_ca} con error.")
+                        break
                     continue
+                fallos_consecutivos_ca = 0
                 if r.status_code == 200:
                     js = r.json()
 
@@ -1796,46 +2062,51 @@ Responde ÚNICAMENTE en formato JSON:
             except Exception as e:
                 print(f"      [!] Nota de consulta en keyword '{kw}': {e}")
 
+        respaldo_texto = ""
         if not hallazgos_ca and fallos_ca:
             print("      ↪ Respaldo: se recorre el listado de Compra Ágil y se filtra localmente...")
             try:
                 hallazgos_ca = self._barrido_ca_por_listado(max_ca, codigos_procesados_lote)
             except Exception as _e_ca:
                 print(f"      [!] El respaldo del listado falló: {str(_e_ca)[:70]}")
-        _RESUMEN_ESCANEO["ca_fallos"] = fallos_ca
-        _RESUMEN_ESCANEO["ca_ok"] = len(hallazgos_ca)
-        if fallos_ca and not hallazgos_ca:
+            paginas = int(_RESUMEN_ESCANEO.get("ca_respaldo_paginas") or 0)
+            error_respaldo = str(_RESUMEN_ESCANEO.get("ca_respaldo_error") or "")
+            if hallazgos_ca:
+                respaldo_texto = (f"recuperó {len(hallazgos_ca)} proyecto(s) "
+                                  f"en {paginas or '?'} página(s)")
+            elif paginas:
+                respaldo_texto = (f"revisó {paginas} página(s) del listado, "
+                                  f"sin coincidencias")
+            else:
+                respaldo_texto = (f"también falló ({error_respaldo})" if error_respaldo
+                                  else "también falló (sin respuesta del listado)")
+
+        degradado = (consultas_ca > 0
+                     and (fallos_ca / float(consultas_ca)) > UMBRAL_FALLOS_CA)
+        _RESUMEN_ESCANEO.update({
+            "ca_consultas": consultas_ca,
+            "ca_fallos": fallos_ca,
+            "ca_5xx": fallos_5xx,
+            "ca_codigos": dict(codigos_ca),
+            "ca_degradado": degradado,
+            "ca_respaldo": respaldo_texto,
+            "ca_ok": len(hallazgos_ca),
+            "ca_corte": corte_ca,
+        })
+        if corte_ca:
+            print(f"      ⏹ Búsqueda de Compra Ágil cortada ({corte_ca}) "
+                  f"tras {consultas_ca} consultas.")
+        if degradado:
+            print(f"      ⚠️ Compra Ágil FALLÓ en {fallos_ca} de {consultas_ca} consultas "
+                  f"({_pct_fallos_ca()}%). NO significa que no haya ofertas: el buscador "
+                  f"por keyword no respondió.")
+            if respaldo_texto:
+                print(f"         Respaldo por listado: {respaldo_texto}.")
+        elif fallos_ca and not hallazgos_ca:
             print(f"      ⚠️ La API v2 de Compra Ágil no respondió ({fallos_ca} consultas).")
-            print("         Se intentó el respaldo por listado (ver líneas anteriores).")
-        if fallos_ca and not hallazgos_ca:
-            print(f"      ⚠️ La API de Compra Ágil falló en {fallos_ca} consultas "
-                  f"(HTTP 5xx / timeout del portal). NO significa que no haya ofertas:" 
-                  f"el portal no respondió. Se reintentará en la próxima corrida.")
         print(f"      ✓ {len(hallazgos_ca)} Compras Ágiles vigentes detectadas e incorporadas.")
         return hallazgos_ca
 
-def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeout=45):
-    """Pide el listado de Compra Ágil reintentando ante 502/503/504.
-
-    El portal responde 504 con frecuencia en horario de alta demanda; sin esto
-    la corrida termina sin candidatos aunque haya ofertas publicadas.
-    """
-    respuesta = None
-    for posicion, espera in enumerate(intentos, 1):
-        if espera:
-            print(f"      ⏳ Compra Ágil inestable; reintento {posicion} en {espera}s...")
-            time.sleep(espera)
-        try:
-            respuesta = _get_con_reintento(url, headers, timeout=timeout, intentos=2,
-                                           sesion=sesion)
-        except Exception as e:
-            print(f"      [!] Compra Ágil: error de red ({str(e)[:60]})")
-            respuesta = None
-        if respuesta is not None and respuesta.status_code == 200:
-            return respuesta
-        if respuesta is not None and respuesta.status_code not in (500, 502, 503, 504):
-            return respuesta
-    return respuesta
 
 
     def _barrido_ca_por_listado(self, max_ca, codigos_procesados_lote):
@@ -1846,6 +2117,8 @@ def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeo
         """
         encontrados = []
         sesion = _crear_sesion_api()
+        _RESUMEN_ESCANEO["ca_respaldo_paginas"] = 0
+        _RESUMEN_ESCANEO["ca_respaldo_error"] = ""
         max_paginas = int(PERFIL_BARRIDO.get("ca_paginas")
                           or os.getenv("MAX_PAGINAS_CA_RESPALDO", "12"))
 
@@ -1858,14 +2131,18 @@ def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeo
                 r = _get_con_reintento(url, HEADERS_API_COMPRA_AGIL, timeout=60,
                                        intentos=1, sesion=sesion)
             except Exception as e:
+                _RESUMEN_ESCANEO["ca_respaldo_error"] = f"error de red ({str(e)[:40]})"
                 print(f"      [!] Página {pagina} del listado: {str(e)[:60]}")
                 break
             if r is None:
+                _RESUMEN_ESCANEO["ca_respaldo_error"] = "sin respuesta"
                 print(f"      [!] Página {pagina} del listado: sin respuesta")
                 break
             if r.status_code != 200:
+                _RESUMEN_ESCANEO["ca_respaldo_error"] = f"HTTP {r.status_code}"
                 print(f"      [!] Página {pagina} del listado: HTTP {r.status_code}")
                 break
+            _RESUMEN_ESCANEO["ca_respaldo_paginas"] = pagina
             try:
                 carga = (r.json() or {}).get("payload") or {}
                 items = carga.get("items") or []
@@ -1940,6 +2217,8 @@ def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeo
         print(f"🔍 [AGENTE 1] BARRIDO DUAL: COMPRA ÁGIL V2 + LICITACIONES PÚBLICAS ({fecha_api})")
         print("================================================================================")
 
+        _RESUMEN_ESCANEO["lic_fallos"] = 0
+        _RESUMEN_ESCANEO["lic_abiertas"] = 0
         candidatos = []
 
         # 1. Escanear SIEMPRE primero Compra Ágil (API v2 Oficial)
@@ -1971,13 +2250,16 @@ def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeo
                         listado.extend(_lista)
                         print(f"      ✓ {len(_lista)} proceso(s) publicados el {_fecha}")
                     else:
+                        _RESUMEN_ESCANEO["lic_fallos"] = _RESUMEN_ESCANEO.get("lic_fallos", 0) + 1
                         print(f"      [!] API v1 para {_fecha}: HTTP {resp.status_code}")
                 except Exception as e:
+                    _RESUMEN_ESCANEO["lic_fallos"] = _RESUMEN_ESCANEO.get("lic_fallos", 0) + 1
                     print(f"   [!] Error consultando Licitaciones del {_fecha}: {e}")
 
             # CodigoEstado 5 = Publicada (recibiendo ofertas). Se descartan los
             # cerrados/desiertos/adjudicados para no gastar IA en procesos muertos.
             abiertos = [it for it in listado if str(it.get("CodigoEstado", "5")) == "5"]
+            _RESUMEN_ESCANEO["lic_abiertas"] = len(abiertos)
             print(f"      ✓ {len(abiertos)} de {len(listado)} siguen abiertos (estado Publicada).")
 
             for item in abiertos:
@@ -2027,6 +2309,46 @@ def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeo
         _RESUMEN_ESCANEO["ca_ok"] = len(candidatos_ca) if "candidatos_ca" in dir() else 0
         print(f"   -> Lote final seleccionado para auditoría: {len(candidatos)} proyecto(s).")
         return candidatos
+
+
+def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeout=45,
+                       limite=None):
+    """Pide el listado de Compra Ágil reintentando ante 502/503/504.
+
+    El portal responde 504 con frecuencia en horario de alta demanda; sin esto
+    la corrida termina sin candidatos aunque haya ofertas publicadas.
+
+    `limite` es un instante de time.monotonic(): si se alcanza, se cortan los
+    reintentos.  Sin esto, con el portal caído cada keyword podía tardar 7
+    minutos y la corrida completa más de una hora (no alcanzaba a avisar).
+    """
+    respuesta = None
+    for posicion, espera in enumerate(intentos, 1):
+        if limite is not None and time.monotonic() >= limite:
+            print("      ⏱ Se agotó el tiempo máximo para Compra Ágil; se cortan los reintentos.")
+            break
+        if espera:
+            print(f"      ⏳ Compra Ágil inestable; reintento {posicion} en {espera}s...")
+            time.sleep(espera)
+        intento_timeout = timeout
+        if limite is not None:
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                break
+            intento_timeout = max(5, min(timeout, int(restante)))
+        try:
+            respuesta = _get_con_reintento(url, headers, timeout=intento_timeout,
+                                           intentos=2, sesion=sesion)
+        except Exception as e:
+            print(f"      [!] Compra Ágil: error de red ({str(e)[:60]})")
+            respuesta = None
+        if respuesta is not None and respuesta.status_code == 200:
+            return respuesta
+        if respuesta is not None and respuesta.status_code not in (500, 502, 503, 504):
+            return respuesta
+    return respuesta
+
+
 
 
 # ==============================================================================
@@ -7067,6 +7389,10 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
     if not cola:
         print("\nℹ️ No hay proyectos pendientes en este ciclo.")
         print("   (Si quieres reprocesar algo, bórralo de historial_proyectos_procesados.json)")
+        try:
+            _enviar_aviso_corrida(agente5, [], [])
+        except Exception as _e_aviso:
+            print(f"   [!] No se pudo avisar el estado de la corrida: {str(_e_aviso)[:80]}")
         return
 
     # 2) ORDEN ESTRICTO: primero TODAS las Compras Ágiles, después las Licitaciones
@@ -7158,16 +7484,10 @@ def ejecutar_pipeline_6_agentes(codigo_especifico=None, auto=False, barrido_fina
         print(f"   [!] No se pudo enviar el resumen por WhatsApp: {e_res}")
 
     print("\n================================================================================")
-    if not resultados_lote and not fallidos:
-        _es_final = _es_hora_barrido_final()
-        _hubo_falla = bool(_RESUMEN_ESCANEO.get("ca_fallos"))
-        if NOTIFICAR_SIN_NOVEDADES:
-            try:
-                _destinos = WHATSAPP_INTERNO or ([WHATSAPP_DESTINO] if WHATSAPP_DESTINO else [])
-                if _destinos and agente5._enviar_whatsapp(_destinos, _mensaje_sin_novedades()) > 0:
-                    print("   📲 Aviso de \"sin novedades\" enviado por WhatsApp")
-            except Exception as _e_aviso:
-                print(f"   [!] No se pudo avisar por WhatsApp: {str(_e_aviso)[:60]}")
+    try:
+        _enviar_aviso_corrida(agente5, resultados_lote, fallidos)
+    except Exception as _e_aviso:
+        print(f"   [!] No se pudo avisar el estado de la corrida: {str(_e_aviso)[:80]}")
     _guardar_consumo("barrido")
     print(f"🎉 PIPELINE FINALIZADO: {len(resultados_lote)} procesado(s) | {len(fallidos)} pendiente(s)")
     if fallidos:
@@ -7259,6 +7579,41 @@ def mostrar_pendientes():
     print("   Para forzar uno ahora: python agente_licitador_z.py --reprocesar CODIGO")
 
 
+def mostrar_salud():
+    """Muestra el historial de salud de las corridas (Compra Ágil)."""
+    historial = _leer_salud_corridas()
+    print("")
+    print(f"🩺 SALUD DE COMPRA ÁGIL: {len(historial)} corrida(s) registradas")
+    print(f"   Archivo: {ARCHIVO_SALUD_CORRIDAS}")
+    if not historial:
+        print("   (todavía no hay corridas con el registro nuevo)")
+        return
+    print("")
+    print("   Fecha y hora        Modo    CA OK   Consultas  Fallos  % fallo  Result.")
+    for item in historial[-12:]:
+        marca = "⚠️" if item.get("ca_degradado") else "  "
+        print(f" {marca} {item.get('fecha', '?'):<18} {str(item.get('modo', '')):<7} "
+              f"{str(item.get('ca_ok', 0)):>5}   {str(item.get('ca_consultas', 0)):>8}   "
+              f"{str(item.get('ca_fallos', 0)):>5}   {str(item.get('ca_pct_fallo', 0)):>5}%   "
+              f"{str(item.get('resultados', 0)):>5}")
+    ultimo = historial[-1]
+    print("")
+    print(f"   Última corrida: {ultimo.get('fecha')} · "
+          f"{ultimo.get('ca_consultas', 0)} consultas, {ultimo.get('ca_fallos', 0)} fallos")
+    if ultimo.get("ca_degradado"):
+        print(f"   ⚠️ Estado: Compra Ágil caída ({ultimo.get('ca_pct_fallo', 0)}% de fallos)"
+              f" · {ultimo.get('ca_respaldo') or 'sin respaldo'}")
+    else:
+        print("   ✅ Estado: Compra Ágil respondió normalmente")
+    seguidas = _corridas_caidas_seguidas()
+    if seguidas:
+        print(f"   🚨 Corridas seguidas con el portal caído: {seguidas}")
+    caidas = sum(1 for d in historial if d.get("ca_degradado"))
+    print(f"   📊 Total histórico: {caidas} corrida(s) con el portal caído "
+          f"de {len(historial)}.")
+    print("")
+
+
 def olvidar_codigo(codigo, tambien_cola=True):
     codigo = str(codigo or "").strip()
     if not codigo:
@@ -7321,6 +7676,14 @@ def mostrar_estado():
     _lic = _contar(CARPETA_LICITACIONES)
     print(f"  Ya entregados       : {len(historial)} (Compra Ágil: {_ca} · Licitaciones: {_lic})")
     print(f"  Pendientes          : {len(cola)}")
+    _salud = _leer_salud_corridas()
+    if _salud:
+        _ult = _salud[-1]
+        _estado_ca = ("CAÍDA" if _ult.get("ca_degradado") else "OK")
+        print(f"  Última corrida      : {_ult.get('fecha')} · Compra Ágil {_estado_ca} "
+              f"({_ult.get('ca_fallos', 0)}/{_ult.get('ca_consultas', 0)} fallos)")
+    else:
+        print("  Última corrida      : sin registro de salud todavía")
     try:
         total, usado, libre = shutil.disk_usage(DIRECTORIO_RAIZ)
         print(f"  Disco               : {libre // (1024 ** 3)} GB libres de {total // (1024 ** 3)} GB")
@@ -7335,7 +7698,7 @@ def mostrar_estado():
         existe = "sí" if os.path.exists(ruta) else "no"
         print(f"  {etiqueta:<19}: {existe:<3} {ruta}")
     print("=" * 72)
-    print("  Comandos: --historial  --pendientes  --reprocesar CODIGO  --olvidar CODIGO")
+    print("  Comandos: --historial  --pendientes  --salud  --reprocesar CODIGO  --olvidar CODIGO")
     print("")
 
 
@@ -7356,6 +7719,7 @@ def _ayuda():
   python agente_licitador_z.py --adjuntar CODIGO A.pdf   Agrega anexos a un proyecto (EETT, bases)
   python agente_licitador_z.py --historial         Lista los ya entregados
   python agente_licitador_z.py --pendientes        Lista los que fallaron y el motivo
+  python agente_licitador_z.py --salud             Salud de las corridas (fallos de Compra Ágil)
   python agente_licitador_z.py --reprocesar CODIGO Lo olvida y lo procesa ahora mismo
   python agente_licitador_z.py --olvidar CODIGO    Solo lo saca de las listas (sin procesar)
 ==============================================================================
@@ -7735,6 +8099,8 @@ if __name__ == "__main__":
         mostrar_historial()
     elif argumentos[0] in ("--pendientes", "pendientes"):
         mostrar_pendientes()
+    elif argumentos[0] in ("--salud", "salud"):
+        mostrar_salud()
     elif argumentos[0] in ("--reprocesar", "reprocesar") and len(argumentos) > 1:
         print(f"\n🔁 REPROCESANDO: {argumentos[1]}")
         olvidar_codigo(argumentos[1])
