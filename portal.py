@@ -933,6 +933,47 @@ class Manejador(BaseHTTPRequestHandler):
                     meta_extra=str(proyecto.get("organismo") or ""))
                 return self._enviar(200, html_doc, "text/html; charset=utf-8")
 
+            if len(partes) == 3 and partes[2] == "historial":
+                if portal_ui is None:
+                    return self._enviar(500, "<h1>UI no disponible</h1>")
+                filas = []
+                for token_proy, datos_proy in _proyectos().items():
+                    carpeta_proy = datos_proy.get("_carpeta") or ""
+                    cot = _leer_cotizacion(carpeta_proy)
+                    presupuesto = int(datos_proy.get("presupuesto_clp") or 0)
+                    monto = int(cot.get("monto") or datos_proy.get("oferta_bruta_clp") or 0)
+                    costo = _solo_digitos(cot.get("costo") or 0)
+                    neto = int(round(monto / 1.19)) if monto else 0
+                    ganancia = (neto - costo) if costo else 0
+                    margen = (ganancia / neto * 100) if (neto and costo) else None
+                    filas.append({
+                        "codigo": datos_proy.get("codigo") or datos_proy.get("_codigo") or "",
+                        "nombre": datos_proy.get("nombre") or "",
+                        "organismo": datos_proy.get("organismo") or "",
+                        "generado": datos_proy.get("generado") or "",
+                        "presupuesto": presupuesto,
+                        "monto": monto,
+                        "pct": (monto / presupuesto * 100) if presupuesto else 0,
+                        "costo": costo,
+                        "ganancia": ganancia,
+                        "margen": margen,
+                        "token": token_proy,
+                    })
+                filas.sort(key=lambda f: str(f.get("generado") or ""), reverse=True)
+                total = len(filas)
+                suma_presu = sum(f["presupuesto"] for f in filas)
+                suma_ofert = sum(f["monto"] for f in filas)
+                margenes = [f["margen"] for f in filas if isinstance(f["margen"], (int, float))]
+                resumen = {
+                    "total": total,
+                    "presupuesto": suma_presu,
+                    "ofertado": suma_ofert,
+                    "promedio": int(suma_ofert / total) if total else 0,
+                    "margen": (f"{sum(margenes) / len(margenes):.1f}%" if margenes else "—"),
+                }
+                return self._enviar(200, portal_ui.historial_html(
+                    proyecto, partes[1], filas, resumen), "text/html; charset=utf-8")
+
             if len(partes) == 3 and partes[2] == "banco":
                 if portal_ui is None:
                     return self._enviar(500, "<h1>UI no disponible</h1>")

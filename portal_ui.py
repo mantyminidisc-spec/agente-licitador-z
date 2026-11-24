@@ -983,6 +983,112 @@ CAMPOS_BANCO = (
 )
 
 
+
+# ---------------------------------------------------------------------------
+# Historial de procesos del cliente
+# ---------------------------------------------------------------------------
+def historial_html(proyecto, token, filas, resumen):
+    codigo = _esc(proyecto.get("codigo", ""))
+    nombre = _esc(str(proyecto.get("nombre") or "")[:90])
+    filas = filas or []
+    resumen = resumen or {}
+
+    cuerpo = []
+    for f in filas:
+        margen = f.get("margen")
+        clase_margen = ""
+        if isinstance(margen, (int, float)):
+            clase_margen = " bueno" if margen >= 20 else (" flojo" if margen < 5 else "")
+        cuerpo.append(
+            "<tr>"
+            f"<td class='gris'>{_esc(str(f.get('generado') or '')[:10])}</td>"
+            f"<td><strong>{_esc(f.get('codigo') or '')}</strong></td>"
+            f"<td>{_esc(str(f.get('nombre') or '')[:60])}</td>"
+            f"<td class='gris'>{_esc(str(f.get('organismo') or '')[:34])}</td>"
+            f"<td class='der'>{_clp(f.get('presupuesto') or 0)}</td>"
+            f"<td class='der'><strong>{_clp(f.get('monto') or 0)}</strong></td>"
+            f"<td class='der'>{f.get('pct') or 0:.0f}%</td>"
+            f"<td class='der'>{_clp(f.get('ganancia') or 0)}</td>"
+            f"<td class='der{clase_margen}'>"
+            f"{('%.1f%%' % margen) if isinstance(margen, (int, float)) and f.get('costo') else '—'}</td>"
+            f"<td><a class='btn-mini' href='/p/{_esc(f.get('token') or '')}'>Ver</a></td>"
+            "</tr>")
+
+    tabla = ("<div class='scroll-x'><table class='tabla-hist'>"
+             "<thead><tr><th>Fecha</th><th>Código</th><th>Proceso</th><th>Organismo</th>"
+             "<th class='der'>Presupuesto</th><th class='der'>Oferta</th>"
+             "<th class='der'>% tope</th><th class='der'>Ganancia</th>"
+             "<th class='der'>Margen</th><th></th></tr></thead><tbody>"
+             + "".join(cuerpo) + "</tbody></table></div>")
+
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Historial · {codigo}</title>
+<style>
+:root{{--azul:#12213a;--azul2:#1e3a5f;--texto:#1c2536;--gris:#5b6674;--linea:#e3e7ee;
+--fondo:#f5f7fb;--blanco:#fff;--verde:#ecfdf5;--rojo:#fef2f2}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--fondo);color:var(--texto);font-size:14px;line-height:1.55;
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
+.wrap{{max-width:1080px;margin:0 auto;padding:22px 16px 50px}}
+.cab{{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:18px}}
+.cab h1{{font-size:19px;margin:0;color:var(--azul)}}
+.cab .sub{{font-size:12.5px;color:var(--gris)}}
+.cab .der{{margin-left:auto}}
+.btn-mini{{display:inline-block;background:#eef2f8;color:var(--azul2);border-radius:7px;
+padding:5px 11px;font-size:12px;font-weight:600;text-decoration:none}}
+.resumen{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;
+margin-bottom:18px}}
+.caja{{background:var(--blanco);border:1px solid var(--linea);border-radius:12px;padding:14px 16px}}
+.caja span{{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+color:var(--gris);font-weight:700;margin-bottom:3px}}
+.caja strong{{font-size:20px;color:var(--azul)}}
+.tarjeta{{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;
+padding:6px 8px 8px}}
+.scroll-x{{overflow-x:auto}}
+.tabla-hist{{width:100%;border-collapse:collapse;font-size:12.5px}}
+.tabla-hist th{{background:var(--azul);color:#fff;text-align:left;padding:9px 10px;
+font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}}
+.tabla-hist td{{border-bottom:1px solid var(--linea);padding:9px 10px;vertical-align:middle}}
+.tabla-hist tbody tr:hover td{{background:#f8fafc}}
+.der{{text-align:right}}
+.gris{{color:var(--gris)}}
+.bueno{{color:#065f46;font-weight:700}}
+.flojo{{color:#9a3412}}
+.ayuda{{color:var(--gris);font-size:12.5px;margin:14px 2px 0}}
+</style></head><body>
+<div class="wrap">
+  <div class="cab">
+    <div>
+      <h1>Historial de procesos</h1>
+      <div class="sub">{nombre} · {codigo}</div>
+    </div>
+    <div class="der"><a class="btn-mini" href="/p/{token}">Volver al panel</a></div>
+  </div>
+
+  <div class="resumen">
+    <div class="caja"><span>Procesos entregados</span><strong>{resumen.get('total', 0)}</strong></div>
+    <div class="caja"><span>Presupuesto acumulado</span><strong>{_clp(resumen.get('presupuesto', 0))}</strong></div>
+    <div class="caja"><span>Ofertado en total</span><strong>{_clp(resumen.get('ofertado', 0))}</strong></div>
+    <div class="caja"><span>Ticket promedio</span><strong>{_clp(resumen.get('promedio', 0))}</strong></div>
+    <div class="caja"><span>Margen promedio</span><strong>{resumen.get('margen', '—')}</strong></div>
+  </div>
+
+  <div class="tarjeta">
+    {tabla if filas else '<p class="ayuda" style="padding:14px">Todavía no hay procesos entregados.</p>'}
+  </div>
+
+  <p class="ayuda">
+    La columna <strong>% tope</strong> compara tu oferta con el presupuesto del organismo.
+    El <strong>margen</strong> se calcula con el costo interno que registraste en la planilla
+    de cada proceso; si no lo cargaste, aparece como «—».
+  </p>
+</div>
+</body></html>"""
+
+
 def banco_html(proyecto, token, datos, mensaje="", hay_certificado=False, adjuntos=None):
     datos = datos or {}
     adjuntos = adjuntos or []
@@ -1555,6 +1661,9 @@ def pagina(proyecto, token, archivos, adjuntos, aviso="", hay_logo=True, logo_ur
     <div class="titulo">Documentos</div>
     {"".join(menu_docs) if menu_docs else '<button data-seccion="resumen">Sin documentos</button>'}
     <button data-seccion="cotizacion">Editar cotización</button>
+    <a href="/p/{token}/historial" style="display:flex;align-items:center;gap:9px;
+       color:#dbe3ee;padding:9px 10px;border-radius:9px;font-size:13.5px;
+       font-weight:550;text-decoration:none">Historial</a>
     <a href="/p/{token}/banco" style="display:flex;align-items:center;gap:9px;
        color:#dbe3ee;padding:9px 10px;border-radius:9px;font-size:13.5px;
        font-weight:550;text-decoration:none">Datos bancarios</a>
