@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.8"
+VERSION_LICITAIA = "20.9"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1729,14 +1729,15 @@ Responde ÚNICAMENTE en formato JSON:
             url_api = f"https://api2.mercadopublico.cl/v2/compra-agil?q={kw_url}&estado=publicada&numero_pagina=1"
 
             try:
-                r = _get_con_reintento(url_api, HEADERS_API_COMPRA_AGIL,
-                                       timeout=45, intentos=2, sesion=sesion_ca)
+                r = _ca_con_reintentos(url_api, HEADERS_API_COMPRA_AGIL,
+                                       sesion=sesion_ca)
                 if r is None:
                     fallos_ca += 1
                     continue
                 if r.status_code != 200:
                     fallos_ca += 1
-                    print(f'      [!] Compra Ágil respondió HTTP {r.status_code} · ')
+                    print(f'      [!] Compra Ágil respondió HTTP {r.status_code} '
+                          f'después de reintentos')
                     continue
                 if r.status_code == 200:
                     js = r.json()
@@ -1812,6 +1813,30 @@ Responde ÚNICAMENTE en formato JSON:
                   f"el portal no respondió. Se reintentará en la próxima corrida.")
         print(f"      ✓ {len(hallazgos_ca)} Compras Ágiles vigentes detectadas e incorporadas.")
         return hallazgos_ca
+
+def _ca_con_reintentos(url, headers, sesion=None, intentos=(0, 5, 15, 30), timeout=45):
+    """Pide el listado de Compra Ágil reintentando ante 502/503/504.
+
+    El portal responde 504 con frecuencia en horario de alta demanda; sin esto
+    la corrida termina sin candidatos aunque haya ofertas publicadas.
+    """
+    respuesta = None
+    for posicion, espera in enumerate(intentos, 1):
+        if espera:
+            print(f"      ⏳ Compra Ágil inestable; reintento {posicion} en {espera}s...")
+            time.sleep(espera)
+        try:
+            respuesta = _get_con_reintento(url, headers, timeout=timeout, intentos=2,
+                                           sesion=sesion)
+        except Exception as e:
+            print(f"      [!] Compra Ágil: error de red ({str(e)[:60]})")
+            respuesta = None
+        if respuesta is not None and respuesta.status_code == 200:
+            return respuesta
+        if respuesta is not None and respuesta.status_code not in (500, 502, 503, 504):
+            return respuesta
+    return respuesta
+
 
     def _barrido_ca_por_listado(self, max_ca, codigos_procesados_lote):
         """Respaldo cuando el buscador por keyword falla (HTTP 504).
