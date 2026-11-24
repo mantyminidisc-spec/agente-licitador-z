@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "21.0"
+VERSION_LICITAIA = "21.1"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1300,6 +1300,7 @@ def _registrar_salud_corrida(resultados=0, pendientes=0, alerta="", modo=""):
         "ca_consultas": int(_RESUMEN_ESCANEO.get("ca_consultas") or 0),
         "ca_fallos": int(_RESUMEN_ESCANEO.get("ca_fallos") or 0),
         "ca_5xx": int(_RESUMEN_ESCANEO.get("ca_5xx") or 0),
+        "ca_ok": int(_RESUMEN_ESCANEO.get("ca_ok") or 0),
         "ca_pct_fallo": _pct_fallos_ca(),
         "ca_degradado": bool(_RESUMEN_ESCANEO.get("ca_degradado")),
         "ca_respaldo": str(_RESUMEN_ESCANEO.get("ca_respaldo") or ""),
@@ -7592,8 +7593,11 @@ def mostrar_salud():
     print("   Fecha y hora        Modo    CA OK   Consultas  Fallos  % fallo  Result.")
     for item in historial[-12:]:
         marca = "⚠️" if item.get("ca_degradado") else "  "
+        # Las corridas anteriores a v21.1 no guardaban ca_ok: se muestra "-".
+        ca_ok = item.get("ca_ok")
+        ca_ok_txt = str(ca_ok) if ca_ok is not None else "-"
         print(f" {marca} {item.get('fecha', '?'):<18} {str(item.get('modo', '')):<7} "
-              f"{str(item.get('ca_ok', 0)):>5}   {str(item.get('ca_consultas', 0)):>8}   "
+              f"{ca_ok_txt:>5}   {str(item.get('ca_consultas', 0)):>8}   "
               f"{str(item.get('ca_fallos', 0)):>5}   {str(item.get('ca_pct_fallo', 0)):>5}%   "
               f"{str(item.get('resultados', 0)):>5}")
     ultimo = historial[-1]
