@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "21.1"
+VERSION_LICITAIA = "21.2"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1364,7 +1364,7 @@ def _mensaje_estado_corrida(resultados=0, fallidos=None):
         if resultados:
             cabecera = "⚠️ *LICITAIA · COMPRA ÁGIL INESTABLE*"
         elif paginas:
-            cabecera = "⚠️ *LICITAIA · BÚSQUEDA DE COMPRA ÁGIL CAÍDA*"
+            cabecera = "⚠️ *LICITAIA · BÚSQUEDA DE COMPRA ÁGIL DEGRADADA*"
         else:
             cabecera = "⚠️ *LICITAIA · COMPRA ÁGIL NO RESPONDE*"
         lineas = [cabecera, f"🕐 {ahora:%d-%m-%Y %H:%M}", ""]
@@ -1387,16 +1387,17 @@ def _mensaje_estado_corrida(resultados=0, fallidos=None):
         else:
             lineas.append("❌ Esta corrida *no entregó ningún proyecto*.")
             if paginas:
-                lineas.append("El buscador por palabra clave no respondió; el listado sí "
-                              "respondió y no hubo coincidencias. Puede haber ofertas "
-                              "sin revisar.")
+                lineas.append("El buscador por palabra clave falló en las consultas más "
+                              "amplias; el listado sí respondió y no hubo coincidencias. "
+                              "Puede haber ofertas sin revisar.")
             else:
                 lineas.append("No es que no haya ofertas: el portal no respondió.")
         if fallidos:
             lineas.append(f"⏳ Quedaron *{len(fallidos)}* pendiente(s) para el reintento.")
         seguidas = _corridas_caidas_seguidas()
         if seguidas >= 2:
-            lineas.append(f"🚨 Van *{seguidas} corridas seguidas* con Compra Ágil caída.")
+            lineas.append(f"🚨 Van *{seguidas} corridas seguidas* con la búsqueda de "
+                          f"Compra Ágil degradada.")
         lineas.append("")
         lineas.append(f"🔁 Se reintenta {proxima}.")
         return "\n".join(lineas)
@@ -1958,11 +1959,14 @@ Responde ÚNICAMENTE en formato JSON:
             "ca_respaldo_paginas": 0, "ca_respaldo_error": "",
         })
 
-        # Keywords de consulta compuestas y específicas del giro TI (sin palabras ambiguas como 'sistema')
+        # Keywords ordenadas de MÁS específica a MÁS amplia: las consultas
+        # amplias ("software", "desarrollo software") tardan >20 s en el
+        # buscador de ChileCompra y se comen el presupuesto de la corrida.
         keywords_consulta = [
-            "desarrollo software", "software", "sitio web", "pagina web",
-            "inteligencia artificial", "plataforma web", "marketing digital",
-            "soporte informatico", "ciberseguridad", "vps", "hosting"
+            "vps", "hosting", "ciberseguridad", "plataforma web",
+            "marketing digital", "sitio web", "pagina web",
+            "soporte informatico", "inteligencia artificial",
+            "software", "desarrollo software",
         ]
 
         for kw in keywords_consulta:
@@ -1979,7 +1983,7 @@ Responde ÚNICAMENTE en formato JSON:
             try:
                 consultas_ca += 1
                 r = _ca_con_reintentos(url_api, HEADERS_API_COMPRA_AGIL,
-                                       sesion=sesion_ca, timeout=25, limite=limite_ca)
+                                       sesion=sesion_ca, timeout=20, limite=limite_ca)
                 if r is None:
                     fallos_ca += 1
                     fallos_consecutivos_ca += 1
@@ -2100,7 +2104,7 @@ Responde ÚNICAMENTE en formato JSON:
         if degradado:
             print(f"      ⚠️ Compra Ágil FALLÓ en {fallos_ca} de {consultas_ca} consultas "
                   f"({_pct_fallos_ca()}%). NO significa que no haya ofertas: el buscador "
-                  f"por keyword no respondió.")
+                  f"por keyword falló o respondió lento.")
             if respaldo_texto:
                 print(f"         Respaldo por listado: {respaldo_texto}.")
         elif fallos_ca and not hallazgos_ca:
@@ -7605,15 +7609,15 @@ def mostrar_salud():
     print(f"   Última corrida: {ultimo.get('fecha')} · "
           f"{ultimo.get('ca_consultas', 0)} consultas, {ultimo.get('ca_fallos', 0)} fallos")
     if ultimo.get("ca_degradado"):
-        print(f"   ⚠️ Estado: Compra Ágil caída ({ultimo.get('ca_pct_fallo', 0)}% de fallos)"
+        print(f"   ⚠️ Estado: Compra Ágil degradada ({ultimo.get('ca_pct_fallo', 0)}% de fallos)"
               f" · {ultimo.get('ca_respaldo') or 'sin respaldo'}")
     else:
         print("   ✅ Estado: Compra Ágil respondió normalmente")
     seguidas = _corridas_caidas_seguidas()
     if seguidas:
-        print(f"   🚨 Corridas seguidas con el portal caído: {seguidas}")
+        print(f"   🚨 Corridas seguidas con la búsqueda degradada: {seguidas}")
     caidas = sum(1 for d in historial if d.get("ca_degradado"))
-    print(f"   📊 Total histórico: {caidas} corrida(s) con el portal caído "
+    print(f"   📊 Total histórico: {caidas} corrida(s) con la búsqueda degradada "
           f"de {len(historial)}.")
     print("")
 
@@ -7683,7 +7687,7 @@ def mostrar_estado():
     _salud = _leer_salud_corridas()
     if _salud:
         _ult = _salud[-1]
-        _estado_ca = ("CAÍDA" if _ult.get("ca_degradado") else "OK")
+        _estado_ca = ("DEGRADADA" if _ult.get("ca_degradado") else "OK")
         print(f"  Última corrida      : {_ult.get('fecha')} · Compra Ágil {_estado_ca} "
               f"({_ult.get('ca_fallos', 0)}/{_ult.get('ca_consultas', 0)} fallos)")
     else:
