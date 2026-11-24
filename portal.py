@@ -52,6 +52,7 @@ MAX_ZIP = 80 * 1024 * 1024
 MAX_SUBIDA = 60 * 1024 * 1024
 BLOQUEO = os.path.join(RAIZ, "portal_reproceso.lock")
 RUTA_LOGO = os.path.join(RAIZ, "logo.png")
+PLAN_COMERCIAL = (os.getenv("PLAN_COMERCIAL") or "PRO").strip().upper()
 
 _cache = {"t": 0.0, "proyectos": {}}
 
@@ -140,10 +141,16 @@ def _guardar_manifest(carpeta, datos):
 
 def _archivos(carpeta):
     salida = []
+    es_emprende = PLAN_COMERCIAL in ("EMPRE", "EMPRENDE", "BASICO")
     for nombre in sorted(os.listdir(carpeta)):
         ruta = os.path.join(carpeta, nombre)
         if not os.path.isfile(ruta) or nombre == "manifest.json":
             continue
+        # el plan Emprende no incluye informe financiero ni planilla
+        if es_emprende:
+            nombre_upper = nombre.upper()
+            if nombre_upper.startswith("DOC3") or nombre_upper.startswith("PLANILLA"):
+                continue
         if nombre.startswith("."):
             continue
         if nombre.lower().endswith((".json", ".log", ".tmp", ".lock", ".html", ".eml")):
@@ -887,7 +894,7 @@ class Manejador(BaseHTTPRequestHandler):
                      "version_agente": _version_agente(),
                      "ia_principal": os.getenv("IA_MODELO", ""),
                      "ia_premium": os.getenv("IA_PREMIUM_MODELO", ""),
-                     "proyectos": len(_proyectos()), "carpeta": ENTREGABLES}
+                     "proyectos": len(_proyectos()), "carpeta": ENTREGABLES, "plan": PLAN_COMERCIAL}
             return self._enviar(200, json.dumps(datos, ensure_ascii=False), "application/json")
 
         if len(partes) >= 2 and partes[0] == "p":

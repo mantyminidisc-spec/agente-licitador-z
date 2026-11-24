@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "20.6"
+VERSION_LICITAIA = "20.8"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -646,6 +646,7 @@ IA_PREMIUM_KEY = os.getenv("IA_PREMIUM_KEY", "").strip()
 IA_PREMIUM_MODELO = os.getenv("IA_PREMIUM_MODELO", "").strip()
 IA_PREMIUM_TOPE_TEXTO = int(os.getenv("IA_PREMIUM_TOPE_TEXTO", "80000"))
 PREMIUM_ACTIVO = bool(IA_PREMIUM_URL and IA_PREMIUM_KEY and IA_PREMIUM_MODELO)
+PLAN_COMERCIAL = (os.getenv("PLAN_COMERCIAL") or "PRO").strip().upper()
 
 
 def _gemini_generar_json(prompt, temperatura=0.2, max_tokens=8192, timeout=None, intentos=3, premium=False):
@@ -6455,6 +6456,14 @@ class Agente5Entregador:
             print(f"   [!] No se pudo escribir el manifiesto: {e}")
         return ruta
 
+    def _texto_documentos_plan(self):
+        """Describe solo los documentos que incluye el plan contratado."""
+        if PLAN_COMERCIAL in ("EMPRE", "EMPRENDE", "BASICO"):
+            return ("Incluye informe de auditoría y cotización técnica formal. "
+                    "El plan Emprende no incluye el informe financiero.")
+        return ("Incluye informe de auditoría, cotización técnica formal "
+                "e informe financiero.")
+
     def _html_correo_portal(self, expediente, informes, escenarios, enlace):
         eq = (escenarios or {}).get("equilibrado", {})
         return f"""
@@ -6486,8 +6495,7 @@ class Agente5Entregador:
                  Ver documentos y descargar</a>
             </div>
             <p style="font-size:12px;color:#6b7280;text-align:center;margin:10px 0 0">
-              Incluye auditoría (DOC 1), cotización (DOC 2), informe financiero (DOC 3),
-              planilla Excel y los adjuntos originales del portal.</p>
+              {self._texto_documentos_plan()}</p>
             <p style="font-size:12px;color:#6b7280;margin:22px 0 0">
               {informes.get('resumen_ejecutivo_gerencial','')[:400]}</p>
           </div>
