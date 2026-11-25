@@ -426,61 +426,197 @@ def _solo_digitos(texto, defecto=0):
         return int(defecto)
 
 
+def _iva_fraccion(valor, defecto=0.19):
+    """Acepta 19, 0.19 o "19%" y devuelve la fracción."""
+    try:
+        numero = float(str(valor).replace("%", "").replace(",", ".").strip())
+    except Exception:
+        return defecto
+    if numero > 1:
+        numero = numero / 100.0
+    return numero if 0 < numero < 1 else defecto
+
+
+def _costo_del_desglose(cot):
+    """Costo interno del desglose; si está vacío, el que quedó guardado."""
+    desglose = (_solo_digitos(cot.get("horas") or 0) * _solo_digitos(cot.get("valor_hora") or 0)
+                + _solo_digitos(cot.get("cloud") or 0)
+                + _solo_digitos(cot.get("gestion") or 0))
+    return desglose if desglose > 0 else _solo_digitos(cot.get("costo") or 0)
+
+
+def _acomodar_pcts(p1, p2, p3):
+    """Deja los tres escenarios ordenados y separados, dentro de 50%-99%."""
+    p1, p2, p3 = float(p1), float(p2), float(p3)
+    p2 = min(0.99, max(0.50, p2))
+    p3 = min(0.99, max(p3, p2 + 0.01))
+    if p3 <= p2:
+        p2 = max(0.50, p3 - 0.01)
+    p1 = max(0.50, min(p1, p2 - 0.01))
+    if p1 >= p2:
+        p1 = max(0.50, p2 - 0.01)
+    if p1 >= p2:
+        p2 = min(0.99, p1 + 0.01)
+    if p3 <= p2:
+        p3 = min(0.99, p2 + 0.01)
+    if not (p1 < p2 < p3):
+        p1, p2, p3 = 0.78, 0.80, 0.85
+    return round(p1, 4), round(p2, 4), round(p3, 4)
+
+
+def _estado_economico(proyecto):
+    """Verdad única de los montos del proyecto.
+
+    La usan la planilla, la cotización, el KPI, el historial y el Word que se
+    descarga, para que no puedan mostrar cifras distintas.
+
+    Regla: si el cliente escribió un monto, ese monto manda y los porcentajes
+    se acomodan a él; si eligió un escenario (competitivo / conservador), manda
+    el escenario.
+    """
+    carpeta = proyecto.get("_carpeta") or ""
+    cot = _leer_cotizacion(carpeta)
+    presupuesto = _solo_digitos(cot.get("presupuesto")
+                                or proyecto.get("presupuesto_clp") or 0)
+    iva = _iva_fraccion(cot.get("iva"))
+    costo = _costo_del_desglose(cot)
+    estudio = _pcts_del_estudio(carpeta)
+
+    base = 0.80
+    referencia = _solo_digitos(cot.get("monto") or proyecto.get("oferta_bruta_clp") or 0)
+    if presupuesto and referencia:
+        base = min(0.99, max(0.50, referencia / float(presupuesto)))
+
+    p1 = _pct_seguro(cot.get("pct1"), estudio.get("pct1", max(0.50, base - 0.02)))
+    p2 = _pct_seguro(cot.get("pct2"), estudio.get("pct2", base))
+    p3 = _pct_seguro(cot.get("pct3"), estudio.get("pct3", min(0.99, base + 0.05)))
+    if not _pcts_coherentes(p1, p2, p3):
+        p1, p2, p3 = _acomodar_pcts(p1, p2, p3)
+
+    elegido = str(cot.get("escenario_cotizacion") or "recomendado").lower()
+    if elegido not in ("competitivo", "recomendado", "conservador", "mi_precio"):
+        elegido = "recomendado"
+
+    monto_guardado = _solo_digitos(cot.get("monto")
+                                   or proyecto.get("oferta_bruta_clp") or 0)
+    # Un monto sobre el presupuesto oficial no se puede ofertar: no se aplica.
+    tope_excedido = bool(presupuesto and monto_guardado > presupuesto)
+    ajustado = False
+    if (elegido in ("recomendado", "mi_precio") and presupuesto > 0
+            and 0 < monto_guardado <= presupuesto):
+        bruto_actual = int(round(presupuesto * p2))
+        if abs(monto_guardado - bruto_actual) > 500:
+            # el monto escrito a mano manda: los porcentajes se acomodan a él
+            p1, p2, p3 = _acomodar_pcts(p1, monto_guardado / float(presupuesto), p3)
+            ajustado = True
+
+    if portal_ui is not None:
+        filas = portal_ui.calcular_escenarios(
+            presupuesto, iva, costo,
+            [(u"Competitivo", p1), (u"Recomendado", p2), (u"Conservador", p3)])
+    else:
+        filas = []
+        for nombre_esc, pct in ((u"Competitivo", p1), (u"Recomendado", p2),
+                                (u"Conservador", p3)):
+            bruto = int(round(presupuesto * pct)) if presupuesto else 0
+            neto = int(round(bruto / (1 + iva))) if (1 + iva) else 0
+            ganancia = neto - costo
+            filas.append({"escenario": nombre_esc, "pct": pct, "bruto": bruto, "neto": neto,
+                          "iva": bruto - neto, "costo": costo, "ganancia": ganancia,
+                          "margen": (ganancia / neto * 100) if neto else 0,
+                          "roi": (ganancia / costo * 100) if costo else 0})
+
+    indice = {"competitivo": 0, "recomendado": 1, "conservador": 2}.get(elegido, 1)
+    if elegido in ("recomendado", "mi_precio"):
+        if tope_excedido:
+            monto = filas[indice]["bruto"] if filas else 0
+        elif presupuesto and ajustado:
+            monto = int(round(presupuesto * p2))
+        else:
+            monto = monto_guardado
+        if not monto and filas:
+            monto = filas[indice]["bruto"]
+    else:
+        monto = filas[indice]["bruto"] if filas else monto_guardado
+
+    if not monto:
+        monto = _recomendado_del_estudio(carpeta) or (
+            int(round(presupuesto * base)) if presupuesto else 0)
+    neto = int(round(monto / (1 + iva))) if monto else 0
+    return {
+        "presupuesto": presupuesto,
+        "iva": iva,
+        "costo": costo,
+        "pct1": p1,
+        "pct2": p2,
+        "pct3": p3,
+        "filas": filas,
+        "elegido": elegido,
+        "monto": int(monto),
+        "monto_pedido": int(monto_guardado),
+        "tope_excedido": tope_excedido,
+        "neto": neto,
+        "iva_clp": int(monto) - neto,
+        "ajustado": ajustado,
+    }
+
+
 def _monto_recomendado(proyecto):
     """Monto con IVA que el cliente eligió para la cotización."""
     try:
-        cot = _leer_cotizacion(proyecto["_carpeta"])
-        elegido = str(cot.get("escenario_cotizacion") or "recomendado").lower()
-        if elegido == "mi_precio":
-            costo_cot = _solo_digitos(cot.get("costo") or 0)
-            try:
-                margen_cot = float(cot.get("margen_objetivo") or 0.35)
-            except Exception:
-                margen_cot = 0.35
-            if margen_cot > 1:
-                margen_cot = margen_cot / 100.0
-            neto_preferido = _solo_digitos(cot.get("neto") or 0)
-            if neto_preferido > 0:
-                iva_txt3 = cot.get("iva") or 0.19
-                try:
-                    iva_v3 = float(iva_txt3)
-                except Exception:
-                    iva_v3 = 0.19
-                if iva_v3 > 1:
-                    iva_v3 = iva_v3 / 100.0
-                return int(round(neto_preferido * (1 + iva_v3)))
-            if costo_cot > 0 and 0 < margen_cot < 1:
-                neto_calc = int(round(costo_cot / (1 - margen_cot)))
-                iva_txt2 = cot.get("iva") or 0.19
-                try:
-                    iva_v2 = float(iva_txt2)
-                except Exception:
-                    iva_v2 = 0.19
-                if iva_v2 > 1:
-                    iva_v2 = iva_v2 / 100.0
-                return int(round(neto_calc * (1 + iva_v2)))
-            neto = _solo_digitos(cot.get("neto") or 0)
-            iva_txt = cot.get("iva") or 0.19
-            try:
-                iva_v = float(iva_txt)
-            except Exception:
-                iva_v = 0.19
-            if iva_v > 1:
-                iva_v = iva_v / 100.0
-            if neto:
-                return int(round(neto * (1 + iva_v)))
-        monto_elegido = cot.get(f"monto_{elegido}")
-        if monto_elegido:
-            return _solo_digitos(monto_elegido)
-        if cot.get("monto"):
-            return _solo_digitos(cot.get("monto"))
-        recomendado = _recomendado_del_estudio(proyecto["_carpeta"])
-        if recomendado > 0:
-            return recomendado
-        valores = _valores_planilla(proyecto)
-        return int(round(int(valores.get("presupuesto") or 0) * float(valores.get("pct2") or 0.8)))
+        return int(_estado_economico(proyecto)["monto"])
     except Exception:
         return int(proyecto.get("oferta_bruta_clp") or 0)
+
+
+def _sellar_doc2(carpeta, proyecto=None):
+    """Reescribe el Word de la cotización con los montos que están guardados.
+
+    Se llama al guardar la planilla o la cotización, y antes de descargar el
+    archivo. Si la plantilla no está disponible, el portal sigue funcionando:
+    solo se omite la regeneración.
+    """
+    try:
+        import cotizacion_docx
+    except Exception as error:
+        print(f"   [PORTAL] sin plantilla DOC2 ({error}): no se regenera el Word")
+        return ""
+    try:
+        estado = _estado_economico(proyecto or {"_carpeta": carpeta})
+        ruta = cotizacion_docx.generar_desde_carpeta(
+            carpeta, monto=estado["monto"], neto=estado["neto"],
+            iva=estado["iva"], presupuesto=estado["presupuesto"])
+        if ruta:
+            print(f"   [PORTAL] DOC2 regenerado: {os.path.basename(ruta)} "
+                  f"por ${estado['monto']:,} CLP".replace(",", "."))
+        return ruta
+    except Exception as error:
+        print(f"   [PORTAL] no se pudo regenerar el DOC2: {error}")
+        return ""
+
+
+def _doc2_actualizado(carpeta):
+    """True si el Word de la cotización es más nuevo que los datos guardados."""
+    try:
+        doc2 = [n for n in os.listdir(carpeta)
+                if n.upper().startswith("DOC2") and n.lower().endswith(".docx")]
+    except Exception:
+        return True
+    if not doc2:
+        return True
+    try:
+        marca = 0
+        for nombre in ("cotizacion_editada.json", "datos_informe.json"):
+            ruta = os.path.join(carpeta, nombre)
+            if os.path.isfile(ruta):
+                marca = max(marca, os.path.getmtime(ruta))
+        if marca:
+            for nombre in doc2:
+                if os.path.getmtime(os.path.join(carpeta, nombre)) < marca - 1:
+                    return False
+    except Exception:
+        return True
+    return True
 
 
 def _sensibilidad(presupuesto, iva, costo, desde=0.70, hasta=0.99, paso=0.02,
@@ -580,68 +716,17 @@ def _recomendado_del_estudio(carpeta):
 
 
 def _valores_planilla(proyecto):
-    """Datos de entrada de la planilla: ficha + lo que el cliente ya editó."""
+    """Datos de entrada de la planilla: ficha + lo que el cliente ya editó.
+
+    Los porcentajes y el monto salen del motor único, así la planilla muestra
+    exactamente lo mismo que la cotización y que el Word descargado.
+    """
     cot = _leer_cotizacion(proyecto["_carpeta"])
-    try:
-        presupuesto = int(cot.get("presupuesto") or proyecto.get("presupuesto_clp") or 0)
-    except Exception:
-        presupuesto = int(proyecto.get("presupuesto_clp") or 0)
-    try:
-        iva_guardado = float(cot.get("iva") or 0.19)
-    except Exception:
-        iva_guardado = 0.19
-    if iva_guardado > 1:
-        iva_guardado = iva_guardado / 100.0
-    oferta = int(cot.get("monto") or proyecto.get("oferta_bruta_clp") or 0)
-    base = (oferta / presupuesto) if presupuesto else 0.80
-    if base > 1.0 or base < 0.50:
-        base = 0.80  # el monto guardado no es coherente: se usa el escenario estándar
+    estado = _estado_economico(proyecto)
     horas = _solo_digitos(cot.get("horas") or 0)
     valor_hora = _solo_digitos(cot.get("valor_hora") or 0)
     cloud = _solo_digitos(cot.get("cloud") or 0)
     gestion = _solo_digitos(cot.get("gestion") or 0)
-    costo_desglose = horas * valor_hora + cloud + gestion
-    try:
-        costo_guardado = _solo_digitos(cot.get("costo") or 0)
-    except Exception:
-        costo_guardado = 0
-    # v28.3: los costos parten en cero; el cliente los completa
-    if costo_desglose > 0:
-        costo_guardado = costo_desglose
-    else:
-        costo_guardado = 0
-        horas = horas or 0
-        valor_hora = valor_hora or 0
-        cloud = cloud or 0
-        gestion = gestion or 0
-    defecto_1 = min(0.98, max(0.50, round(base - 0.02, 2)))
-    defecto_2 = min(0.99, max(0.55, round(base, 2)))
-    defecto_3 = min(0.99, max(0.60, round(base + 0.05, 2)))
-
-    # si el agente dejó un estudio financiero, esas son las referencias válidas
-    del_estudio = _pcts_del_estudio(proyecto["_carpeta"])
-    if del_estudio:
-        defecto_1 = del_estudio.get("pct1", defecto_1)
-        defecto_2 = del_estudio.get("pct2", defecto_2)
-        defecto_3 = del_estudio.get("pct3", defecto_3)
-
-    p1 = _pct_seguro(cot.get("pct1"), defecto_1)
-    p2 = _pct_seguro(cot.get("pct2"), defecto_2)
-    p3 = _pct_seguro(cot.get("pct3"), defecto_3)
-    if del_estudio:
-        # el estudio del agente tiene prioridad sobre lo guardado
-        p1 = defecto_1
-        p2 = defecto_2
-        p3 = defecto_3
-    if not _pcts_coherentes(p1, p2, p3):
-        print(f"   [PORTAL] escenarios incoherentes ({p1}/{p2}/{p3}): "
-              f"se usan los del documento {defecto_1}/{defecto_2}/{defecto_3}")
-        p1, p2, p3 = defecto_1, defecto_2, defecto_3
-
-    try:
-        neto_guardado = _solo_digitos(cot.get("neto") or 0)
-    except Exception:
-        neto_guardado = 0
     try:
         margen_obj = float(cot.get("margen_objetivo") or 0.35)
     except Exception:
@@ -650,21 +735,20 @@ def _valores_planilla(proyecto):
         margen_obj = margen_obj / 100.0
     if not (0 < margen_obj < 1):
         margen_obj = 0.35
-
     return {
-        "presupuesto": presupuesto,
-        "iva": iva_guardado,
-        "costo": costo_guardado,
+        "presupuesto": estado["presupuesto"],
+        "iva": estado["iva"],
+        "costo": estado["costo"],
         "horas": horas,
         "valor_hora": valor_hora,
         "cloud": cloud,
         "gestion": gestion,
-        "neto": neto_guardado,
+        "neto": _solo_digitos(cot.get("neto") or 0),
         "margen_objetivo": margen_obj,
-        "pct1": p1,
-        "pct2": p2,
-        "pct3": p3,
-        "escenario_cotizacion": str(cot.get("escenario_cotizacion") or "recomendado").lower(),
+        "pct1": estado["pct1"],
+        "pct2": estado["pct2"],
+        "pct3": estado["pct3"],
+        "escenario_cotizacion": estado["elegido"],
     }
 
 
@@ -890,7 +974,7 @@ class Manejador(BaseHTTPRequestHandler):
         partes = [p for p in ruta.split("/") if p]
 
         if ruta in ("/salud", "/"):
-            datos = {"servicio": "licitaia-portal", "estado": "ok", "version": "2.1",
+            datos = {"servicio": "licitaia-portal", "estado": "ok", "version": "2.2",
                      "version_agente": _version_agente(),
                      "ia_principal": os.getenv("IA_MODELO", ""),
                      "ia_premium": os.getenv("IA_PREMIUM_MODELO", ""),
@@ -1035,7 +1119,11 @@ class Manejador(BaseHTTPRequestHandler):
 
             if len(partes) == 3 and partes[2] == "cotizacion":
                 datos = _leer_cotizacion(proyecto["_carpeta"])
-                datos["monto"] = _monto_recomendado(proyecto)
+                estado_cot = _estado_economico(proyecto)
+                datos["monto"] = estado_cot["monto"]
+                datos["tope_excedido"] = estado_cot["tope_excedido"]
+                datos["presupuesto"] = estado_cot["presupuesto"]
+                datos["monto_pedido"] = estado_cot["monto_pedido"]
                 if portal_ui is None:
                     return self._enviar(500, "<h1>UI no disponible</h1>")
                 html_cot = portal_ui.cotizacion_html(
@@ -1060,6 +1148,8 @@ class Manejador(BaseHTTPRequestHandler):
                                     "application/json")
 
             if len(partes) == 3 and partes[2] == "zip":
+                if not _doc2_actualizado(proyecto["_carpeta"]):
+                    _sellar_doc2(proyecto["_carpeta"], proyecto)
                 datos = _zip_proyecto(proyecto["_carpeta"])
                 nombre = f"{proyecto['_codigo']}.zip"
                 return self._enviar(200, datos, "application/zip",
@@ -1101,6 +1191,11 @@ class Manejador(BaseHTTPRequestHandler):
                     return self._enviar(404, "<h1>Archivo no encontrado</h1>")
                 with open(ruta_archivo, "rb") as f:
                     datos = f.read()
+                if (partes[2] == "f" and seguro.upper().startswith("DOC2")
+                        and not _doc2_actualizado(proyecto["_carpeta"])):
+                    _sellar_doc2(proyecto["_carpeta"], proyecto)
+                    if not os.path.isfile(ruta_archivo):
+                        return self._enviar(404, "<h1>Archivo no encontrado</h1>")
                 tipo = "application/pdf" if seguro.lower().endswith(".pdf") else "application/octet-stream"
                 return self._enviar(200, datos, tipo,
                                     {"Content-Disposition": f'attachment; filename="{seguro}"'})
@@ -1295,9 +1390,9 @@ class Manejador(BaseHTTPRequestHandler):
                                       anteriores_post.get("neto") or 0),
                 "margen_objetivo": (lambda v: v / 100.0 if v > 1 else v)(
                     _num("margen_objetivo", 35) or 35),
-                "pct1": anteriores_post["pct1"],
-                "pct2": anteriores_post["pct2"],
-                "pct3": anteriores_post["pct3"],
+                "pct1": round(crudos["pct1"] / 100.0, 4),
+                "pct2": round(crudos["pct2"] / 100.0, 4),
+                "pct3": round(crudos["pct3"] / 100.0, 4),
             }
             costo_desglose_post = (valores["horas"] * valores["valor_hora"]
                                    + valores["cloud"] + valores["gestion"])
@@ -1384,6 +1479,7 @@ class Manejador(BaseHTTPRequestHandler):
                     "costo": costo,
                 })
                 _guardar_cotizacion(carpeta, cot)
+                _sellar_doc2(carpeta, proyecto)
                 print(f"   [PORTAL] planilla {codigo}: monto recomendado "
                       f"{filas[1]['bruto']} y cotizacion actualizada")
             except Exception as e_plan:
@@ -1448,6 +1544,32 @@ class Manejador(BaseHTTPRequestHandler):
                 datos["monto"] = int(str(datos.get("monto") or "0").replace(".", "").strip() or 0)
             except Exception:
                 datos["monto"] = 0
+            # El monto escrito a mano manda: se recalcula el neto y los
+            # porcentajes para que la planilla y el Word digan lo mismo.
+            if datos["monto"] > 0:
+                try:
+                    estado_previo = _estado_economico(proyecto)
+                    tope = int(estado_previo["presupuesto"] or 0)
+                    if tope and datos["monto"] > tope:
+                        # Sobre el presupuesto oficial no se puede ofertar: se avisa
+                        datos["monto_rechazado"] = datos["monto"]
+                        datos["monto"] = estado_previo["monto"]
+                        print(f"   [PORTAL] monto {datos['monto_rechazado']} sobre el tope "
+                              f"{tope}: se mantiene {datos['monto']}")
+                    elif tope:
+                        p1, p2, p3 = _acomodar_pcts(
+                            estado_previo["pct1"],
+                            datos["monto"] / float(tope),
+                            estado_previo["pct3"])
+                        datos["pct1"], datos["pct2"], datos["pct3"] = p1, p2, p3
+                        datos["presupuesto"] = tope
+                        datos["monto_rechazado"] = 0
+                    datos["iva"] = estado_previo["iva"]
+                    datos["neto"] = int(round(
+                        datos["monto"] / (1 + estado_previo["iva"])))
+                    datos["monto_recomendado"] = datos["monto"]
+                except Exception as e_monto:
+                    print(f"   [PORTAL] no se pudo recalcular el monto: {e_monto}")
             # bloque técnico editable
             tecnico = {
                 "incluir": bool(str(datos.get("incluir_tecnico") or "").strip()),
@@ -1468,6 +1590,7 @@ class Manejador(BaseHTTPRequestHandler):
                 existente = _leer_cotizacion(carpeta)
                 existente.update(datos)
                 _guardar_cotizacion(carpeta, existente)
+                _sellar_doc2(carpeta, proyecto)
                 print(f"   [PORTAL] cotización editada {codigo}: monto {datos.get('monto')} "
                       f"· tecnico {'sí' if tecnico['incluir'] else 'no'}")
             except Exception as e:

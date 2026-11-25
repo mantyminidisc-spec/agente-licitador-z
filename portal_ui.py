@@ -13,6 +13,15 @@ import json
 import os
 from datetime import datetime
 
+try:
+    # Mismo criterio de SLA que el Word, para no mostrar dos números distintos
+    from cotizacion_docx import normalizar_sla as _sla_coherente
+except Exception:
+    def _sla_coherente(texto):
+        texto = str(texto or "").strip()
+        return texto or ("Soporte técnico con respuesta en un máximo de 2 horas hábiles y "
+                         "resolución en un máximo de 4 horas hábiles.")
+
 TIPOS_PREVIA = (".pdf", ".docx", ".xlsx", ".txt", ".csv")
 
 NOMBRES = (
@@ -1862,6 +1871,23 @@ def _tecnicos_cotizacion(informes):
         garantia = "12 meses desde la recepción conforme, con soporte preferente."
 
     partes = []
+    requisitos = (informes.get("requisitos_entidad") or {}).get("obligatorios") or []
+    if requisitos:
+        filas_requisitos = ""
+        for item in requisitos[:8]:
+            if isinstance(item, dict):
+                exigencia = item.get("requisito") or ""
+                fuente = item.get("exigido_en") or "Bases del proceso"
+                compromiso = item.get("compromiso") or "Se cumple en su totalidad"
+            else:
+                exigencia, fuente, compromiso = item, "Bases del proceso", "Se cumple"
+            filas_requisitos += (
+                f"<tr><td>{_esc(str(exigencia)[:220])}</td>"
+                f"<td style='width:24%'>{_esc(str(fuente)[:70])}</td>"
+                f"<td style='width:26%'>{_esc(str(compromiso)[:170])}</td></tr>")
+        partes.append("<h3>Requisitos del organismo y su cumplimiento</h3>"
+                      "<table><tr><th>Requisito exigido</th><th>Exigido en</th>"
+                      "<th>Compromiso del oferente</th></tr>" + filas_requisitos + "</table>")
     if alcance:
         partes.append(f"<h3>Alcance del servicio</h3><p>{_esc(alcance)}</p>")
     if arquitectura:
@@ -1878,9 +1904,14 @@ def _tecnicos_cotizacion(informes):
                       "<table><tr><th>N°</th><th>Entregable</th><th>Etapa</th><th>Costo</th></tr>"
                       + filas + "</table>")
     if sla:
-        partes.append(f"<h3>Nivel de servicio (SLA)</h3><p>{_esc(sla)}</p>")
+        partes.append(f"<h3>Nivel de servicio (SLA)</h3><p>{_esc(_sla_coherente(sla))}</p>")
     if garantia:
         partes.append(f"<h3>Garantía técnica</h3><p>{_esc(garantia)}</p>")
+    partes.append(
+        "<h3>Término del servicio y datos</h3><p>Al término del servicio se entrega al "
+        "organismo una exportación completa del historial y de las configuraciones, y luego "
+        "se eliminan las copias y respaldos con datos del organismo, dejando constancia "
+        "escrita.</p>")
 
     normas = informes.get("normas_chilenas_nch_estandares") or {}
     lista = normas.get("normas_aplicables") or informes.get("checklist_nch_detectadas") or []
@@ -1913,6 +1944,21 @@ def cotizacion_html(proyecto, token, datos, hay_logo=True, logo_url="", cot=None
     plazo = _esc(cot.get("plazo") or proyecto.get("plazo_entrega_organismo") or "según bases")
     validez = _esc(cot.get("validez") or "60 días")
     obs = _esc(cot.get("observaciones") or "")
+    datos_bases = (informes or {}).get("requisitos_entidad") or {}
+    vigencia = str(datos_bases.get("vigencia") or "").strip()
+    disponibilidad = str(datos_bases.get("disponibilidad") or "").strip()
+    usuarios = str(datos_bases.get("usuarios") or "").strip()
+    aviso_tope = ""
+    escrito = int(cot.get("monto_rechazado") or 0)
+    if escrito or cot.get("tope_excedido"):
+        if not escrito:
+            escrito = int(cot.get("monto_pedido") or 0)
+        aviso_tope = (
+            '<p style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;'
+            'border-radius:8px;padding:10px 12px;font-size:11.5px">'
+            "El monto escrito (" + (_clp(escrito) if escrito else "sin dato") +
+            ") supera el presupuesto oficial (" + _clp(cot.get("presupuesto") or 0) +
+            "), así que no se aplicó. La oferta queda en " + _clp(monto) + ".</p>")
     logo = f'<img src="{_esc(logo_url)}" alt="Logo" style="height:52px;max-width:170px;object-fit:contain">' if hay_logo else ""
     tecnico_guardado = cot.get("tecnico") or {}
     if tecnico_guardado:
@@ -2001,15 +2047,20 @@ font-size:13px;font-weight:650;cursor:pointer}}
   <p style="font-size:11px;color:#5b6674;margin-top:6px">
     Son {_clp(monto)} pesos con IVA incluido. La presente oferta no supera el presupuesto
     máximo informado por el organismo requirente.</p>
+  {aviso_tope}
 
   {secciones_tecnicas}
 
   <h2>Condiciones comerciales</h2>
   <ul>
     <li>Plazo de entrega: <strong>{plazo}</strong>, conforme a lo exigido en la ficha del proceso.</li>
+    {f"<li>Vigencia: <strong>{_esc(vigencia)}</strong> contados desde la habilitación y puesta en marcha.</li>" if vigencia else ""}
+    {f"<li>Disponibilidad comprometida: <strong>{_esc(disponibilidad)}</strong> mensual.</li>" if disponibilidad else ""}
+    {f"<li>Atención para <strong>{_esc(usuarios)}</strong> o más usuarios, con roles y permisos.</li>" if usuarios else ""}
     <li>Validez de la oferta: {validez}.</li>
     <li>Forma de pago: 30 días contra recepción conforme y factura electrónica (Ley 21.131).</li>
     <li>Garantía técnica de 12 meses desde la recepción, con soporte preferente.</li>
+    <li>Al término del servicio se entrega el historial y se eliminan los datos del organismo, con constancia escrita.</li>
     {f"<li>{obs}</li>" if obs else ""}
   </ul>
 

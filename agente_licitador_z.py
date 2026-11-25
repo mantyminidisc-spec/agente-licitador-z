@@ -218,7 +218,7 @@ MAX_FALLOS_CUOTA = int(os.getenv("MAX_FALLOS_CUOTA", "3"))
 # 1 = estricto (la lista negra siempre gana)  ·  0 = permisivo (palabra TI gana)
 FILTRO_ESTRICTO = os.getenv("FILTRO_ESTRICTO", "0").strip() != "0"
 
-VERSION_LICITAIA = "21.2"
+VERSION_LICITAIA = "21.3"
 
 # --- Entrega de documentos ---------------------------------------------------
 # portal = guarda en el servidor y entrega un link privado (sin Google)
@@ -1100,6 +1100,11 @@ def _dump_informe_json(expediente, informes, carpeta):
         "nombre": expediente.get("nombre"),
         "organismo": expediente.get("organismo"),
         "rut_comprador": expediente.get("rut_comprador"),
+        "unidad_compradora": expediente.get("unidad_compradora"),
+        "comuna": expediente.get("comuna"),
+        "region": expediente.get("region"),
+        "descripcion": (expediente.get("descripcion") or "")[:1500],
+        "origen_presupuesto": expediente.get("origen_presupuesto"),
         "tipo_portal": expediente.get("tipo_portal"),
         "fecha_cierre": expediente.get("fecha_cierre"),
         "presupuesto_estatal_clp": expediente.get("presupuesto_estatal_clp"),
@@ -2060,7 +2065,7 @@ Responde ÚNICAMENTE en formato JSON:
                             "organismo": organismo_real,
                             "tipo_portal": "COMPRA_AGIL",
                             "keyword_match": motivo,
-                            "fecha_cierre": str(item.get("fecha_cierre") or item.get("FechaCierre") or "Abierta Hoy"),
+                            "fecha_cierre": str(item.get("fecha_cierre") or item.get("FechaCierre") or "Abierta (ver ficha en Mercado Público)"),
                             "estado": "Publicada",
                             "resumen_item": item
                         })
@@ -2193,7 +2198,7 @@ Responde ÚNICAMENTE en formato JSON:
                     "organismo": organismo,
                     "tipo_portal": "COMPRA_AGIL",
                     "keyword_match": motivo,
-                    "fecha_cierre": str(fechas.get("fecha_cierre") or "Abierta"),
+                    "fecha_cierre": str(fechas.get("fecha_cierre") or "Abierta (ver ficha)"),
                     "estado": "Publicada",
                     "resumen_item": item,
                 })
@@ -4572,6 +4577,15 @@ ESTRUCTURA DE AUDITORÍA OBLIGATORIA (DEBES DESARROLLAR LAS 7 SECCIONES):
    * Opción 3 - Premium / Alta Gama al 98%: Total Bruto ${esc3['total_bruto_clp']:,} CLP (Neto: ${esc3['neto_clp']:,} CLP + IVA 19%: ${esc3['iva_19_clp']:,} CLP).
 7. PROPUESTA DE ESPECIFICACIONES TÉCNICAS ESPECIALIZADAS: Redaccion tecnica para el Agente 4. DEBES basarte 100% en los items y cantidades especificadas en los adjuntos leidos (citando el nombre de cada archivo adjunto). Desglosar en la tabla economica y tecnica EXACTAMENTE los items, cantidades y servicios solicitados en los archivos adjuntos. PROHIBIDO usar items genericos si los adjuntos contienen informacion especifica.
 
+8. REQUISITOS DE LA ENTIDAD (OBLIGATORIO · el más importante): recorre TODOS los adjuntos y extrae las exigencias obligatorias con su cifra exacta: plazos de habilitación y puesta en marcha, disponibilidad, cantidad de usuarios, vigencia, forma de pago y cuotas, entregables, multas y tratamiento de los datos al término del servicio. Cada exigencia queda en "requisitos_entidad.obligatorios" indicando el archivo del que proviene y cómo la cumple la oferta. Si una cifra no aparece en los adjuntos, escribe "No informado en las bases": no la inventes ni la copies de otro proceso.
+
+REGLAS DE COHERENCIA (la cotización se revisa automáticamente contra esto):
+- Un solo SLA en todo el documento: respuesta en un máximo de 2 horas hábiles y resolución en un máximo de 4 horas hábiles. Nunca escribas "respuesta en 4 horas".
+- Los plazos son los de las bases: si exigen habilitación o puesta en marcha en N días corridos, ese es el plazo del servicio. No agregues un "plazo total" en días hábiles que lo contradiga.
+- No declares certificaciones (ISO 27001, NCh 2728) que Mantytech SpA no tenga emitidas formalmente: redacta "alineado a los lineamientos de ..." o "conforme a las buenas prácticas de ...".
+- Repite textualmente las cifras exigidas (disponibilidad, usuarios, meses, cuotas, días) en "propuesta_especificaciones_tecnicas" y en "requisitos_entidad", con la misma redacción en ambos lugares.
+- No menciones estados ni fechas del portal ("Abierta Hoy", "publicada hoy", "cierra pronto") dentro de la propuesta técnica.
+
 REGLAS DE SALIDA (OBLIGATORIAS — control de costo y legibilidad):
 - Máximo 90 palabras por campo de texto y máximo 6 elementos por lista.
 - No copies párrafos completos de las bases: resume en una o dos frases.
@@ -4671,6 +4685,18 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
       "iva_19_clp": {esc3['iva_19_clp']},
       "estrategia": "{esc3['estrategia']}"
     }}
+  }},
+  "requisitos_entidad": {{
+    "fuente": "nombre de los archivos de donde salen las exigencias",
+    "obligatorios": [
+      {{"requisito": "exigencia concreta con su cifra o plazo", "exigido_en": "archivo o cláusula", "compromiso": "cómo la cumple la oferta"}}
+    ],
+    "disponibilidad": "99,5% mensual o No informada",
+    "usuarios": "cantidad exigida o No informado",
+    "vigencia": "meses exigidos o No informada",
+    "forma_pago": "cuotas y plazo de pago exigidos o No informado",
+    "plazo_habilitacion": "plazo de habilitación y puesta en marcha o No informado",
+    "tratamiento_datos": "qué exige al término del servicio o No informado"
   }},
   "propuesta_especificaciones_tecnicas": {{
     "arquitectura_solucion": "Arquitectura modular y tecnológica del servicio...",
@@ -4787,6 +4813,17 @@ Genera la respuesta estrictamente en formato JSON válido con esta estructura:
                 "estrategia_cumplimiento": "Mantytech SpA implementa estándares de desarrollo seguro, control de accesos, encriptación en tránsito (TLS 1.3) y metodologías alineadas con las mejores prácticas del Estado."
             },
             "estudio_financiero_escenarios": estudio_base,
+            "requisitos_entidad": {
+                "fuente": (", ".join(expediente.get("nombres_adjuntos_leidos") or [])
+                           or "Bases del proceso"),
+                "obligatorios": [],
+                "disponibilidad": "",
+                "usuarios": "",
+                "vigencia": "",
+                "forma_pago": "",
+                "plazo_habilitacion": expediente.get("plazo_entrega_organismo") or "",
+                "tratamiento_datos": "",
+            },
             "propuesta_especificaciones_tecnicas": {
                 "arquitectura_solucion": "Arquitectura modular, escalable y basada en microservicios/APIs estándar, garantizando alta disponibilidad, seguridad y bajo acoplamiento.",
                 "metodologia_trabajo": "Metodología ágil en 4 fases secuenciales con validaciones técnicas intermedias y actas de recepción conforme.",
@@ -5774,6 +5811,53 @@ class Agente5Entregador:
     # DOC 2 · COTIZACIÓN OFICIAL (1 hoja)
     # ==================================================================
     def generar_doc2_cotizacion_1_hoja(self, expediente, informes, escenarios, ruta_doc2):
+        """Cotización oficial en Word, con la MISMA plantilla que usa el portal.
+
+        La plantilla vive en `cotizacion_docx.py` para que el archivo que el
+        cliente descarga desde el portal no pueda quedar con montos distintos a
+        los que ve en pantalla. Si el módulo no está en la imagen (despliegue
+        incompleto), se usa el generador de respaldo y el proyecto no se queda
+        sin cotización.
+        """
+        try:
+            import cotizacion_docx
+        except Exception as error:
+            print(f"   [!] Plantilla DOC2 no disponible ({error}): uso el generador de respaldo")
+            return self._doc2_respaldo(expediente, informes, escenarios, ruta_doc2)
+
+        eq = (escenarios or {}).get("equilibrado", {}) or {}
+        textos_bases = (expediente.get("informe_forense_adjuntos")
+                        or expediente.get("texto_extraido_adjuntos") or "")
+        datos = {
+            "codigo": expediente.get("codigo", ""),
+            "organismo": (expediente.get("organismo")
+                          or expediente.get("organismo_comprador", "")),
+            "nombre": expediente.get("nombre", ""),
+            "unidad_comprador": expediente.get("unidad_compradora", ""),
+            "rut_comprador": expediente.get("rut_comprador", ""),
+            "comuna": expediente.get("comuna", ""),
+            "region": expediente.get("region", ""),
+            "fecha_cierre": expediente.get("fecha_cierre", ""),
+            "presupuesto": expediente.get("presupuesto_estatal_clp") or 0,
+            "monto": eq.get("oferta_total_bruta_clp") or 0,
+            "neto": eq.get("oferta_neta_clp") or 0,
+            "iva": 0.19,
+            "origen_presupuesto": expediente.get("origen_presupuesto", ""),
+            "plazo_comprometido": (expediente.get("plazo_entrega_organismo")
+                                   or informes.get("plazo_entrega_dias_habiles") or ""),
+            "validez": "60 días",
+            "observaciones": "",
+            "texto_bases": textos_bases[:20000],
+            "perfil": self.perfil,
+            "banco": {},
+            "informes": informes or {},
+            "tecnico": {},
+            "logo": self._logo_empresa(),
+        }
+        return cotizacion_docx.generar(datos, ruta_doc2)
+
+    def _doc2_respaldo(self, expediente, informes, escenarios, ruta_doc2):
+        """Generador anterior: solo se usa si falta cotizacion_docx.py."""
         doc = Document()
         self._config_documento(doc, 1.5, 10)
 
